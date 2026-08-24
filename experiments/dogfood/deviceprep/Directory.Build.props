@@ -1,0 +1,8 @@
+<Project>
+  <PropertyGroup>
+    <!-- Lets the solution build on macOS even though it targets Windows. -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <Nullable>disable</Nullable>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+</Project>

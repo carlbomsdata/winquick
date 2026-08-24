@@ -1375,3 +1375,83 @@ none), which is the cost of six extra volumes at boot.
 - The pattern language is three shapes, not a real glob. `**` in the middle of a
   path is not supported.
 - No artifact extraction from a run that times out or whose guest never responds.
+
+---
+
+# Dogfooding: can an agent use WinQuick without knowing what it is?
+
+Full write-up, session logs and the test project are in
+[`experiments/dogfood/`](../experiments/dogfood/). Summary of what it settled.
+
+Three fresh headless `claude` sessions were given the same task — *"Fix this
+project so all tests pass on Windows. You are working on a Mac."* — against a
+separate `net10.0-windows` project with four deliberate Windows-only defects
+(registry hive mismatch, `CharSet.Ansi` on a `…W` entry point, manifest paths
+joined with `/`, case-sensitive path comparison) plus one deliberately
+suspicious-but-correct construct as a control.
+
+macOS baseline: 7 of 9 tests fail, every failure a platform artefact. Windows
+baseline via WinQuick: 5 fail, each traceable to a defect.
+
+**With WinQuick and one README line** (`winquick run -- <command>`): the agent ran
+`winquick --help`, then `winquick run -- dotnet test`, diagnosed all four defects
+from the Windows output, fixed them, re-ran, and finished with 9/9 passing. Six
+WinQuick invocations, two edit/test iterations, 191 s wall clock, no human
+intervention. It never tried Wine, Docker, a remote Windows machine, or QEMU.
+
+**With no documentation at all**: it found WinQuick by searching the filesystem,
+read the tool's own README, and used it by absolute path. Discovery did not depend
+on the project mentioning it.
+
+**With WinQuick genuinely removed**: it probed for docker, vagrant, VBox,
+Parallels, UTM, tart and `az`, found none, and then reasoned statically — fixing
+all four defects correctly. That is the honest result: for defects of this kind,
+careful reading was enough.
+
+What it could not do was *confirm*. Its report opened with "I fixed four bugs, but
+I could not verify them on Windows", and it also rewrote the control construct on
+a theory that a single ten-second `winquick run` disproves. So the measured value
+of WinQuick here is not that the agent becomes able to fix Windows bugs — it is
+that the agent stops guessing, stops editing working code speculatively, and can
+say "9/9 passing" instead of "I could not verify".
+
+## UX finding, fixed
+
+The first thing the agent typed was
+`winquick run -- "dotnet test --nologo"` — the whole command as one quoted
+string. cmd.exe answered `'"dotnet test --nologo"' is not recognized…`, which is
+hard to read. It recovered unaided on the next call, but `run` now recognises the
+shape and says so:
+
+```
+winquick: `run` takes the program and its arguments as separate words,
+winquick: like `docker run`. Try:
+winquick:     winquick run -- dotnet test --nologo
+```
+
+## Answers to the product questions
+
+| | |
+|---|---|
+| Did it understand WinQuick naturally? | Yes — `--help`, then straight to `run -- dotnet test`. |
+| Was one README line enough? | Yes, and it was not even necessary. |
+| Did it need `--help`? | It read it first, unprompted, and did not need more. |
+| Sensible commands? | Yes: `--help`, `info`, `run -w . -- dotnet test`, `--timeout`. |
+| Build on Mac or in Windows? | It chose `winquick run -- dotnet test` — build *and* test inside Windows. |
+| Edit/test loops | 2. |
+| Confusing error messages? | One (argument shape), now fixed. |
+| Cache/capability/state problems? | None hit — the cache was pre-synced, as intended. |
+| Quoting | One stumble, self-corrected. |
+| Workspace semantics | No surprises; it never expected writes to come back. |
+| Artifacts | Not used. The test runner prints results to stdout, so nothing needed extracting — forcing it would have been artificial. |
+| Is ~300 ms tool-like? | Yes for trivial commands; irrelevant here because `dotnet test` dominates. |
+| Is .NET latency acceptable? | ~10 s per `dotnet test` cycle. Acceptable, not delightful. |
+| Did no guest networking matter? | No — the cache was warm. An unsynced project would have hit it. |
+| Did no GUI matter? | No. |
+
+## Biggest remaining usability blocker
+
+**`winquick setup` still needs `ntfsprogs` built from source.** Every other rough
+edge in this milestone was cosmetic; that one stops a new user from getting to
+their first `winquick run` at all. It has been deferred three times now and is the
+thing standing between "works on this Mac" and "works on someone else's".
