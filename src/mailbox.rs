@@ -41,6 +41,11 @@ pub const GO: &str = "WQGO.TXT";
 pub const OUT_FILE: &str = "WQOUT.TXT";
 pub const ERR_FILE: &str = "WQERR.TXT";
 pub const CODE_FILE: &str = "WQCODE.TXT";
+/// Script the agent runs after the command, to collect artifacts.
+pub const ART_SCRIPT: &str = "WQART.CMD";
+/// Per-run token, echoed back with the exit code to prove the guest read this
+/// run's command rather than a stale cached view of the volume.
+pub const NONCE: &str = "WQNONCE.TXT";
 
 const SECTOR: u64 = 512;
 const PART_START_LBA: u64 = 2048;
@@ -50,6 +55,8 @@ pub struct Results {
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
     pub exit_code: Option<i32>,
+    /// The token the guest echoed back, if any.
+    pub nonce: Option<String>,
 }
 
 fn open_fs(path: &Path, write: bool) -> Result<FileSystem<BufStream<StreamSlice<File>>>> {
@@ -116,12 +123,20 @@ fn write_mbr(mut img: &File) -> Result<()> {
 
 /// Place a command into an existing mailbox without touching the filesystem
 /// identity, and clear any stale results.
-pub fn inject_command(path: &Path, command: &str) -> Result<()> {
+/// Everything the host writes into the mailbox happens here, in a single
+/// open/flush cycle. Opening the volume twice in a row left the FAT inconsistent
+/// and the guest then read nothing at all.
+pub fn inject_command(path: &Path, command: &str, artifact_script: Option<&str>, nonce: &str) -> Result<()> {
     let fs = open_fs(path, true)?;
     {
         let root = fs.root_dir();
         for stale in [OUT_FILE, ERR_FILE, CODE_FILE] {
             let _ = root.remove(stale);
+        }
+        if let Some(script) = artifact_script {
+            let mut a = root.create_file(ART_SCRIPT)?;
+            a.truncate()?;
+            a.write_all(script.as_bytes())?;
         }
         // `@echo off` keeps the child cmd.exe from echoing the command line into
         // captured stdout. CRLF because cmd.exe is unforgiving about bare LF.
@@ -130,6 +145,9 @@ pub fn inject_command(path: &Path, command: &str) -> Result<()> {
         c.write_all(b"@echo off\r\n")?;
         c.write_all(command.as_bytes())?;
         c.write_all(b"\r\n")?;
+        let mut n = root.create_file(NONCE)?;
+        n.truncate()?;
+        n.write_all(nonce.as_bytes())?;
         // written last: this is what the agent waits on
         let mut g = root.create_file(GO)?;
         g.truncate()?;
@@ -164,9 +182,68 @@ pub fn read_results(path: &Path) -> Result<Results> {
     };
     let stdout = slurp(OUT_FILE);
     let stderr = slurp(ERR_FILE);
-    let exit_code = String::from_utf8_lossy(&slurp(CODE_FILE))
-        .trim()
-        .parse::<i32>()
-        .ok();
-    Ok(Results { stdout, stderr, exit_code })
+    // "<code> <nonce>"
+    let raw = String::from_utf8_lossy(&slurp(CODE_FILE)).trim().to_string();
+    let mut parts = raw.split_whitespace();
+    let exit_code = parts.next().and_then(|c| c.parse::<i32>().ok());
+    let nonce = parts.next().map(str::to_string);
+    Ok(Results { stdout, stderr, exit_code, nonce })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The host writes several files into the mailbox before every run. This
+    /// caught a corruption bug where a second write cycle left the FAT in a state
+    /// the guest read as empty.
+    #[test]
+    fn command_and_script_round_trip() {
+        let dir = std::env::temp_dir().join(format!("wq-mbox-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let img = dir.join("mailbox.img");
+        create_template(&img).unwrap();
+
+        inject_command(&img, "cmd /c echo hello", Some("@echo off\r\nrem art\r\n"), "tok1").unwrap();
+        assert_eq!(
+            String::from_utf8(probe(&img, CMD_FILE).expect("command file")).unwrap(),
+            "@echo off\r\ncmd /c echo hello\r\n"
+        );
+        assert_eq!(
+            String::from_utf8(probe(&img, ART_SCRIPT).expect("artifact script")).unwrap(),
+            "@echo off\r\nrem art\r\n"
+        );
+        assert!(probe(&img, GO).is_some(), "go flag must be present");
+        assert!(probe(&img, MARKER).is_some(), "marker must survive injection");
+
+        // A second injection, as a warm run does after cloning the template.
+        inject_command(&img, "cmd /c echo second", None, "tok2").unwrap();
+        assert_eq!(
+            String::from_utf8(probe(&img, CMD_FILE).expect("command file")).unwrap(),
+            "@echo off\r\ncmd /c echo second\r\n"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Stale results from a previous run must never be read back as this run's.
+    #[test]
+    fn stale_results_are_cleared() {
+        let dir = std::env::temp_dir().join(format!("wq-stale-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let img = dir.join("mailbox.img");
+        create_template(&img).unwrap();
+        {
+            let fs = open_fs(&img, true).unwrap();
+            for (n, d) in [(OUT_FILE, "old out"), (ERR_FILE, "old err"), (CODE_FILE, "7")] {
+                fs.root_dir().create_file(n).unwrap().write_all(d.as_bytes()).unwrap();
+            }
+            fs.unmount().unwrap();
+        }
+        inject_command(&img, "cmd /c echo x", None, "tok").unwrap();
+        let r = read_results(&img).unwrap();
+        assert!(r.stdout.is_empty(), "stdout not cleared: {:?}", r.stdout);
+        assert!(r.stderr.is_empty(), "stderr not cleared");
+        assert_eq!(r.exit_code, None, "stale exit code survived injection");
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

@@ -47,14 +47,25 @@ if defined WQDOTNET (
   if not exist C:\dotnet-home mkdir C:\dotnet-home
 )
 
-rem The workspace volume carries the host project. Its contents change every run,
-rem so remember its identity now and re-read it just before executing.
+rem The workspace, artifact and package-cache volumes all change contents between
+rem runs, so remember their identities now and re-read them just before executing.
 set WQWS=
 set WQWSVOL=
+set WQART=
+set WQARTVOL=
+set WQNUGET=
+set WQNUGETVOL=
 for %%d in (D E F G H I J K L M N O P) do (
   if not defined WQWS if exist %%d:\WQWORK.TXT set WQWS=%%d:
+  if not defined WQART if exist %%d:\WQARTS.TXT set WQART=%%d:
+  if not defined WQNUGET if exist %%d:\WQNUGET.TXT set WQNUGET=%%d:
 )
 if defined WQWS for /f "tokens=*" %%v in ('mountvol %WQWS% /L') do set WQWSVOL=%%v
+if defined WQART for /f "tokens=*" %%v in ('mountvol %WQART% /L') do set WQARTVOL=%%v
+if defined WQNUGET for /f "tokens=*" %%v in ('mountvol %WQNUGET% /L') do set WQNUGETVOL=%%v
+rem Packages come from the host-managed cache. The guest gets a throwaway clone of
+rem it, so anything a build writes here is discarded with the rest of the run.
+if defined WQNUGET set NUGET_PACKAGES=%WQNUGET%\packages
 
 >%WQ%\WQREADY.TXT echo 1
 mountvol %WQ% /P >nul 2>&1
@@ -78,11 +89,22 @@ if defined WQWSVOL (
     cd /d C:\workspace >nul 2>&1
   )
 )
+rem Echoed back with the exit code so the host can prove this run actually read
+rem this run's command. If the guest is holding a stale view of the mailbox it
+rem would otherwise run an empty batch and report a confident, wrong success.
+set WQNONCE=
+if exist %WQ%\WQNONCE.TXT set /p WQNONCE=<%WQ%\WQNONCE.TXT
 rem A child cmd.exe, not `call`: the workload must not be able to end the agent
 rem with `exit`, and its errorlevel has to come back cleanly.
 cmd /c %WQ%\WQCMD.CMD > %WQ%\WQOUT.TXT 2> %WQ%\WQERR.TXT
 set WQRC=%errorlevel%
+rem Artifacts are collected even when the command failed - a failed build's logs
+rem are usually the thing you wanted. The command's exit code is already saved.
+if defined WQARTVOL if exist %WQ%\WQART.CMD (
+  call %WQ%\WQART.CMD > %WQART%\WQARTLOG.TXT 2>&1
+  mountvol %WQART% /P >nul 2>&1
+)
 rem `echo %WQRC%>file` would parse as a stdin redirect. Redirect first instead.
->%WQ%\WQCODE.TXT echo %WQRC%
+>%WQ%\WQCODE.TXT echo %WQRC% %WQNONCE%
 mountvol %WQ% /P >nul 2>&1
 goto wait

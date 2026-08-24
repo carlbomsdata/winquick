@@ -7,6 +7,7 @@ N=${1:-100}
 # Optional .NET fixtures, built on the host; tests are skipped when absent.
 FDAPP=${WQ_FDAPP:-/tmp/wqnet/out/fd-arm64}
 SCAPP=${WQ_SCAPP:-/tmp/wqnet/out/sc-arm64}
+TESTPROJ=${WQ_TESTPROJ:-/tmp/wqnet/tproj}
 pass=0; fail=0
 ok()   { printf "  PASS  %s\n" "$1"; pass=$((pass+1)); }
 bad()  { printf "  FAIL  %s -- %s\n" "$1" "$2"; fail=$((fail+1)); }
@@ -131,6 +132,70 @@ check "host directory appears at C:\\workspace" "$o" "hello-from-host"
 o=$("$WQ" run -w "$WSTMP" -- cmd /c "if exist C:\workspace\fromguest.txt (echo LEAKED) else (echo CLEAN)" 2>/dev/null | tr -d '\r\n')
 check "workspace is disposable between runs" "$o" "CLEAN"
 rm -rf "$WSTMP"
+
+echo "== artifacts =="
+ATMP=$(mktemp -d); pushd "$ATMP" >/dev/null
+mkdir -p "src/deep dir"
+echo "staged-content" > "src/deep dir/file with space.txt"
+echo "top" > src/top.txt
+
+"$WQ" run -w "$ATMP/src" -a "deep dir/**" -- cmd /c "echo x" >/dev/null 2>&1
+check "artifact: nested dir with spaces" "$(cat "winquick-artifacts/deep dir/file with space.txt" 2>/dev/null)" "staged-content"
+
+rm -rf winquick-artifacts
+"$WQ" run -a "one/**" -a "two/**" -- cmd /c "mkdir one & mkdir two & echo 1> one\a.txt & echo 2> two\b.txt" >/dev/null 2>&1
+n=$(find winquick-artifacts -type f 2>/dev/null | wc -l | tr -d ' ')
+check "artifact: multiple patterns" "$n" "2"
+
+rm -rf winquick-artifacts
+"$WQ" run -a "report.txt" -- cmd /c "echo the-report> report.txt" >/dev/null 2>&1
+# cmd's `echo x> f` writes the space before the redirect, so trim it.
+check "artifact: single named file" "$(cat winquick-artifacts/report.txt 2>/dev/null | tr -d ' \r\n')" "the-report"
+
+rm -rf winquick-artifacts
+out=$("$WQ" run -a "nothing/**" -- cmd /c "echo x" 2>&1)
+case "$out" in *"no files matched"*) ok "artifact: no matches reported cleanly";; *) bad "artifact no-match" "$out";; esac
+
+rm -rf winquick-artifacts
+"$WQ" run -a "logs/**" -- cmd /c "mkdir logs & echo failure-log> logs\err.txt & exit 42" >/dev/null 2>&1
+check "artifact: exit code survives extraction" "$?" "42"
+check "artifact: retrieved after a failing command" "$(cat winquick-artifacts/logs/err.txt 2>/dev/null | tr -d ' \r\n')" "failure-log"
+
+before=$(find "$ATMP/src" -type f | wc -l | tr -d ' ')
+"$WQ" run -w "$ATMP/src" -a "top.txt" -- cmd /c "echo mutated> top.txt & echo new> extra.txt" >/dev/null 2>&1
+after=$(find "$ATMP/src" -type f | wc -l | tr -d ' ')
+check "artifact: host source tree untouched" "$after" "$before"
+check "artifact: host file not rewritten" "$(cat "$ATMP/src/top.txt")" "top"
+
+rm -rf winquick-artifacts
+mkdir -p big && dd if=/dev/urandom of=big/blob.bin bs=1m count=32 2>/dev/null
+"$WQ" run -w "$ATMP/big" -a "**" -- cmd /c "echo x" >/dev/null 2>&1
+sz=$(stat -f%z winquick-artifacts/blob.bin 2>/dev/null || echo 0)
+check "artifact: 32 MiB file exact" "$sz" "$(stat -f%z big/blob.bin)"
+popd >/dev/null; rm -rf "$ATMP"
+
+if [ -f ~/.winquick/capabilities/nuget-cache.img ] && [ -f ~/.winquick/capabilities/dotnet-sdk.img ] && [ -d "$TESTPROJ" ]; then
+echo "== nuget cache =="
+CACHE=~/.winquick/capabilities/nuget-cache.img
+before=$(shasum -a 256 "$CACHE" | cut -d" " -f1)
+rm -rf "$TESTPROJ/obj" "$TESTPROJ/bin"
+out=$("$WQ" run -w "$TESTPROJ" -- dotnet test --nologo 2>&1)
+rc=$?
+check "nuget: cached dotnet test succeeds offline" "$rc" "0"
+case "$out" in *"Passed!"*) ok "nuget: tests actually ran and passed";; *) bad "nuget test result" "$(echo "$out" | tail -3)";; esac
+case "$out" in *NU1301*) bad "nuget: hit the network" "NU1301 in output";; *) ok "nuget: no network was needed";; esac
+
+"$WQ" run -w "$TESTPROJ" -- cmd /c "echo pwned> %NUGET_PACKAGES%\pwned.txt & echo done" >/dev/null 2>&1
+after=$(shasum -a 256 "$CACHE" | cut -d" " -f1)
+check "nuget: guest cannot mutate the canonical cache" "$after" "$before"
+o=$("$WQ" run -- cmd /c "if exist %NUGET_PACKAGES%\pwned.txt (echo LEAKED) else (echo CLEAN)" 2>/dev/null | tr -d "\r\n")
+check "nuget: guest writes do not persist into later runs" "$o" "CLEAN"
+
+BASESHA=$(shasum -a 256 ~/.winquick/images/validation-arm64/base.qcow2 | cut -d" " -f1)
+check "nuget: base image unchanged by cache use" "$BASESHA" "$(shasum -a 256 ~/.winquick/images/validation-arm64/base.qcow2 | cut -d" " -f1)"
+else
+  echo "== nuget cache (skipped: cache/SDK/test project not present) =="
+fi
 
 echo "== $N consecutive warm runs =="
 python3 - "$WQ" "$N" <<'PY'

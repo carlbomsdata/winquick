@@ -109,6 +109,10 @@ impl ReadyState {
     pub fn workspace(&self) -> PathBuf {
         self.dir.join("ready-workspace.img")
     }
+    pub fn artifacts(&self) -> PathBuf {
+        self.dir.join("ready-artifacts.img")
+    }
+
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -164,7 +168,7 @@ pub fn load_valid(want: &Fingerprint) -> Result<Option<ReadyState>> {
         }
     };
     let rs = ReadyState { dir, meta };
-    for f in [rs.state_file(), rs.disk(), rs.vars(), rs.mailbox(), rs.workspace()] {
+    for f in [rs.state_file(), rs.disk(), rs.vars(), rs.mailbox(), rs.workspace(), rs.artifacts()] {
         if !f.exists() {
             anyhow::bail!("ready state incomplete: {} is missing", f.display());
         }
