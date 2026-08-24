@@ -174,8 +174,12 @@ sz=$(stat -f%z winquick-artifacts/blob.bin 2>/dev/null || echo 0)
 check "artifact: 32 MiB file exact" "$sz" "$(stat -f%z big/blob.bin)"
 popd >/dev/null; rm -rf "$ATMP"
 
-if [ -f ~/.winquick/capabilities/nuget-cache.img ] && [ -f ~/.winquick/capabilities/dotnet-sdk.img ] && [ -d "$TESTPROJ" ]; then
+if [ -f ~/.winquick/capabilities/dotnet-sdk.img ] && [ -d "$TESTPROJ" ]; then
 echo "== nuget cache =="
+# Populate the cache for this project first: that is the documented workflow,
+# and it exercises `cache sync` as part of the suite.
+"$WQ" cache sync "$TESTPROJ" >/dev/null 2>&1
+check "cache sync succeeds" "$?" "0"
 CACHE=~/.winquick/capabilities/nuget-cache.img
 before=$(shasum -a 256 "$CACHE" | cut -d" " -f1)
 rm -rf "$TESTPROJ/obj" "$TESTPROJ/bin"
@@ -196,6 +200,55 @@ check "nuget: base image unchanged by cache use" "$BASESHA" "$(shasum -a 256 ~/.
 else
   echo "== nuget cache (skipped: cache/SDK/test project not present) =="
 fi
+
+echo "== lifecycle =="
+"$WQ" --version | grep -q "winquick " && ok "--version reports a version" || bad "--version" "$("$WQ" --version)"
+"$WQ" --help | grep -q "winquick run -- cmd /c ver" && ok "--help shows examples" || bad "--help" "no examples"
+"$WQ" doctor >/dev/null 2>&1
+check "doctor reports a healthy install" "$?" "0"
+"$WQ" info | grep -q "runtime" && ok "info reports the runtime" || bad "info" "no runtime line"
+out=$("$WQ" clean --dry-run 2>&1)
+case "$out" in *total*) ok "clean --dry-run reports without removing";; *) bad "clean --dry-run" "$out";; esac
+[ -f ~/.winquick/images/validation-arm64/base.qcow2 ] && ok "clean --dry-run removed nothing" || bad "clean --dry-run" "runtime gone"
+
+echo "== interrupt and timeout =="
+before_q=$(pgrep -f qemu-system-aarch64 | wc -l | tr -d " ")
+"$WQ" run --timeout 2 -- cmd /c "ping -n 30 127.0.0.1" >/dev/null 2>&1
+rc=$?
+[ "$rc" -ne 0 ] && ok "timeout fails rather than hanging" || bad "timeout" "exit $rc"
+sleep 1
+after_q=$(pgrep -f qemu-system-aarch64 | wc -l | tr -d " ")
+check "timeout leaves no qemu behind" "$after_q" "$before_q"
+check "timeout leaves no run directories" "$(ls -A ~/.winquick/run 2>/dev/null | wc -l | tr -d " ")" "0"
+
+"$WQ" run --timeout 120 -- pwsh -NoProfile -Command "Start-Sleep -Seconds 60" >/dev/null 2>&1 &
+IPID=$!
+sleep 14
+kill -INT $IPID 2>/dev/null
+wait $IPID 2>/dev/null; irc=$?
+check "Ctrl-C exits 130" "$irc" "130"
+sleep 2
+check "Ctrl-C leaves no qemu behind" "$(pgrep -f qemu-system-aarch64 | wc -l | tr -d " ")" "0"
+check "Ctrl-C leaves no run directories" "$(ls -A ~/.winquick/run 2>/dev/null | wc -l | tr -d " ")" "0"
+
+echo "== concurrency =="
+for i in 1 2 3 4; do ( "$WQ" run -- cmd /c "echo conc-$i" > /tmp/wq_c$i.out 2>&1 ) & done
+wait
+cok=0
+for i in 1 2 3 4; do grep -q "conc-$i" /tmp/wq_c$i.out && cok=$((cok+1)); done
+check "four concurrent runs all correct" "$cok" "4"
+check "concurrency leaves no qemu behind" "$(pgrep -f qemu-system-aarch64 | wc -l | tr -d " ")" "0"
+
+echo "== artifact safety =="
+ATMP2=$(mktemp -d); pushd "$ATMP2" >/dev/null
+mkdir -p src && echo hi > src/a.txt
+"$WQ" run -w "$ATMP2/src" -a "../../../../../../tmp/wq-escape.txt" -- cmd /c "echo x" >/dev/null 2>&1
+[ ! -f /tmp/wq-escape.txt ] && ok "artifact pattern cannot escape the workspace" || bad "artifact escape" "/tmp/wq-escape.txt was created"
+mkdir -p existing && echo keep > existing/keep.txt
+out=$("$WQ" run -w "$ATMP2/src" -a "a.txt" --artifacts-dir "$ATMP2/existing" -- cmd /c "echo x" 2>&1)
+case "$out" in *"already exists and is not empty"*) ok "refuses to write into a non-empty artifacts dir";; *) bad "artifact overwrite guard" "$out";; esac
+check "existing artifact dir untouched" "$(cat "$ATMP2/existing/keep.txt")" "keep"
+popd >/dev/null; rm -rf "$ATMP2"
 
 echo "== $N consecutive warm runs =="
 python3 - "$WQ" "$N" <<'PY'

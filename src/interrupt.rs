@@ -26,7 +26,7 @@ const SIGINT: i32 = 2;
 const SIGTERM: i32 = 15;
 const SIGKILL: i32 = 9;
 const SIGPIPE: i32 = 13;
-const SIG_IGN: usize = 1;
+const SIG_DFL: usize = 0;
 
 extern "C" fn handle(_sig: i32) {
     INTERRUPTED.store(true, Ordering::SeqCst);
@@ -42,9 +42,13 @@ pub fn install() {
         let h: Handler = handle;
         signal(SIGINT, h as usize);
         signal(SIGTERM, h as usize);
-        // Writing to a closed pipe (`winquick run ... | head`) should give us a
-        // write error to handle, not kill us mid-run.
-        signal(SIGPIPE, SIG_IGN);
+        // Rust ignores SIGPIPE at startup, which turns `winquick run ... | head`
+        // into a panic on the first write to the closed pipe. Restore the normal
+        // command-line behaviour: exit quietly.
+        //
+        // This is safe with respect to leaving a VM running, because nothing is
+        // written to stdout until after QEMU has already been shut down.
+        signal(SIGPIPE, SIG_DFL);
     }
 }
 

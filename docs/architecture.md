@@ -259,6 +259,40 @@ changes are all discarded — tested explicitly.
 never interleaved or prefixed; the Windows exit code becomes the CLI's exit code.
 The one deliberate transformation is CRLF → LF, so piping into `grep` behaves.
 
+## The command surface
+
+```
+winquick setup                          build the runtime from Microsoft's image
+winquick run -- <command>               execute, return stdout/stderr/exit code
+winquick capability install|remove|list optional tooling inside Windows
+winquick cache sync|info|clear          offline packages for dotnet
+winquick doctor | info | reset | clean  diagnose, inspect, rebuild, tidy up
+```
+
+`run` needs only QEMU. `setup` additionally needs `ntfscp`/`ntfscat` (shipped
+with WinQuick) and `hivexsh` (Homebrew), because macOS cannot write NTFS and has
+no notion of a Windows registry hive. All three are separate processes, which is
+a licensing boundary as much as a design one.
+
+## Concurrency and interruption
+
+Several `winquick run` invocations can proceed at once: each gets its own run
+directory, its own QEMU, and its own clones of every writable volume. Nothing is
+shared that a run can write.
+
+Operations that *change* shared state — setup, capability changes, cache sync,
+clean — take an exclusive lock and say so if they have to wait. Building the
+prepared guest takes a second lock held across both the check and the build, so
+concurrent cold starts cannot read a state another process is still writing.
+
+Ctrl-C kills the VM and removes the run directory, exiting 130. This needs an
+explicit signal handler: Rust's default SIGINT terminates the process without
+running any `Drop`, which would leave a VM holding a gigabyte of RAM. The handler
+does only async-signal-safe work — it records the interruption and signals the
+child — and the main thread unwinds normally on its next poll. Interruption is
+deliberately *not* treated as a recoverable warm-path failure, which would
+otherwise start a second VM.
+
 ## What is permanent, what is not
 
 Five different lifetimes, and keeping them straight is most of the design:
