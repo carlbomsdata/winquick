@@ -1,0 +1,15 @@
+/target
+**/*.rs.bk
+
+# Never commit Microsoft software or anything derived from it.
+*.iso
+*.wim
+*.esd
+*.vhd
+*.vhdx
+*.qcow2
+*.img
+
+# Local scratch
+/tmp/
+/scratch/

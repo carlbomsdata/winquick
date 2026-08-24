@@ -1,0 +1,17 @@
+[package]
+name = "winquick"
+version = "0.1.0"
+edition = "2021"
+description = "Tiny, disposable, real Windows command execution on Apple Silicon"
+license = "Apache-2.0"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+fatfs = "0.3"
+fscommon = "0.1"
+
+[profile.release]
+strip = true
+opt-level = "z"
+lto = true
