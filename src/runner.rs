@@ -50,6 +50,8 @@ struct Ctx {
     q: qemu::Qemu,
     base: PathBuf,
     uefi_code: PathBuf,
+    /// Capability volume (PowerShell), if one has been built.
+    capability: Option<PathBuf>,
     opts_memory: u32,
     opts_cpus: u32,
     timeout: Duration,
@@ -82,10 +84,14 @@ pub fn run(command: &str, opts: &Options) -> Result<i32> {
     }
     let uefi_code = paths::uefi_code()
         .ok_or_else(|| anyhow!("could not find edk2-aarch64-code.fd next to QEMU"))?;
+    let capability = crate::capability::pwsh_image()
+        .ok()
+        .filter(|p| p.exists());
     let ctx = Ctx {
         q: qemu::Qemu::locate()?,
         base,
         uefi_code,
+        capability,
         opts_memory: opts.memory_mb,
         opts_cpus: opts.cpus,
         timeout: opts.timeout,
@@ -173,7 +179,11 @@ fn fingerprint(ctx: &Ctx) -> Result<state::Fingerprint> {
         memory_mb: ctx.opts_memory,
         cpus: ctx.opts_cpus,
         machine: qemu::MACHINE.to_string(),
-        devices: qemu::device_signature(ctx.opts_memory, ctx.opts_cpus),
+        capability: match &ctx.capability {
+            Some(p) => Some(state::FileId::of(p)?),
+            None => None,
+        },
+        devices: qemu::device_signature(ctx.opts_memory, ctx.opts_cpus, ctx.capability.is_some()),
     })
 }
 
@@ -187,6 +197,19 @@ fn new_run_dir() -> Result<PathBuf> {
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("creating run directory {}", dir.display()))?;
     Ok(dir)
+}
+
+/// Clone the capability volume for this run, if there is one. Cloned rather than
+/// shared because the guest writes to it when mounting.
+fn clone_capability(ctx: &Ctx, dir: &Path) -> Result<Option<PathBuf>> {
+    match &ctx.capability {
+        Some(src) => {
+            let dst = dir.join("caps.img");
+            qemu::clone_file(src, &dst)?;
+            Ok(Some(dst))
+        }
+        None => Ok(None),
+    }
 }
 
 fn fresh_vars(path: &Path) -> Result<()> {
@@ -237,6 +260,7 @@ fn warm_execute(ctx: &Ctx, ready: &state::ReadyState, command: &str) -> Result<O
     let mbox = dir.join("mailbox.img");
     let serial = dir.join("serial.log");
     let qmp_sock = dir.join("qmp.sock");
+    let caps = clone_capability(ctx, &dir)?;
 
     // Clones, not copies: on APFS these are effectively free whatever the size.
     qemu::clone_file(&ready.disk(), &overlay)?;
@@ -250,6 +274,7 @@ fn warm_execute(ctx: &Ctx, ready: &state::ReadyState, command: &str) -> Result<O
         uefi_vars: &vars,
         root_disk: &overlay,
         mailbox: &mbox,
+        capability: caps.as_deref(),
         memory_mb: ctx.opts_memory,
         cpus: ctx.opts_cpus,
         serial_log: &serial,
@@ -302,6 +327,7 @@ fn build_ready_state(ctx: &Ctx, want: &state::Fingerprint) -> Result<state::Read
     let mbox = dir.join("mailbox.img");
     let serial = dir.join("serial.log");
     let qmp_sock = dir.join("qmp.sock");
+    let caps = clone_capability(ctx, &dir)?;
 
     ctx.q.create_overlay(&ctx.base, &overlay)?;
     fresh_vars(&vars)?;
@@ -312,6 +338,7 @@ fn build_ready_state(ctx: &Ctx, want: &state::Fingerprint) -> Result<state::Read
         uefi_vars: &vars,
         root_disk: &overlay,
         mailbox: &mbox,
+        capability: caps.as_deref(),
         memory_mb: ctx.opts_memory,
         cpus: ctx.opts_cpus,
         serial_log: &serial,
@@ -376,6 +403,7 @@ fn cold_execute(ctx: &Ctx, command: &str) -> Result<Outcome> {
     let mbox = dir.join("mailbox.img");
     let serial = dir.join("serial.log");
     let qmp_sock = dir.join("qmp.sock");
+    let caps = clone_capability(ctx, &dir)?;
 
     ctx.q.create_overlay(&ctx.base, &overlay)?;
     fresh_vars(&vars)?;
@@ -387,6 +415,7 @@ fn cold_execute(ctx: &Ctx, command: &str) -> Result<Outcome> {
         uefi_vars: &vars,
         root_disk: &overlay,
         mailbox: &mbox,
+        capability: caps.as_deref(),
         memory_mb: ctx.opts_memory,
         cpus: ctx.opts_cpus,
         serial_log: &serial,

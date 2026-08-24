@@ -3,6 +3,7 @@
 //!
 //! Experimental. See README.md for scope.
 
+mod capability;
 mod mailbox;
 mod paths;
 mod qemu;
@@ -41,6 +42,12 @@ enum Cmd {
         /// Rebuild even if a runtime already exists
         #[arg(long)]
         force: bool,
+        /// Also build the PowerShell 7 capability volume
+        #[arg(long)]
+        with_powershell: bool,
+        /// Use this PowerShell ARM64 ZIP instead of downloading one
+        #[arg(long, value_name = "ZIP")]
+        powershell_zip: Option<PathBuf>,
     },
     /// Run a command inside a throwaway Windows environment
     #[command(trailing_var_arg = true)]
@@ -84,8 +91,13 @@ fn main() {
 
 fn dispatch(cli: Cli) -> Result<i32> {
     match cli.command {
-        Cmd::Setup { from, force } => {
+        Cmd::Setup { from, force, with_powershell, powershell_zip } => {
             setup::setup(from, force)?;
+            if with_powershell || powershell_zip.is_some() {
+                capability::install_powershell(powershell_zip, true)?;
+                // The device topology changed, so any frozen guest is stale.
+                state::discard()?;
+            }
             Ok(0)
         }
         Cmd::Run {
@@ -96,7 +108,7 @@ fn dispatch(cli: Cli) -> Result<i32> {
             cold,
             argv,
         } => runner::run(
-            &argv.join(" "),
+            &join_argv(&argv),
             &runner::Options {
                 memory_mb: memory,
                 cpus,
@@ -114,6 +126,110 @@ fn dispatch(cli: Cli) -> Result<i32> {
             println!("Prepared guest discarded; the next run will rebuild it.");
             Ok(0)
         }
+    }
+}
+
+/// Turn argv back into a single Windows command line.
+///
+/// `winquick run -- a b c` runs program `a` with arguments `b` and `c`, the way
+/// `docker run` does. An argument containing spaces has to stay one argument, so
+/// it gets quoted — without this, `pwsh -Command 'Write-Output "hi"'` arrives at
+/// PowerShell as several arguments and is re-parsed into something else.
+///
+/// Quoting follows the Windows C runtime rules, which `pwsh.exe` and most other
+/// Windows programs use to split the command line back up: a backslash is only
+/// special immediately before a quote, so a run of N backslashes before a quote
+/// becomes 2N+1 (the extra one escaping the quote), and a run at the end of a
+/// quoted argument becomes 2N so it does not escape the closing quote.
+fn join_argv(argv: &[String]) -> String {
+    argv.iter()
+        .map(|a| quote_arg(a))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn quote_arg(a: &str) -> String {
+    if !a.is_empty() && !a.contains([' ', '\t']) {
+        return a.to_string();
+    }
+    let mut out = String::from('"');
+    let mut backslashes = 0usize;
+    for ch in a.chars() {
+        match ch {
+            '\\' => {
+                backslashes += 1;
+            }
+            '"' => {
+                for _ in 0..backslashes * 2 + 1 {
+                    out.push('\\');
+                }
+                backslashes = 0;
+                out.push('"');
+            }
+            _ => {
+                for _ in 0..backslashes {
+                    out.push('\\');
+                }
+                backslashes = 0;
+                out.push(ch);
+            }
+        }
+    }
+    for _ in 0..backslashes * 2 {
+        out.push('\\');
+    }
+    out.push('"');
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::join_argv;
+
+    fn j(v: &[&str]) -> String {
+        join_argv(&v.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn plain_arguments_are_untouched() {
+        assert_eq!(j(&["cmd", "/c", "ver"]), "cmd /c ver");
+    }
+
+    #[test]
+    fn arguments_with_spaces_stay_one_argument() {
+        assert_eq!(
+            j(&["pwsh", "-Command", "Write-Output hello"]),
+            "pwsh -Command \"Write-Output hello\""
+        );
+    }
+
+    #[test]
+    fn embedded_quotes_are_escaped() {
+        assert_eq!(
+            j(&["pwsh", "-Command", "Write-Output \"hi\""]),
+            "pwsh -Command \"Write-Output \\\"hi\\\"\""
+        );
+    }
+
+    #[test]
+    fn windows_paths_without_spaces_pass_through_verbatim() {
+        assert_eq!(j(&["cmd", "/c", "dir", r"C:\Windows\System32"]), r"cmd /c dir C:\Windows\System32");
+    }
+
+    #[test]
+    fn backslashes_before_a_quote_are_doubled() {
+        // C-runtime rule: N backslashes then a quote becomes 2N+1 backslashes.
+        assert_eq!(j(&[r#"a\"b c"#]), r#""a\\\"b c""#);
+    }
+
+    #[test]
+    fn trailing_backslash_does_not_escape_the_closing_quote() {
+        assert_eq!(j(&[r"c:\some path\"]), r#""c:\some path\\""#);
+    }
+
+    #[test]
+    fn shell_metacharacters_are_preserved_when_unquoted() {
+        assert_eq!(j(&["cmd", "/c", "a&b"]), "cmd /c a&b");
     }
 }
 
@@ -139,6 +255,15 @@ fn info() -> Result<()> {
             println!("prepared: yes ({:.0} MiB frozen guest)", sz as f64 / (1024.0 * 1024.0));
         }
         _ => println!("prepared: no — first run will take longer"),
+    }
+
+    match capability::pwsh_image() {
+        Ok(p) if p.exists() => println!(
+            "powershell: {} ({:.0} MiB volume)",
+            capability::PWSH_VERSION,
+            std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0) as f64 / (1024.0 * 1024.0)
+        ),
+        _ => println!("powershell: not installed — `winquick setup --with-powershell`"),
     }
 
     let base = paths::base_image()?;

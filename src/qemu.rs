@@ -68,6 +68,8 @@ pub struct BootConfig<'a> {
     pub uefi_vars: &'a Path,
     pub root_disk: &'a Path,
     pub mailbox: &'a Path,
+    /// Optional capability volume (PowerShell today), attached writable.
+    pub capability: Option<&'a Path>,
     pub memory_mb: u32,
     pub cpus: u32,
     pub serial_log: &'a Path,
@@ -78,10 +80,11 @@ pub struct BootConfig<'a> {
 
 /// Canonical description of the device topology, recorded in the ready-state
 /// fingerprint. Migration state is only meaningful against the same machine.
-pub fn device_signature(memory_mb: u32, cpus: u32) -> String {
+pub fn device_signature(memory_mb: u32, cpus: u32, capability: bool) -> String {
     format!(
         "machine={MACHINE};accel=hvf;cpu=host;smp={cpus};mem={memory_mb};\
-         nvme:root=wqroot;nvme:mbox=wqmbox;pflash:code,vars(rw);ramfb;display=none;rtc=localtime"
+         nvme:root=wqroot;nvme:mbox=wqmbox{};pflash:code,vars(rw);ramfb;display=none;rtc=localtime",
+        if capability { ";nvme:caps=wqcaps" } else { "" }
     )
 }
 
@@ -113,7 +116,18 @@ impl Qemu {
                 "if=none,id=mbox,file={},format=raw,cache=writethrough",
                 cfg.mailbox.display()
             ))
-            .args(["-device", "nvme,drive=mbox,serial=wqmbox"])
+            .args(["-device", "nvme,drive=mbox,serial=wqmbox"]);
+        if let Some(cap) = cfg.capability {
+            // Writable on purpose: Windows writes when mounting a volume, and a
+            // read-only NVMe makes those fail so no volume appears at all.
+            c.arg("-drive")
+                .arg(format!(
+                    "if=none,id=caps,file={},format=raw,cache=writethrough",
+                    cap.display()
+                ))
+                .args(["-device", "nvme,drive=caps,serial=wqcaps"]);
+        }
+        c
             .args(["-device", "ramfb", "-display", "none", "-vga", "none"])
             .args(["-rtc", "base=localtime", "-no-reboot"])
             .arg("-serial")

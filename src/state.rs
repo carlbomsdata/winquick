@@ -72,6 +72,10 @@ pub struct Fingerprint {
     pub memory_mb: u32,
     pub cpus: u32,
     pub machine: String,
+    /// Identity of the attached capability volume, or `None` when there is none.
+    /// Attaching or rebuilding one changes the device topology, so the frozen
+    /// guest has to be rebuilt.
+    pub capability: Option<FileId>,
     /// Canonical description of the device topology. Migration state is only
     /// meaningful against the exact machine it came from.
     pub devices: String,
@@ -192,6 +196,7 @@ fn describe_mismatch(have: &Fingerprint, want: &Fingerprint) -> String {
     chk!(memory_mb, "guest memory");
     chk!(cpus, "vcpu count");
     chk!(machine, "machine type");
+    chk!(capability, "capability volume");
     chk!(devices, "device configuration");
     if d.is_empty() {
         "ready state fingerprint differs".into()

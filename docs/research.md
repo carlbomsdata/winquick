@@ -724,3 +724,191 @@ assertion was fixed; no product change was needed.
   invalidation.
 - The two `setup` caveats are unchanged: `ntfsprogs` must be built from source,
   and the ISO is left mounted at `/private/tmp/winquick-vos`.
+
+---
+
+# PowerShell 7 on Validation OS
+
+**It works, unmodified, with no additional Windows components.**
+
+## What was tested
+
+| | |
+|---|---|
+| Package | `PowerShell-7.6.5-win-arm64.zip`, the official portable ZIP |
+| Source | `github.com/PowerShell/PowerShell/releases/download/v7.6.5/` |
+| SHA-256 | `20514a755d16428dc4355c85e0883c859531e71cc3e122670aa1fccdbf96ba7e` |
+| Verified against | the `digest` field GitHub publishes for the release asset — matches |
+| Extracted | 271 MiB, 657 files, 41 directories |
+
+No MSI, no installer, no registry work. Unzip and run `pwsh.exe`.
+
+First successful result, in a disposable guest:
+
+```
+PSVersion                      7.6.5
+PSEdition                      Core
+GitCommitId                    7.6.5
+OS                             Microsoft Windows 10.0.26100
+Platform                       Win32NT
+```
+
+**Additional Windows dependencies required: none.** No missing DLL, no missing
+API, nothing on stderr. PowerShell 7 is a self-contained .NET deployment and
+Validation OS already carries everything it needs. This was not a foregone
+conclusion — WinPE guides routinely claim PowerShell 5.1 and extra optional
+components are prerequisites, and none of that turned out to be true here.
+
+## The failure that was not PowerShell's fault
+
+The first three attempts produced no PowerShell at all: the guest simply had no
+such drive. `mountvol` showed only `C:` and the mailbox. QEMU's stderr had the
+answer:
+
+```
+qemu-system-aarch64: aio failed: Operation not permitted
+```
+
+The capability disk had been attached `readonly=on`. **Windows writes to a volume
+when it mounts it**, those writes failed against a read-only NVMe, and the volume
+never appeared. Nothing was wrong with the image, the filesystem, or PowerShell.
+
+Time was also lost to a hand-rolled MBR + `mformat @@offset` image that Windows
+would not mount; the fix was to build the image with the same MBR + FAT32 code the
+mailbox already uses.
+
+**Capability volumes must be attached writable and cloned per run.**
+
+## Deployment: a capability volume, not a bigger base image
+
+PowerShell lives in its own FAT32 image, attached as a third NVMe device only when
+it exists:
+
+```
+~/.winquick/images/validation-arm64/
+    base.qcow2   763 MiB   unchanged
+    pwsh.img     401 MiB apparent / 272 MiB allocated
+```
+
+Built by `winquick setup --with-powershell`, which downloads the ZIP from
+Microsoft, verifies the SHA-256, unpacks it and writes the volume. About 7 seconds.
+
+Baking PowerShell into the base image was rejected for two reasons. It would grow
+a 763 MiB runtime by 271 MiB — 36% — for something not every run needs. And
+`ntfscp` cannot create directories, so writing 41 nested directories into the NTFS
+system volume from macOS is not straightforward, whereas building a FAT32 image is.
+
+The agent probes attached volumes for `\pwsh\pwsh.exe` and prepends it to `PATH`,
+so `pwsh` works by bare name without anyone knowing a drive letter. Attaching the
+volume changes the device topology, which is part of the ready-state fingerprint,
+so the frozen guest is rebuilt automatically.
+
+## Cost
+
+| | Before | After |
+|---|---|---|
+| Base image apparent | 762.7 MiB | **762.7 MiB — unchanged** |
+| Base image allocated | 799,801,344 B | **799,801,344 B — unchanged** |
+| Prepared state | 460 MiB | 460 MiB (`ready-disk` 42.2 → 42.7 MiB) |
+| PowerShell volume | — | 401 MiB apparent / **272 MiB allocated** |
+| Peak QEMU RSS, `cmd` | 1286 MiB | 1318 MiB |
+| Peak QEMU RSS, `pwsh` | — | **1433 MiB** |
+
+## Latency
+
+`cmd` numbers must not be quoted as PowerShell numbers — PowerShell costs roughly
+half a second of its own process startup.
+
+| Command | p50 | p95 | p99 |
+|---|---|---|---|
+| `cmd /c echo hello` | 234 ms | 242 ms | 248 ms |
+| `pwsh -Command "Write-Output hello"` | 731 ms | 741 ms | 745 ms |
+| `pwsh -Command "'WQ-' + (6*7)"` | 599 ms | 611 ms | 715 ms |
+
+Phase breakdown, same machine, same run shape:
+
+| Phase | `cmd` | `pwsh` |
+|---|---|---|
+| WinQuick host startup | 2 ms | 2 ms |
+| Prep (clone volumes, inject command) | 6 ms | 6 ms |
+| QEMU spawn | 33 ms | 33 ms |
+| State restore | 104 ms | 107 ms |
+| **Guest execution + mailbox sync** | **73 ms** | **573 ms** |
+
+WinQuick's own overhead is identical at ~145 ms. The difference is entirely
+PowerShell's startup inside the guest — about **500 ms** — which is .NET runtime
+initialisation and module loading, and is not something WinQuick can shorten.
+`Write-Output` is measurably slower than a bare expression because it pulls in
+more of the cmdlet machinery.
+
+## A defect this milestone exposed: argument quoting
+
+`winquick run` joined argv with spaces, so any argument containing a space lost
+its grouping. `cmd /c ver` was unaffected, which is why it went unnoticed — but
+PowerShell needs quotes constantly, and
+
+```console
+winquick run -- pwsh -Command 'Write-Output OUT; [Console]::Error.WriteLine("ERR")'
+```
+
+arrived at PowerShell as several arguments and failed with
+`Missing ')' in method call`.
+
+`winquick run -- a b c` now means "run program `a` with arguments `b` and `c`",
+like `docker run`, and arguments are quoted using the Windows C-runtime rules that
+`pwsh.exe` uses to split the command line back up — including the awkward part,
+where a run of N backslashes before a quote must become 2N+1, and a run at the end
+of a quoted argument must become 2N. Seven unit tests cover the rules; four
+end-to-end cases confirm them against the real guest.
+
+One consequence: a whole command line can no longer be passed as a single
+argument. Write `cmd /c "echo A & echo B"` rather than `'cmd /c echo A & echo B'`.
+
+## Reliability
+
+50 consecutive `pwsh -NoProfile -NonInteractive -Command "'WQ-' + (6*7)"`:
+
+| | |
+|---|---|
+| failures | **0** |
+| output | exactly `WQ-42` every time |
+| stderr | empty every time |
+| min / p50 / mean | 589 / 599 / 602 ms |
+| p95 / p99 / max | 611 / 715 / 715 ms |
+
+Exit codes through PowerShell: `exit 42` → 42, `exit 0` → 0, `exit 7` → 7.
+`Write-Error "boom"` → exit 1 with output on stderr only and stdout empty.
+`throw "fatal"` → exit 1, `Exception: fatal` on stderr. Mixed streams with
+`exit 3` → stdout `OUT`, stderr `ERR`, exit 3.
+
+The integration suite is now 33 checks, all passing.
+
+## Caveats
+
+- **PowerShell writes ANSI colour escapes to stdout** (`$PSVersionTable` renders
+  with `[32;1m` sequences). Fine for a terminal, awkward for a script parsing
+  output. `-NoProfile -NonInteractive` does not suppress it; callers wanting clean
+  text should use `$env:NO_COLOR` or `Out-String`.
+- **~500 ms of PowerShell startup per run** is inherent. A workload making many
+  small `pwsh` calls will feel it; one `pwsh` call doing many things will not.
+- **272 MiB allocated** for the capability volume, of which about **55 MiB is WPF
+  and WinForms** (`PresentationFramework`, `System.Windows.Forms`,
+  `PresentationCore`, `wpfgfx_cor3`, …) that a headless guest can never use.
+  Trimming them is an obvious future saving, untested so far.
+- Only PowerShell 7 was tested. Windows PowerShell 5.1 was not attempted and is
+  not present in Validation OS.
+- The capability volume must be writable; see above.
+
+## Recommendation
+
+**Keep PowerShell optional, as it is now.**
+
+The base runtime stays at 763 MiB and the `cmd`-only path stays at 234 ms. Users
+who want PowerShell run `winquick setup --with-powershell` once and then use
+`pwsh` by name, with no profile management, no drive letters and no flags at the
+call site — the UX goal is already met without a profile system.
+
+Making it default would add 272 MiB to every installation for a capability many
+runs will not use, and would raise the floor on a `cmd`-only run's peak RSS. The
+argument for changing this would be evidence that most real workloads want
+PowerShell; that evidence does not exist yet.
