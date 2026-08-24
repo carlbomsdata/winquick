@@ -70,9 +70,11 @@ pub struct BootConfig<'a> {
     pub mailbox: &'a Path,
     /// Capability volumes, attached writable in a deterministic order.
     pub capabilities: &'a [PathBuf],
-    /// Workspace volume. Always attached so the device topology does not depend
-    /// on whether this particular run supplied a project.
+    /// Workspace, artifact and package-cache volumes. All three are always
+    /// attached so the device topology does not depend on what a given run asked
+    /// for — topology is part of the prepared-guest fingerprint.
     pub workspace: &'a Path,
+    pub artifacts: &'a Path,
     pub memory_mb: u32,
     pub cpus: u32,
     pub serial_log: &'a Path,
@@ -89,7 +91,7 @@ pub fn device_signature(memory_mb: u32, cpus: u32, capability_count: usize) -> S
         .collect();
     format!(
         "machine={MACHINE};accel=hvf;cpu=host;smp={cpus};mem={memory_mb};\
-         nvme:root=wqroot;nvme:mbox=wqmbox;nvme:work=wqwork{caps};pflash:code,vars(rw);ramfb;display=none;rtc=localtime"
+         nvme:root=wqroot;nvme:mbox=wqmbox;nvme:work=wqwork;nvme:arts=wqarts{caps};pflash:code,vars(rw);ramfb;display=none;rtc=localtime"
     )
 }
 
@@ -127,7 +129,13 @@ impl Qemu {
                 "if=none,id=work,file={},format=raw,cache=writethrough",
                 cfg.workspace.display()
             ))
-            .args(["-device", "nvme,drive=work,serial=wqwork"]);
+            .args(["-device", "nvme,drive=work,serial=wqwork"])
+            .arg("-drive")
+            .arg(format!(
+                "if=none,id=arts,file={},format=raw,cache=writethrough",
+                cfg.artifacts.display()
+            ))
+            .args(["-device", "nvme,drive=arts,serial=wqarts"]);
         for (i, cap) in cfg.capabilities.iter().enumerate() {
             // Writable on purpose: Windows writes when mounting a volume, and a
             // read-only NVMe makes those fail so no volume appears at all.

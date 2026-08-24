@@ -3,6 +3,7 @@
 //!
 //! Experimental. See README.md for scope.
 
+mod artifact;
 mod capability;
 mod mailbox;
 mod paths;
@@ -67,6 +68,16 @@ enum Cmd {
         /// Expose this host directory to the guest at C:\workspace
         #[arg(short = 'w', long, value_name = "DIR")]
         workspace: Option<PathBuf>,
+        /// Retrieve files matching this pattern after the command (repeatable).
+        /// Relative to the workspace root, e.g. "bin/Release/**".
+        #[arg(short = 'a', long = "artifact", value_name = "PATTERN")]
+        artifacts: Vec<String>,
+        /// Where retrieved files are written (default: ./winquick-artifacts)
+        #[arg(long, value_name = "DIR")]
+        artifacts_dir: Option<PathBuf>,
+        /// Write artifacts into a directory that already has files in it
+        #[arg(long)]
+        artifact_overwrite: bool,
         /// The Windows command, after `--`
         #[arg(required = true, value_name = "COMMAND")]
         argv: Vec<String>,
@@ -79,6 +90,11 @@ enum Cmd {
     Capability {
         #[command(subcommand)]
         action: CapabilityCmd,
+    },
+    /// Manage the persistent package cache
+    Cache {
+        #[command(subcommand)]
+        action: CacheCmd,
     },
 }
 
@@ -96,6 +112,60 @@ enum CapabilityCmd {
     },
     /// Remove a capability
     Remove { name: String },
+}
+
+#[derive(Subcommand)]
+enum CacheCmd {
+    /// Restore a project's packages on this Mac into the shared cache
+    Sync {
+        /// Project or solution directory (default: current directory)
+        path: Option<PathBuf>,
+        /// Runtime identifier to restore for
+        #[arg(long, default_value = "win-arm64")]
+        rid: String,
+    },
+    /// Show what the cache currently holds
+    Info,
+    /// Delete the cache
+    Clear,
+}
+
+fn cache_cmd(action: CacheCmd) -> Result<i32> {
+    match action {
+        CacheCmd::Sync { path, rid } => {
+            let p = path.unwrap_or_else(|| PathBuf::from("."));
+            let (bytes, packages) = capability::nuget_sync(&p, &rid, true)?;
+            println!(
+                "Package cache ready: {packages} packages, {:.0} MiB on disk.",
+                bytes as f64 / (1024.0 * 1024.0)
+            );
+            Ok(0)
+        }
+        CacheCmd::Info => {
+            let dir = capability::nuget_dir()?;
+            let img = capability::nuget_image()?;
+            if !img.exists() {
+                println!("No package cache yet — run `winquick cache sync` in a project.");
+                return Ok(0);
+            }
+            use std::os::unix::fs::MetadataExt;
+            let packages = std::fs::read_dir(&dir)
+                .map(|d| d.filter_map(|e| e.ok()).filter(|e| e.path().is_dir()).count())
+                .unwrap_or(0);
+            let m = std::fs::metadata(&img)?;
+            println!("Package cache: {packages} packages");
+            println!("  source    : {}", dir.display());
+            println!("  volume    : {:.0} MiB on disk", (m.blocks() * 512) as f64 / (1024.0 * 1024.0));
+            println!("  the guest sees a throwaway clone; it cannot change this copy");
+            Ok(0)
+        }
+        CacheCmd::Clear => {
+            let _ = std::fs::remove_dir_all(capability::nuget_dir()?);
+            let _ = std::fs::remove_file(capability::nuget_image()?);
+            println!("Package cache cleared.");
+            Ok(0)
+        }
+    }
 }
 
 fn capability_cmd(action: CapabilityCmd) -> Result<i32> {
@@ -162,6 +232,7 @@ fn dispatch(cli: Cli) -> Result<i32> {
             Ok(0)
         }
         Cmd::Capability { action } => capability_cmd(action),
+        Cmd::Cache { action } => cache_cmd(action),
         Cmd::Run {
             memory,
             cpus,
@@ -169,6 +240,9 @@ fn dispatch(cli: Cli) -> Result<i32> {
             verbose,
             cold,
             workspace,
+            artifacts,
+            artifacts_dir,
+            artifact_overwrite,
             argv,
         } => runner::run(
             &join_argv(&argv),
@@ -179,6 +253,9 @@ fn dispatch(cli: Cli) -> Result<i32> {
                 verbose,
                 force_cold: cold,
                 workspace,
+                artifacts,
+                artifacts_dir: artifacts_dir.unwrap_or_else(artifact::default_dest),
+                artifact_overwrite,
             },
         ),
         Cmd::Info => {

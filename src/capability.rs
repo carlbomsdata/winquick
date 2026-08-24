@@ -27,6 +27,10 @@ use crate::paths;
 
 const SECTOR: u64 = 512;
 const PART_START_LBA: u64 = 2048;
+/// Package cache volume size. Sparse, so an empty one costs nothing, but large
+/// enough that a realistic dependency set fits without resizing (which would
+/// change the volume identity the guest remembers).
+pub const NUGET_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 
 /// A capability that can be installed.
 pub struct Spec {
@@ -244,8 +248,21 @@ pub fn build_sized(image: &Path, src_dir: &Path, dest_name: &str, size: u64) -> 
     Ok(size)
 }
 
-/// Write the marker the guest agent looks for when hunting for the workspace.
-pub fn mark_workspace(image: &Path) -> Result<()> {
+/// Where the canonical, host-managed NuGet package cache lives, and the volume
+/// built from it. Only host-side tooling ever writes the canonical copy; the
+/// guest gets a throwaway clone.
+pub fn nuget_dir() -> Result<PathBuf> {
+    Ok(paths::root()?.join("caches").join("nuget"))
+}
+pub fn nuget_image() -> Result<PathBuf> {
+    // Lives with the other capability volumes so it is attached and fingerprinted
+    // like them. That matters: the guest never re-reads a volume after the frozen
+    // image was captured, so a changed cache has to invalidate the frozen guest.
+    Ok(dir()?.join("nuget-cache.img"))
+}
+
+/// Write the marker the guest agent looks for, plus an empty payload directory.
+pub fn mark(image: &Path, marker: &str, payload_dir: &str) -> Result<()> {
     let img = OpenOptions::new().read(true).write(true).open(image)?;
     let len = img.metadata()?.len();
     let slice = StreamSlice::new(img, PART_START_LBA * SECTOR, len)?;
@@ -253,11 +270,11 @@ pub fn mark_workspace(image: &Path) -> Result<()> {
     let fs = FileSystem::new(&mut buf, FsOptions::new())?;
     {
         let root = fs.root_dir();
-        let mut f = root.create_file("WQWORK.TXT")?;
+        let mut f = root.create_file(marker)?;
         f.truncate()?;
-        f.write_all(b"winquick workspace\r\n")?;
-        if root.open_dir("workspace").is_err() {
-            root.create_dir("workspace")?;
+        f.write_all(b"winquick\r\n")?;
+        if root.open_dir(payload_dir).is_err() {
+            root.create_dir(payload_dir)?;
         }
     }
     fs.unmount()?;
@@ -377,4 +394,53 @@ fn sha256_file(p: &Path) -> Result<String> {
         .next()
         .unwrap_or("")
         .to_string())
+}
+
+/// Populate the canonical NuGet cache from macOS, then rebuild the volume the
+/// guest sees.
+///
+/// Only host-side tooling ever writes the canonical cache. The guest gets a
+/// throwaway clone of the resulting image, so a build script cannot leave
+/// anything behind that a later run would pick up.
+pub fn nuget_sync(project: &Path, rid: &str, verbose: bool) -> Result<(u64, usize)> {
+    let cache = nuget_dir()?;
+    std::fs::create_dir_all(&cache)?;
+    if verbose {
+        eprintln!("winquick: restoring {} into {}", project.display(), cache.display());
+    }
+    let out = std::process::Command::new("dotnet")
+        .arg("restore")
+        .arg(project)
+        .args(["-r", rid])
+        .arg("--packages")
+        .arg(&cache)
+        .args(["-v", "q", "--nologo"])
+        .output()
+        .context("running `dotnet restore` on the host — is the .NET SDK installed?")?;
+    if !out.status.success() {
+        bail!(
+            "host restore failed:\n{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    rebuild_nuget_image(verbose)
+}
+
+/// Rebuild the package-cache volume from the canonical directory.
+pub fn rebuild_nuget_image(verbose: bool) -> Result<(u64, usize)> {
+    let cache = nuget_dir()?;
+    let image = nuget_image()?;
+    std::fs::create_dir_all(image.parent().unwrap())?;
+    let packages = std::fs::read_dir(&cache)
+        .map(|d| d.filter_map(|e| e.ok()).filter(|e| e.path().is_dir()).count())
+        .unwrap_or(0);
+    if verbose {
+        eprintln!("winquick: building the package-cache volume ({packages} packages)");
+    }
+    build_sized(&image, &cache, "packages", NUGET_BYTES)?;
+    mark(&image, "WQNUGET.TXT", "packages")?;
+    use std::os::unix::fs::MetadataExt;
+    let allocated = std::fs::metadata(&image)?.blocks() * 512;
+    Ok((allocated, packages))
 }

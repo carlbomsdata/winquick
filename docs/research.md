@@ -1168,3 +1168,210 @@ Nothing here argues for putting .NET in the base image.
 - **Workspace is read-only in effect** — the guest can write, but nothing comes
   back. Artifact extraction is not implemented.
 - `dotnet test` at 11 s is dominated by staging and SDK startup, not by the tests.
+
+---
+
+# Artifact extraction and the persistent package cache
+
+## Artifacts
+
+### CLI
+
+```console
+winquick run --artifact "bin/Release/**" -- dotnet publish -c Release
+winquick run -a "TestResults/**" -a "logs/**" -- dotnet test
+```
+
+Files land in `./winquick-artifacts/` unless `--artifacts-dir` says otherwise.
+Writing into a directory that already has files in it requires
+`--artifact-overwrite`, so a run cannot quietly clobber a source tree.
+
+### Pattern semantics
+
+Patterns are **relative to the workspace root** (`C:\workspace`) and resolved
+**in the guest**, by Windows, because that is where the files are. Forward and
+backward slashes are both accepted and normalised, so the same pattern works
+whether it was typed on macOS or lifted from a Windows script.
+
+Three forms — deliberately not a glob engine:
+
+| Pattern | Meaning |
+|---|---|
+| `bin/Release/**` | that directory, recursively, hierarchy preserved |
+| `*.log`, `logs/*.txt` | wildcard match within one directory |
+| `logs/build.log` | one named file or directory |
+
+### Implementation
+
+A dedicated FAT32 volume is attached to every run. When `--artifact` is used,
+WinQuick writes a small batch script into the mailbox; the agent runs it *after*
+the command, `xcopy`s matches onto that volume, and dismounts it to flush. Once
+QEMU has exited the host reads the volume and writes the files out — always
+before the disposable run directory is deleted.
+
+Chosen over the alternatives because it reuses machinery already proven: MBR +
+FAT32 volumes, clone-per-run, and the dismount-to-flush trick the mailbox already
+depends on. No guest networking, no server, no writable host mount.
+
+### Behaviour on failure
+
+Artifacts are collected **even when the command failed** — a failed build's logs
+are usually the thing you wanted. The exit code is captured before extraction
+runs, so it is unaffected:
+
+```console
+$ winquick run -a "logs/**" -- cmd /c "mkdir logs & echo failure-log> logs\err.txt & exit 42"
+winquick: retrieved 1 file (0.0 MiB) into winquick-artifacts
+$ echo $?
+42
+```
+
+If the guest's copy step itself fails, WinQuick reports the guest's log and exits
+non-zero rather than claiming success. Zero matches is not an error: it prints
+`no files matched <pattern>` and leaves the command's exit code alone.
+
+### Measured
+
+| Payload | Round trip (staged in + extracted out) | Exact |
+|---|---|---|
+| — (no `--artifact`) | 295 ms | — |
+| `--artifact`, zero matches | **334 ms** (+39 ms fixed) | — |
+| 1 KiB | 376 ms | ✅ |
+| 1 MiB | 373 ms | ✅ |
+| 10 MiB | 437 ms | ✅ |
+| 100 MiB | **838 ms** | ✅ |
+
+Roughly 184 MiB/s for the 100 MiB round trip. Fixed overhead is 39 ms.
+
+Verified: nested hierarchies, spaces in both directory and file names, multiple
+patterns, single named files, 32 MiB binary exact by size, and that the host
+source tree is never modified.
+
+## Persistent package cache
+
+### Architecture
+
+```
+canonical cache          ~/.winquick/caches/nuget/      written only by macOS
+        |                                                 `winquick cache sync`
+        v
+cache volume             ~/.winquick/capabilities/nuget-cache.img
+        |
+        v
+per-run clone            attached writable, discarded with the run
+```
+
+`winquick cache sync <project>` runs `dotnet restore -r win-arm64 --packages
+<cache>` **on the Mac**, then rebuilds the volume. The guest gets
+`NUGET_PACKAGES` pointed at its clone.
+
+### Read-only or writable?
+
+**Writable clone, discarded** — and that is not a compromise, it is the stronger
+option. A read-only NVMe cannot be used at all: Windows writes when it mounts a
+volume, and a read-only device makes those writes fail with `aio failed:
+Operation not permitted`, so no volume appears. Cloning per run gives the same
+isolation property with none of that: NuGet can write its `.nupkg.metadata`
+files happily, and everything it wrote disappears when the run ends.
+
+Tested directly: a run that writes into `%NUGET_PACKAGES%` leaves the canonical
+image's SHA-256 unchanged, and the next run does not see the file. Untrusted
+build scripts therefore cannot use the cache as a persistence channel — only
+host-side `dotnet restore` ever writes the canonical copy.
+
+### Do macOS-restored packages work on Windows?
+
+**Yes, including RID-specific ones.** The cache built on macOS contains
+`microsoft.netcore.app.runtime.win-arm64` and `microsoft.netcore.app.host.win-arm64`,
+restored with `-r win-arm64`, and the guest consumed them unchanged: `dotnet test`
+built and ran, and a `Newtonsoft.Json` app printed `{"ok":true}`. This was worth
+checking rather than assuming — package *contents* are archives, but restore
+writes RID-specific assets and lock files.
+
+### Measured
+
+Same xunit project that previously needed 284 MiB staged through the workspace.
+
+| | Before (packages in workspace) | After (cache capability) |
+|---|---|---|
+| Workspace payload | 284 MiB, 812 files | **8 KiB, 2 files** |
+| Workspace staging | **2011 ms** | **1 ms** |
+| QEMU restore | ~110 ms | ~110 ms |
+| Guest execution | ~9082 ms | ~9087 ms |
+| **Total `dotnet test`** | **~11.1 s** | **9.15–9.21 s** |
+
+The ~2 s staging penalty is gone. What remains is .NET's own work, not
+WinQuick's: `dotnet restore` alone costs ~6 s inside the guest even reading from
+a local cache, and `dotnet build` ~8 s including restore. WinQuick's overhead in
+both cases is the usual ~145 ms.
+
+Cache for this project: **18 packages, 305 MiB allocated** (8 GiB apparent,
+sparse). `winquick cache sync` takes 2.5–8.4 s depending on what has to be
+fetched.
+
+### Cache hit and miss
+
+A hit needs no network and no staging. A miss produces NuGet's usual `NU1301`
+storm, so WinQuick appends an explanation:
+
+```
+winquick: A required NuGet package is not in the cache, and the guest has no
+winquick: network by design. Populate the cache from this Mac, then run again:
+winquick:     winquick cache sync <project>
+```
+
+Recovery is one command: `winquick cache sync` (2.5 s), then the next run
+rebuilds the prepared guest once (11.8 s, because the cache is fingerprinted) and
+succeeds; subsequent runs are back to ~8.6 s.
+
+### Why the cache is fingerprinted
+
+The cache is a capability volume, so its identity is part of the prepared-guest
+fingerprint and changing it forces a rebuild. That costs ~12 s after each sync,
+and it is the right trade: the guest never re-reads a volume after the frozen
+image was captured, so a changed cache *must* invalidate the frozen guest.
+
+## A silent-success bug this milestone exposed
+
+While adding these volumes, a real and dangerous failure mode appeared: after
+certain prepared-guest rebuilds, the guest would hold a **stale view of the
+mailbox**, run an empty batch file, and report **exit 0 with no output**. The
+command never ran, and WinQuick confidently reported success.
+
+The trigger was over-reach on my part: I had the agent dismount and remount three
+volumes before executing. One remount (the workspace) is reliable; three
+destabilised the mailbox's own mount. The artifact volume never needs remounting
+— it is empty at freeze and at run start — and the cache does not either, because
+it is fingerprinted.
+
+But the deeper problem was that a stale read looked like success. Every run now
+carries a **nonce**: the host writes a per-run token into the mailbox, the agent
+echoes it back beside the exit code, and a mismatch is treated as a failed warm
+run — discard the prepared guest, fall back to cold, return the real answer.
+Verified over 40 consecutive runs: 0 failures, 0 silent successes.
+
+This is the class of bug that matters most here. A wrong exit code that looks
+right is worse than a crash.
+
+## Test suite
+
+**56 checks, all passing**, now covering streams and exit codes, disposability,
+invalidation and corruption recovery, PowerShell, .NET, workspace, artifacts and
+the package cache — plus 9 unit tests for argument quoting and mailbox
+round-tripping.
+
+Warm `cmd` p50 is 295 ms with all capabilities attached (up from 234 ms with
+none), which is the cost of six extra volumes at boot.
+
+## Remaining blockers
+
+- **`dotnet restore` costs ~6 s in-guest even on a cache hit.** That is NuGet's
+  own work. `--no-restore` workflows would avoid it but need the `obj/` directory
+  staged, and macOS-generated `obj/` carries macOS paths.
+- **Cache sync forces a ~12 s prepared-guest rebuild.** Acceptable because syncs
+  are rare, but it makes adding a package feel slow the first time.
+- **Artifacts are copied, not streamed** — a very large output directory is
+  bounded by the 2 GiB artifact volume.
+- The pattern language is three shapes, not a real glob. `**` in the middle of a
+  path is not supported.
+- No artifact extraction from a run that times out or whose guest never responds.

@@ -26,6 +26,8 @@ const READY_TIMEOUT: Duration = Duration::from_secs(90);
 /// identity the guest remembers keeps resolving; sparse, so an unused one costs
 /// almost nothing.
 const WORKSPACE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// Artifact volume. Sparse, so an unused one costs nothing.
+const ARTIFACT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 pub struct Options {
     pub memory_mb: u32,
@@ -36,6 +38,10 @@ pub struct Options {
     pub force_cold: bool,
     /// Host directory to expose to the guest at `C:\workspace`.
     pub workspace: Option<PathBuf>,
+    /// Patterns, relative to the workspace root, to retrieve after the command.
+    pub artifacts: Vec<String>,
+    pub artifacts_dir: PathBuf,
+    pub artifact_overwrite: bool,
 }
 
 /// Deletes the run directory no matter how we leave — normal exit, error, or
@@ -64,6 +70,8 @@ struct Ctx {
     timeout: Duration,
     verbose: bool,
     workspace: Option<PathBuf>,
+    artifacts: Vec<String>,
+    artifacts_dir: PathBuf,
 }
 
 impl Ctx {
@@ -79,6 +87,43 @@ pub struct Outcome {
     pub stderr: Vec<u8>,
     pub exit_code: i32,
     pub warm: bool,
+}
+
+/// Pull requested files off the artifact volume. Runs whether or not the command
+/// succeeded — a failed build's logs are usually exactly what is wanted — and
+/// before the run directory is deleted.
+fn collect_artifacts(ctx: &Ctx, image: &Path) -> Result<()> {
+    if ctx.artifacts.is_empty() {
+        return Ok(());
+    }
+    let t = Instant::now();
+    let got = crate::artifact::extract(image, &ctx.artifacts_dir)?;
+    if got.log.contains("winquick-artifact-status=1") {
+        bail!(
+            "the guest could not copy some requested artifacts:\n{}",
+            got.log.trim()
+        );
+    }
+    if got.files == 0 {
+        eprintln!(
+            "winquick: no files matched {} — nothing written to {}",
+            ctx.artifacts.join(", "),
+            ctx.artifacts_dir.display()
+        );
+    } else {
+        eprintln!(
+            "winquick: retrieved {} file{} ({:.1} MiB) into {}",
+            got.files,
+            if got.files == 1 { "" } else { "s" },
+            got.bytes as f64 / (1024.0 * 1024.0),
+            ctx.artifacts_dir.display()
+        );
+        ctx.vlog(format!(
+            "artifact extraction {:.0}ms",
+            t.elapsed().as_secs_f64() * 1000.0
+        ));
+    }
+    Ok(())
 }
 
 pub fn run(command: &str, opts: &Options) -> Result<i32> {
@@ -103,7 +148,12 @@ pub fn run(command: &str, opts: &Options) -> Result<i32> {
         timeout: opts.timeout,
         verbose: opts.verbose,
         workspace: opts.workspace.clone(),
+        artifacts: opts.artifacts.clone(),
+        artifacts_dir: opts.artifacts_dir.clone(),
     };
+    if !ctx.artifacts.is_empty() {
+        crate::artifact::prepare_dest(&ctx.artifacts_dir, opts.artifact_overwrite)?;
+    }
     state::check_base_meta(&ctx.base, crate::setup::AGENT)?;
     let want = fingerprint(&ctx)?;
     ctx.vlog(format!("host startup {:.0}ms", t_start.elapsed().as_secs_f64() * 1000.0));
@@ -152,6 +202,34 @@ pub fn run(command: &str, opts: &Options) -> Result<i32> {
     emit(o, t_start, &ctx)
 }
 
+/// The guest has no network on purpose, so a package that is not in the cache
+/// fails with a DNS error that says nothing useful about how to fix it.
+fn nuget_hint(o: &Outcome) -> Option<String> {
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    );
+    if !text.contains("NU1301") {
+        return None;
+    }
+    let missing: Vec<&str> = text
+        .lines()
+        .filter_map(|l| l.split("Unable to find package ").nth(1))
+        .filter_map(|l| l.split('.').next())
+        .collect();
+    let what = if missing.is_empty() {
+        "A required NuGet package is not in the cache".to_string()
+    } else {
+        format!("NuGet package {} is not in the cache", missing[0].trim())
+    };
+    Some(format!(
+        "\nwinquick: {what}, and the guest has no network by design.\n\
+         winquick: populate the cache from this Mac, then run again:\n\
+         winquick:     winquick cache sync <project>\n"
+    ))
+}
+
 fn emit(o: Outcome, t_start: Instant, ctx: &Ctx) -> Result<i32> {
     // Pass the guest's streams through, except for the CRLF that every Windows
     // program emits — a Unix caller piping into `grep` should not have to strip
@@ -161,6 +239,9 @@ fn emit(o: Outcome, t_start: Instant, ctx: &Ctx) -> Result<i32> {
     out.flush()?;
     let mut err = std::io::stderr().lock();
     err.write_all(&strip_cr(&o.stderr))?;
+    if let Some(hint) = nuget_hint(&o) {
+        err.write_all(hint.as_bytes())?;
+    }
     err.flush()?;
     ctx.vlog(format!(
         "{} run, total {:.0}ms",
@@ -193,6 +274,15 @@ fn fingerprint(ctx: &Ctx) -> Result<state::Fingerprint> {
             .collect::<Result<Vec<_>>>()?,
         devices: qemu::device_signature(ctx.opts_memory, ctx.opts_cpus, ctx.capabilities.len()),
     })
+}
+
+/// Cheap unique-per-run token. Not a secret; it only has to differ between runs.
+fn run_nonce() -> String {
+    let t = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("n{:x}{:x}", std::process::id(), t)
 }
 
 fn new_run_dir() -> Result<PathBuf> {
@@ -228,7 +318,7 @@ fn prepare_workspace(ctx: &Ctx, template: Option<&Path>, dst: &Path) -> Result<(
             crate::capability::build_sized(dst, Path::new("/nonexistent"), "workspace", WORKSPACE_BYTES)?;
         }
     }
-    crate::capability::mark_workspace(dst)?;
+    crate::capability::mark(dst, "WQWORK.TXT", "workspace")?;
     if let Some(src) = &ctx.workspace {
         let t = Instant::now();
         crate::capability::refill(dst, src, "workspace")?;
@@ -238,6 +328,18 @@ fn prepare_workspace(ctx: &Ctx, template: Option<&Path>, dst: &Path) -> Result<(
             t.elapsed().as_secs_f64() * 1000.0
         ));
     }
+    Ok(())
+}
+
+/// Artifact volume: always attached, always empty at the start of a run.
+fn prepare_artifacts(template: Option<&Path>, dst: &Path) -> Result<()> {
+    match template {
+        Some(t) => qemu::clone_file(t, dst)?,
+        None => {
+            crate::capability::build_sized(dst, Path::new("/nonexistent"), crate::artifact::DIR, ARTIFACT_BYTES)?;
+        }
+    }
+    crate::capability::mark(dst, crate::artifact::MARKER, crate::artifact::DIR)?;
     Ok(())
 }
 
@@ -291,13 +393,18 @@ fn warm_execute(ctx: &Ctx, ready: &state::ReadyState, command: &str) -> Result<O
     let qmp_sock = dir.join("qmp.sock");
     let caps = clone_capability(ctx, &dir)?;
     let workspace = dir.join("workspace.img");
+    let artifacts_img = dir.join("artifacts.img");
 
     // Clones, not copies: on APFS these are effectively free whatever the size.
     qemu::clone_file(&ready.disk(), &overlay)?;
     qemu::clone_file(&ready.vars(), &vars)?;
     qemu::clone_file(&ready.mailbox(), &mbox)?;
-    mailbox::inject_command(&mbox, command)?;
+    let art_script = (!ctx.artifacts.is_empty())
+        .then(|| crate::artifact::script(&ctx.artifacts));
+    let nonce = run_nonce();
+    mailbox::inject_command(&mbox, command, art_script.as_deref(), &nonce)?;
     prepare_workspace(ctx, Some(&ready.workspace()), &workspace)?;
+    prepare_artifacts(Some(&ready.artifacts()), &artifacts_img)?;
     let t_prep = t0.elapsed();
 
     let mut child = ctx.q.boot(&qemu::BootConfig {
@@ -307,6 +414,7 @@ fn warm_execute(ctx: &Ctx, ready: &state::ReadyState, command: &str) -> Result<O
         mailbox: &mbox,
         capabilities: &caps,
         workspace: &workspace,
+        artifacts: &artifacts_img,
         memory_mb: ctx.opts_memory,
         cpus: ctx.opts_cpus,
         serial_log: &serial,
@@ -324,9 +432,18 @@ fn warm_execute(ctx: &Ctx, ready: &state::ReadyState, command: &str) -> Result<O
         wait_for(&mbox, mailbox::CODE_FILE, &mut child, deadline)?;
         let t_exec = t0.elapsed();
         let r = mailbox::read_results(&mbox)?;
+        if r.nonce.as_deref() != Some(nonce.as_str()) {
+            bail!(
+                "the guest reported a result for a different run \
+                 (expected token {nonce}, got {:?}) — it was holding a stale view \
+                 of the mailbox",
+                r.nonce
+            );
+        }
         let code = r
             .exit_code
             .ok_or_else(|| anyhow!("guest wrote no exit code"))?;
+        collect_artifacts(ctx, &artifacts_img)?;
         ctx.vlog(format!(
             "warm phases: prep {:.0}ms | qemu spawn {:.0}ms | state restore {:.0}ms | guest exec + mailbox sync {:.0}ms",
             t_prep.as_secs_f64() * 1000.0,
@@ -361,11 +478,13 @@ fn build_ready_state(ctx: &Ctx, want: &state::Fingerprint) -> Result<state::Read
     let qmp_sock = dir.join("qmp.sock");
     let caps = clone_capability(ctx, &dir)?;
     let workspace = dir.join("workspace.img");
+    let artifacts_img = dir.join("artifacts.img");
 
     ctx.q.create_overlay(&ctx.base, &overlay)?;
     fresh_vars(&vars)?;
     mailbox::create_template(&mbox)?;
     prepare_workspace(ctx, None, &workspace)?;
+    prepare_artifacts(None, &artifacts_img)?;
 
     let mut child = ctx.q.boot(&qemu::BootConfig {
         uefi_code: &ctx.uefi_code,
@@ -374,6 +493,7 @@ fn build_ready_state(ctx: &Ctx, want: &state::Fingerprint) -> Result<state::Read
         mailbox: &mbox,
         capabilities: &caps,
         workspace: &workspace,
+        artifacts: &artifacts_img,
         memory_mb: ctx.opts_memory,
         cpus: ctx.opts_cpus,
         serial_log: &serial,
@@ -405,6 +525,7 @@ fn build_ready_state(ctx: &Ctx, want: &state::Fingerprint) -> Result<state::Read
         qemu::clone_file(&vars, &sdir.join("ready-vars.fd"))?;
         qemu::clone_file(&mbox, &sdir.join("ready-mailbox.img"))?;
         qemu::clone_file(&workspace, &sdir.join("ready-workspace.img"))?;
+        qemu::clone_file(&artifacts_img, &sdir.join("ready-artifacts.img"))?;
         let meta = state::ReadyMeta {
             fingerprint: want.clone(),
             created_unix: SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
@@ -441,12 +562,18 @@ fn cold_execute(ctx: &Ctx, command: &str) -> Result<Outcome> {
     let qmp_sock = dir.join("qmp.sock");
     let caps = clone_capability(ctx, &dir)?;
     let workspace = dir.join("workspace.img");
+    let artifacts_img = dir.join("artifacts.img");
 
     ctx.q.create_overlay(&ctx.base, &overlay)?;
     fresh_vars(&vars)?;
     mailbox::create_template(&mbox)?;
-    mailbox::inject_command(&mbox, command)?;
+    let art_script = (!ctx.artifacts.is_empty())
+        .then(|| crate::artifact::script(&ctx.artifacts));
+    let nonce = run_nonce();
+    mailbox::inject_command(&mbox, command, art_script.as_deref(), &nonce)?;
     prepare_workspace(ctx, None, &workspace)?;
+    prepare_artifacts(None, &artifacts_img)?;
+    prepare_artifacts(None, &artifacts_img)?;
 
     let mut child = ctx.q.boot(&qemu::BootConfig {
         uefi_code: &ctx.uefi_code,
@@ -455,6 +582,7 @@ fn cold_execute(ctx: &Ctx, command: &str) -> Result<Outcome> {
         mailbox: &mbox,
         capabilities: &caps,
         workspace: &workspace,
+        artifacts: &artifacts_img,
         memory_mb: ctx.opts_memory,
         cpus: ctx.opts_cpus,
         serial_log: &serial,
@@ -466,7 +594,11 @@ fn cold_execute(ctx: &Ctx, command: &str) -> Result<Outcome> {
         let deadline = Instant::now() + ctx.timeout;
         wait_for(&mbox, mailbox::CODE_FILE, &mut child, deadline)?;
         let r = mailbox::read_results(&mbox)?;
+        if r.nonce.as_deref() != Some(nonce.as_str()) {
+            bail!("the guest reported a result for a different run (token mismatch)");
+        }
         let code = r.exit_code.ok_or_else(|| anyhow!("guest wrote no exit code"))?;
+        collect_artifacts(ctx, &artifacts_img)?;
         Ok(Outcome { stdout: r.stdout, stderr: r.stderr, exit_code: code, warm: false })
     })();
 

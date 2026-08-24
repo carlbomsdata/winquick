@@ -259,6 +259,23 @@ changes are all discarded — tested explicitly.
 never interleaved or prefixed; the Windows exit code becomes the CLI's exit code.
 The one deliberate transformation is CRLF → LF, so piping into `grep` behaves.
 
+## What is permanent, what is not
+
+Five different lifetimes, and keeping them straight is most of the design:
+
+| | Lifetime | Written by |
+|---|---|---|
+| **Base image** | permanent, immutable | `winquick setup`, once |
+| **Capabilities** (PowerShell, .NET, package cache) | permanent, replaceable | `winquick capability` / `cache sync` |
+| **Prepared guest** | until something it depends on changes | rebuilt automatically |
+| **Workspace** | one run | copied in from the host, never back |
+| **Artifacts** | explicit | copied out on request |
+
+Capabilities and the package cache are attached as extra disks, **cloned per
+run**, so anything the guest writes to them is discarded. That is what stops an
+untrusted build script from using the package cache as a persistence channel: only
+host-side tooling ever writes the canonical copies.
+
 ## Workspace
 
 Not implemented. The target is:
