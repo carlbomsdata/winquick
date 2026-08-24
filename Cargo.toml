@@ -2,7 +2,11 @@
 name = "winquick"
 version = "0.1.0"
 edition = "2021"
-description = "Tiny, disposable, real Windows command execution on Apple Silicon"
+description = "Run real Windows commands on an Apple Silicon Mac"
+repository = "https://github.com/Carlboms-Data-AB/winquick"
+homepage = "https://github.com/Carlboms-Data-AB/winquick"
+readme = "README.md"
+keywords = ["windows", "macos", "virtualization", "testing"]
 license = "Apache-2.0"
 
 [dependencies]

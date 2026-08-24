@@ -1,0 +1,172 @@
+# Troubleshooting
+
+Start with:
+
+```console
+winquick doctor --smoke
+```
+
+It checks the host, the tools, the runtime, disk space, and optionally runs a
+real Windows command. Most problems below are things it will name for you.
+
+## Setup
+
+**"WinQuick needs Microsoft's Windows validation runtime"**
+
+Expected on a fresh install. Microsoft distributes the image under its own
+licence, so WinQuick cannot ship it. Either let WinQuick download it
+(`winquick setup --accept-microsoft-terms`) or point it at a file you already
+have (`winquick setup --from <path>.iso`).
+
+**"does not look like a Validation OS ARM64 image"**
+
+You probably have the AMD64 edition. WinQuick needs the ARM64 one, from
+<https://aka.ms/DownloadValidationOS_arm64>.
+
+**Setup was interrupted**
+
+Just run it again. The runtime is built into a staging file and only moved into
+place when complete, so an interrupted setup leaves nothing half-installed.
+Downloads resume.
+
+**"ntfscp is missing" / "hivexsh is missing"**
+
+Only `setup` needs these. `brew install hivex` covers hivex. The NTFS helpers
+ship with WinQuick; if you are running from a source checkout, build them once
+with `./scripts/build-ntfs-helpers.sh`.
+
+## Running
+
+**"No Windows runtime is installed yet"**
+
+Run `winquick setup`.
+
+**The first run after setup or a change takes ~12 seconds**
+
+Expected. WinQuick boots Windows once and freezes it, then restores that frozen
+guest for every later run. Anything that changes what the guest depends on — a
+new capability, a package-cache update, a WinQuick upgrade — makes it rebuild
+once. Subsequent runs are back to ~270 ms.
+
+**`'"dotnet test --nologo"' is not recognized`**
+
+The whole command was passed as one quoted string. Arguments work like
+`docker run` — separate words:
+
+```console
+winquick run -- dotnet test --nologo
+```
+
+WinQuick prints this hint when it sees the mistake.
+
+**"the guest reported a result for a different run"**
+
+WinQuick detected that the guest returned a stale result and refused to report
+it. It rebuilds and retries automatically. If it repeats, `winquick reset`.
+
+**A run hangs**
+
+Every run has a timeout (default 300 s, `--timeout`). Ctrl-C is safe: WinQuick
+kills the VM and cleans up, exiting 130. It never leaves a VM running.
+
+**Windows can't reach the internet**
+
+By design — no network device is attached. That is what makes runs reproducible
+and safe. For .NET packages use `winquick cache sync`.
+
+## PowerShell and .NET
+
+**"'pwsh' is not recognized"**
+
+```console
+winquick capability install powershell
+```
+
+**"'dotnet' is not recognized"**
+
+```console
+winquick capability install dotnet-sdk        # to build and test
+winquick capability install dotnet-runtime    # only to run built apps
+```
+
+Install one or the other, not both — they provide the same `dotnet` command and
+whichever is found first wins.
+
+**`error NU1301: No such host is known (api.nuget.org)`**
+
+The packages are not cached and Windows has no network. Restore them on your Mac:
+
+```console
+cd MyProject
+winquick cache sync
+```
+
+WinQuick prints this hint when it sees NU1301. The next run rebuilds the prepared
+guest once, then it is fast again.
+
+**`dotnet test` takes ~10 seconds**
+
+Most of that is .NET: `dotnet restore` alone costs about 6 seconds inside the
+guest even reading from a local cache. WinQuick's own overhead is ~145 ms.
+
+## Workspace and artifacts
+
+**Windows didn't see my changes**
+
+The workspace is copied in at the start of each run. Save your files first.
+
+**My source files didn't change after the run**
+
+Correct and deliberate — the guest gets a copy. Use `--artifact` to bring
+specific files back.
+
+**`--artifact` found nothing**
+
+Patterns are relative to the workspace root and support three shapes only:
+
+| Pattern | Meaning |
+|---|---|
+| `bin/Release/**` | that directory, recursively |
+| `*.log`, `logs/*.txt` | wildcard within one directory |
+| `logs/build.log` | one named file or directory |
+
+`**` in the middle of a path is not supported. Check where your build actually
+writes — `dotnet build` in a solution puts output under `<project>/bin`, not a
+top-level `bin`.
+
+**"already exists and is not empty"**
+
+WinQuick will not write into a non-empty artifacts directory without being told.
+Pass `--artifact-overwrite`, or `--artifacts-dir <somewhere-else>`.
+
+## Disk and cleanup
+
+**Running out of space**
+
+```console
+winquick clean --dry-run     # see what is there
+winquick clean               # prepared guest, downloads, temporary files
+winquick clean --all         # also the runtime, capabilities and package cache
+```
+
+Neither form touches your projects or extracted artifacts.
+
+**Is anything left running?**
+
+```console
+pgrep -fl qemu-system-aarch64
+```
+
+Should be empty when no run is in progress. If not, it is a bug — please report
+it with what you were doing.
+
+## Concurrency
+
+Multiple `winquick run` invocations at once are supported; each gets its own
+isolated environment. Operations that change shared state — setup, capability
+changes, cache sync, clean — take a lock and will say if they are waiting.
+
+## Still stuck
+
+`winquick --verbose run -- ...` shows what WinQuick is doing: which path it took,
+phase timings, and why it rebuilt anything. Include that when reporting a bug.

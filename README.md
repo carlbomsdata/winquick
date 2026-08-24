@@ -1,147 +1,178 @@
 # WinQuick
 
-**Status: experimental. Nothing here is stable. It may not work on your machine yet.**
-
-WinQuick gives you a tiny, disposable, real Windows command execution environment on an
-Apple Silicon Mac.
+Run real Windows commands on an Apple Silicon Mac.
 
 ```console
 $ winquick run -- cmd /c ver
 
 Microsoft Windows [Version 10.0.26100.8972]
-
-$ echo $?
-0
 ```
 
-Command in, clean Windows environment, stdout/stderr/exit code out, environment discarded.
+That is a real Windows kernel, started and thrown away in about a quarter of a
+second. No VM to manage, no window, no desktop.
 
-The mental model is `docker run --rm`, except the thing on the other end is a real Windows
-NT kernel, not a container and not an emulator shim.
+**Status: v0.1.0, experimental.** It works well on the machines it has been
+tested on, but it is young. See [Known limits](#known-limits).
 
 ## Why
 
-Building and testing Windows software from a Mac currently means keeping a full Windows 11
-VM alive: tens of gigabytes, minutes of boot, snapshots that rot, a desktop you have to
-click through. That is far too heavy for "run the test suite once" — and much too heavy for
-an automated agent that wants to do it fifty times an hour.
+Building or testing Windows software from a Mac usually means keeping a Windows
+VM alive: tens of gigabytes, minutes of boot, snapshots that rot, a desktop to
+click through. That is far too heavy for "run the test suite once" — and much too
+heavy for a coding agent that wants to do it fifty times an hour.
 
-WinQuick targets the narrow case that actually matters for builds, tests, automation and
-agents: run one command inside a genuine Windows environment, get the exact output and exit
+WinQuick does the narrow thing that matters for builds, tests and automation: run
+one command inside a genuine Windows environment, get the exact output and exit
 code back, throw the environment away.
 
-## What it is not
-
-Not a VM manager. Not an emulator. Not a QEMU wrapper you have to configure. Not a desktop.
-There is no GUI, and there will not be one. You never see or manage a VM.
-
-## Scope of v0.1
-
-| | |
-|---|---|
-| Host | macOS on Apple Silicon (M1–M5). Nothing else. |
-| Virtualization | QEMU + Apple Hypervisor Framework (HVF), as a separate subprocess |
-| Guest | Microsoft Validation OS ARM64, obtained by you from Microsoft |
-| Control channel | A private disk. No SSH, no WinRM, no RDP, no open ports |
-| Commands | `winquick setup`, `winquick run -- <command>`, `winquick info`, `winquick reset` |
-| Optional | PowerShell 7, .NET runtime, .NET SDK (`winquick capability list`) |
-
-Deliberately out of scope for now: Linux/Windows/Intel hosts, cloud execution, GUI
-virtualization, full Windows 11 guests, MCP integration, a large command tree.
-
-### Speed
-
-The first run after `winquick setup` takes about 11 seconds: Windows boots, and
-WinQuick keeps a copy of the booted machine so it never has to boot it again.
-Every run after that starts from that copy.
-
-Measured on an M4 Pro, 100 consecutive runs of `winquick run -- cmd /c ver`,
-zero failures:
-
-| | |
-|---|---|
-| median | **225 ms** |
-| p95 | **234 ms** |
-| p99 | **236 ms** |
-| first run (or after `winquick reset`) | ~11 s |
-| base image | 763 MiB |
-| prepared guest | ~460 MiB |
-
-Full method and numbers in [docs/research.md](docs/research.md).
-
-### Known limits
-
-- **One command per run, and no streaming.** Output arrives when the command
-  finishes, not as it is produced.
-- **Validation OS is minimal.** It has `cmd.exe` and 538 files in `System32`. No
-  PowerShell, no .NET. So `winquick run -- powershell ...` and
-  `winquick run -- dotnet test` do **not** work yet — the packages exist on
-  Microsoft's ISO but adding them currently requires a Windows host running
-  Microsoft's DISM.
-- **`winquick setup` needs `ntfsprogs` built from source**, because macOS 26 has
-  no NTFS support and Homebrew's `ntfs-3g` is Linux-only.
-- No workspace mounting yet.
+The mental model is `docker run --rm`, with a real Windows kernel on the other
+end.
 
 ## Install
 
-Not packaged yet. Build from source:
-
 ```console
-cargo build --release
+brew install Carlboms-Data-AB/tap/winquick
+winquick setup
 ```
 
-Requires a Rust toolchain and `qemu-system-aarch64` / `qemu-img` on PATH
-(`brew install qemu`).
-
-`winquick setup` additionally needs `hivex` (`brew install hivex`) and
-`ntfsprogs`, which has to be built from source on macOS — see
-[docs/research.md](docs/research.md#host-side-image-build). `winquick run` needs
-neither.
-
-## Setup
-
-WinQuick needs a Windows guest image, and **you** have to get it from Microsoft.
-
-Download **Validation OS ARM64** from Microsoft, accepting Microsoft's licence
-terms yourself: <https://aka.ms/DownloadValidationOS_arm64>
-
-Then point WinQuick at it:
+Setup needs Microsoft's Windows validation runtime, which Microsoft distributes
+under its own licence — WinQuick cannot ship it for you. It will offer to
+download it, or take a file you already have:
 
 ```console
-winquick setup --from ~/Downloads/…_arm64fre_en-us_VALIDATIONOS.iso
+winquick setup --accept-microsoft-terms     # download it (about 2.4 GB)
+winquick setup --from ~/Downloads/vos.iso   # use a file you already have
 ```
 
-That converts the VHDX inside the ISO into a base image under `~/.winquick` and
-installs the guest agent into it. Two files change; nothing is added to the ISO
-and nothing leaves your machine. See [Licensing](#licensing).
+Setup finishes by booting Windows and running a real command, so it only says
+"Ready" when it actually is. It takes about a minute.
 
-## Usage
+Requirements: an Apple Silicon Mac (M1 or newer) and macOS 13 or later.
+
+Not on Homebrew yet? See [docs/install.md](docs/install.md) for the release
+archive.
+
+## Use it
+
+**Run anything**
 
 ```console
 winquick run -- cmd /c ver
-winquick run -- cmd /c dir C:\Windows\System32
-winquick run --memory 1024 --cpus 2 -- cmd /c exit 42
-winquick info
+winquick run -- cmd /c "echo A & echo B"
 ```
 
-stdout and stderr stay separate and are passed through unchanged, apart from CRLF
-being translated to LF so that piping into `grep` behaves. `winquick` exits with
-the Windows process's exit code.
+Arguments work like `docker run`: the program and its arguments are separate
+words, and anything containing spaces stays one argument. stdout, stderr and the
+exit code come back exactly as Windows produced them.
 
-## Licensing
+**PowerShell**
 
-Two separate boundaries, both taken seriously.
+```console
+winquick capability install powershell
+winquick run -- pwsh -NoProfile -Command '$PSVersionTable'
+```
 
-**Microsoft.** WinQuick ships no Microsoft software. Not the ISO, not a WIM, not a derived
-disk image. You download Validation OS from Microsoft and accept Microsoft's license
-yourself; the Validation OS license terms forbid redistribution. Every image WinQuick
-generates stays on your machine under `~/.winquick/`.
+**.NET**
 
-**QEMU.** QEMU is GPLv2. WinQuick invokes it as a separate executable and never links
-against it. If a WinQuick distribution bundles a QEMU build, it does so as a clearly
-separate component with its license and corresponding-source obligations intact.
+```console
+winquick capability install dotnet-sdk
+cd MyProject
+winquick cache sync                      # restore packages on your Mac, once
+winquick run -w . -- dotnet test
+```
+
+`-w .` makes the current directory appear inside Windows as `C:\workspace` and
+become the working directory. It is copied in and never copied back, so a build
+cannot change your source.
+
+**Get files back out**
+
+```console
+winquick run -w . -a "bin/Release/**" -- dotnet publish -c Release
+```
+
+Files land in `./winquick-artifacts/`. They are collected even when the command
+fails — a failed build's logs are usually the point — and the exit code is passed
+through untouched.
+
+**Coding agents**
+
+WinQuick is a normal CLI, so Claude Code, Codex, Cursor, shell scripts and CI all
+use it the same way. One line in your project's README is enough:
+
+```
+Windows commands can be run locally with:  winquick run -- <command>
+```
+
+A fresh Claude Code session given that line diagnosed and fixed four Windows-only
+bugs in a .NET project, verifying each fix against a real Windows kernel, without
+knowing anything about how WinQuick works. See
+[experiments/dogfood](experiments/dogfood/).
+
+## What you get
+
+| | |
+|---|---|
+| Windows | Microsoft Validation OS, build 10.0.26100 ARM64 |
+| Runtime size | 763 MiB |
+| Trivial command | ~270 ms |
+| PowerShell command | ~600 ms |
+| `dotnet test` on a small project | ~10 s |
+
+Optional capabilities, installed only if you ask:
+
+| | Size on disk |
+|---|---|
+| `powershell` — PowerShell 7.6.5 | 273 MiB |
+| `dotnet-runtime` — .NET 10 runtime | 90 MiB |
+| `dotnet-sdk` — .NET 10 SDK | 837 MiB |
+
+## Every run is clean
+
+Files, registry keys and environment variables written by one run are gone in the
+next. The Windows image itself is never modified. That is what makes it safe to
+hand to an automated agent that might do anything.
+
+## Known limits
+
+- **Apple Silicon only.** No Intel Macs, no Linux, no Windows hosts.
+- **Windows has no network access.** This is deliberate — it is what makes runs
+  reproducible and safe. `winquick cache sync` restores NuGet packages on your
+  Mac and shares them with Windows offline.
+- **No GUI.** Headless only. GUI frameworks compile and their non-visual code
+  runs, but Windows dialogs and windows do not.
+- **One command per run**, and output arrives when the command finishes rather
+  than streaming.
+- Artifact patterns are three shapes, not full globbing — see
+  [docs/troubleshooting.md](docs/troubleshooting.md).
+
+## Commands
+
+```
+winquick setup                          install Windows (once)
+winquick run -- <command>               run something
+winquick capability list|install|remove optional tools inside Windows
+winquick cache sync|info|clear          offline packages for dotnet
+winquick doctor [--smoke]               check the installation
+winquick info                           what is installed
+winquick reset                          rebuild the prepared guest
+winquick clean [--all]                  remove generated data
+```
+
+`winquick --help` and `winquick <command> --help` have examples.
 
 ## Documentation
 
+- [docs/install.md](docs/install.md) — installing and updating
 - [docs/architecture.md](docs/architecture.md) — how it works
-- [docs/research.md](docs/research.md) — measured results, what worked, what didn't
+- [docs/security.md](docs/security.md) — the isolation model, precisely
+- [docs/licensing.md](docs/licensing.md) — what may be redistributed
+- [docs/troubleshooting.md](docs/troubleshooting.md) — when something breaks
+- [docs/research.md](docs/research.md) — measurements and findings
+- [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+
+## Licence
+
+WinQuick is Apache-2.0, © Carlboms Data AB. It uses QEMU, ntfsprogs and hivex as
+separate programs and ships no Microsoft software. See
+[docs/licensing.md](docs/licensing.md).

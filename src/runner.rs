@@ -263,6 +263,46 @@ fn nuget_hint(o: &Outcome) -> Option<String> {
     ))
 }
 
+/// Windows says "not recognized" for a program that is not there. When that
+/// program is one WinQuick can install, say so rather than leaving the user to
+/// guess which capability provides it.
+fn capability_hint(command: &str, o: &Outcome) -> Option<String> {
+    let text = String::from_utf8_lossy(&o.stderr);
+    if !text.contains("is not recognized as an internal or external command") {
+        return None;
+    }
+    let program = command
+        .split_whitespace()
+        .next()?
+        .trim_matches('"')
+        .rsplit(['\\', '/'])
+        .next()?
+        .trim_end_matches(".exe")
+        .to_lowercase();
+
+    let (what, cap) = match program.as_str() {
+        "pwsh" | "powershell" => ("PowerShell", "powershell"),
+        "dotnet" => (".NET", "dotnet-sdk"),
+        _ => return None,
+    };
+    let installed = crate::capability::installed().unwrap_or_default();
+    if installed.iter().any(|c| c.name == cap || c.name.starts_with("dotnet")) {
+        // It is installed; something else is wrong, and a wrong hint is worse
+        // than none.
+        return None;
+    }
+    let extra = if cap == "dotnet-sdk" {
+        "\nwinquick: (use dotnet-runtime instead if you only need to run built apps)"
+    } else {
+        ""
+    };
+    Some(format!(
+        "\nwinquick: {what} is not installed in this Windows environment.\n\
+         winquick: Install it with:\n\
+         winquick:     winquick capability install {cap}{extra}\n"
+    ))
+}
+
 /// `run -- <command>` takes the program and its arguments as separate words, the
 /// way `docker run` does. Passing the whole command line as one quoted string is
 /// an easy mistake, and cmd.exe's complaint about it is not obvious.
@@ -297,6 +337,8 @@ fn emit(o: Outcome, t_start: Instant, verbose: bool) -> Result<i32> {
         err.write_all(hint.as_bytes())?;
     }
     if let Some(hint) = argv_shape_hint(&o.command, &o) {
+        err.write_all(hint.as_bytes())?;
+    } else if let Some(hint) = capability_hint(&o.command, &o) {
         err.write_all(hint.as_bytes())?;
     }
     err.flush()?;
