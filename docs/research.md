@@ -912,3 +912,259 @@ Making it default would add 272 MiB to every installation for a capability many
 runs will not use, and would raise the floor on a `cmd`-only run's peak RSS. The
 argument for changing this would be evidence that most real workloads want
 PowerShell; that evidence does not exist yet.
+
+---
+
+# Modern .NET: three models measured
+
+Tested with **.NET SDK 10.0.201 / runtime 10.0.5**, host SDK 10.0.201 on macOS
+(`osx-arm64`), guest Validation OS 26100.8972 ARM64.
+
+## Model A — build on macOS, execute on Windows
+
+Cross-publishing from macOS works and the results run in the guest **with no .NET
+installed there at all**.
+
+| Deployment | Size | Files | Runs in guest? |
+|---|---|---|---|
+| self-contained `win-arm64` | 86 MiB | 192 | ✅ |
+| self-contained single-file | 79 MiB | 2 | ✅ |
+| framework-dependent | 168 KiB | 5 | ❌ without a runtime |
+| self-contained `win-x64` | 77 MiB | — | not run (guest is ARM64) |
+
+A self-contained app reports:
+
+```
+runtime      : .NET 10.0.5
+os           : Microsoft Windows 10.0.26100
+architecture : Arm64
+is windows   : True
+```
+
+The framework-dependent build fails exactly as it should when no runtime is
+present: `Error: the default install location cannot be obtained`, exit
+`-2147450749`. That is the clean proof that Model A needs nothing in the guest.
+
+### Does WinQuick actually add anything over building on macOS?
+
+Yes, and this is the part worth being concrete about. A `net10.0-windows` app
+cross-built on macOS was run in the guest:
+
+```
+PASS pinvoke kernel32   : GetTickCount64=2531ms SystemDirectory=C:\windows\system32
+PASS registry           : HKCU\Software\WinQuickTest\Probe = hello-from-winquick
+PASS registry HKLM      : CurrentBuild = 26100
+PASS paths              : sep='\' backslash=True normalised=C:\Windows\System32 caseInsensitive=True
+PASS named pipes        : round-tripped byte 42
+PASS environment        : OSVersion=10.0.26100.0 SystemDirectory=C:\windows\system32 Is64=True
+ALL-WINDOWS-CHECKS-PASSED
+```
+
+The same source run natively on macOS:
+
+```
+host os  : macOS 26.5.2
+registry : NullReferenceException: Object reference not set to an instance of an object.
+kernel32 : DllNotFoundException: Unable to load shared library 'kernel32.dll'
+```
+
+The compiler even warns (`CA1416`) that these APIs are Windows-only. Compiling
+successfully on macOS proves nothing about whether the code works; running it
+under a real Windows kernel does.
+
+## Model B — .NET runtime capability
+
+`dotnet-runtime-10.0.5-win-arm64.zip`, unpacked into a capability volume.
+
+| | |
+|---|---|
+| Download | 33.5 MiB |
+| Volume, apparent | 171 MiB |
+| Volume, **allocated** | **90 MiB** |
+| `dotnet --info` | p50 **246 ms** |
+| framework-dependent app | p50 **333 ms**, p95 367 ms |
+| Peak QEMU RSS | 1356 MiB |
+
+`dotnet --info` correctly reports no SDKs and `Microsoft.NETCore.App 10.0.5`.
+
+## Model C — .NET SDK capability
+
+`dotnet-sdk-10.0.201-win-arm64.zip`, same mechanism.
+
+| | |
+|---|---|
+| Download | 281 MiB |
+| Volume, apparent | 1087 MiB |
+| Volume, **allocated** | **837 MiB** |
+| Build time for the volume | ~71 s, one-off |
+| `dotnet --info` | p50 **567 ms** |
+| `dotnet build` (2-file project) | p50 **2773 ms** |
+| `dotnet test` (3 xunit tests) | **11.1 s** |
+| Peak QEMU RSS (`dotnet build`) | **1688 MiB** |
+
+Everything works inside the guest:
+
+- `dotnet --info` → SDK 10.0.201, RID `win-arm64`, base path `F:\dotnet\sdk\10.0.201\`
+- `dotnet new console` → scaffolds **and restores, with no network**
+- `dotnet build` → `Build succeeded. 0 Warning(s) 0 Error(s)`
+- `dotnet test` → `Passed! - Failed: 0, Passed: 3, Skipped: 0`
+
+### NuGet
+
+The guest has no network, and that is visible immediately:
+
+```
+error NU1301: Unable to load the service index for source https://api.nuget.org/v3/index.json.
+error NU1301:   No such host is known. (api.nuget.org:443)
+```
+
+A plain console project needs nothing external — the SDK carries enough to
+restore and build offline. Anything with package references does not.
+
+The prototype that worked: restore on macOS into a local folder
+(`dotnet restore -r win-arm64 --packages ./packages`), stage it in the workspace
+alongside the project, and point `NUGET_PACKAGES` at it. `dotnet test` then
+succeeds fully offline. The cost is real — 18 packages came to 283 MiB, which is
+2 s of staging per run — so a durable answer is a NuGet **capability volume**
+built once rather than a workspace payload staged every time. Not built yet.
+
+The `NU1900` warnings about vulnerability data are harmless offline noise.
+
+## Workspace transfer
+
+The mechanism is a FAT32 volume of fixed size, always attached so the device
+topology (and therefore the prepared-guest fingerprint) does not depend on
+whether a given run supplied a project. Per run it is APFS-cloned from a template
+kept with the prepared guest, then refilled — never reformatted, because the guest
+re-reads it by dismounting and re-creating the mount point from the volume GUID,
+exactly like the mailbox.
+
+The agent surfaces it at `C:\workspace` with `mklink /J` and makes it the working
+directory.
+
+### Staging cost, measured
+
+| Payload | Files | Staging | Total run |
+|---|---|---|---|
+| 8 KiB source project | 2 | **0 ms** | 270 ms |
+| 168 KiB framework-dependent app | 5 | **2 ms** | 276 ms |
+| 79 MiB single-file self-contained | 2 | **220 ms** | 479 ms |
+| 86 MiB self-contained | 192 | **817 ms** | 1064 ms |
+| 284 MiB project + NuGet cache | 812 | **2011 ms** | 2269 ms |
+
+Roughly 140 MiB/s with a per-file component. **This is the number that decides
+Model A versus Model B.** Capability volumes are cloned (free, copy-on-write);
+workspace payloads are copied (linear). Shipping an 86 MiB self-contained app
+through the workspace costs 817 ms *every run*; shipping a 168 KiB
+framework-dependent app against a 90 MiB runtime capability costs 2 ms.
+
+Disposability holds: the guest wrote `C:\workspace\newfile.txt`, the host project
+was byte-for-byte unchanged, and the next run did not see the file.
+
+## WPF and WinForms
+
+| Question | Answer |
+|---|---|
+| Cross-build on macOS? | **Yes**, with `-p:EnableWindowsTargeting=true`. Without it: `NETSDK1100`. |
+| Build inside WinQuick with the portable SDK? | **Yes**, no extra flag — it is real Windows. |
+| Do the assemblies load headless? | **Yes** — both published apps ran and returned 0. |
+| Can UI objects be instantiated? | **No.** |
+
+Constructing a `Form` fails:
+
+```
+WINFORMS-FAILED TypeInitializationException: The type initializer for
+'Windows.Win32.PInvokeGdiPlus' threw an exception.
+```
+
+`C:\windows\system32\gdiplus.dll` is **absent** from Validation OS. The missing
+piece is the optional `Microsoft-WinVOS-GDIPlus-Package` cab on Microsoft's ISO,
+which cannot currently be added from macOS (it needs `GenImage.cmd` and DISM on a
+Windows host — the same blocker recorded earlier).
+
+So: WPF/WinForms projects **compile** and their non-GUI code **runs**; anything
+touching GDI+ does not. Self-contained WinForms is 131 MiB, WPF 151 MiB.
+
+## Reliability
+
+30 consecutive framework-dependent invocations: **0 failures**, min 337 / p50 348
+/ mean 352 / p95 374 / max 398 ms. stdout and stderr correct and separate every
+time.
+
+Exit codes: framework-dependent `42` → 42, self-contained `42` → 42, `0` → 0.
+
+No state leakage: a registry key written under `HKCU` by one .NET run is absent in
+the next.
+
+The integration suite is now **41 checks, all passing**, covering PowerShell,
+.NET, workspace and disposability.
+
+## Latency summary
+
+| Command | p50 | WinQuick overhead | Guest component |
+|---|---|---|---|
+| `cmd /c echo hello` | 259 ms | ~145 ms | ~73 ms |
+| `pwsh -Command "'WQ-'+(6*7)"` | 629 ms | ~145 ms | ~500 ms |
+| `dotnet --info` (runtime only) | 246 ms | ~145 ms | ~100 ms |
+| framework-dependent app | 333 ms | ~145 ms | ~190 ms |
+| self-contained app (86 MiB staged) | 1144 ms | ~145 ms + 817 ms staging | ~190 ms |
+| `dotnet --info` (SDK) | 567 ms | ~145 ms | ~400 ms |
+| `dotnet build` | 2773 ms | ~145 ms | ~2600 ms |
+| `dotnet test` (with staged cache) | 11.1 s | ~145 ms + 2000 ms staging | ~9 s |
+
+WinQuick's own overhead is a constant ~145 ms in every case.
+
+## Capability sizes
+
+| Capability | Download | Volume apparent | Volume allocated |
+|---|---|---|---|
+| `powershell` 7.6.5 | 95 MiB | 401 MiB | 272 MiB |
+| `dotnet-runtime` 10.0.5 | 34 MiB | 171 MiB | **90 MiB** |
+| `dotnet-sdk` 10.0.201 | 281 MiB | 1087 MiB | 837 MiB |
+
+Base image is unchanged at 763 MiB throughout.
+
+## Recommendation: D, the hybrid — with B as the default worth installing
+
+Ranked by what the measurements actually say:
+
+**Execution is the core value, and it needs nothing.** Model A works today with
+zero guest .NET. Anyone can cross-publish self-contained on macOS and run it. This
+must keep working and stays the zero-configuration path.
+
+**But Model B should be the recommended default for iterative work**, because
+self-contained deployment is the *slow* option here, not the fast one. 86 MiB
+through the workspace costs 817 ms per run; 168 KiB against a 90 MiB runtime
+capability costs 2 ms — a 3.4× difference in total run time (1144 ms vs 333 ms)
+for 90 MiB of disk. For an agent running a test loop, that is the difference that
+matters.
+
+**Model C is real and worth offering, but it is not the default.** 837 MiB and a
+2.8 s build is a genuine Windows build environment, and `dotnet test` passing
+in-guest is a meaningful capability. It earns its place when the build itself must
+happen on Windows — but most projects can be built on the Mac and only *executed*
+under Windows, which is faster and smaller.
+
+So the product shape is what the capability system already implements:
+
+```
+base            763 MiB   always
+dotnet-runtime   90 MiB   recommended for .NET work
+powershell      272 MiB   optional
+dotnet-sdk      837 MiB   optional, when building must happen on Windows
+```
+
+Nothing here argues for putting .NET in the base image.
+
+## Blockers and gaps
+
+- **NuGet needs a plan.** Offline restore works only for dependency-free projects.
+  Staging a package cache through the workspace works but costs ~2 s per run at
+  283 MiB. A NuGet capability volume is the obvious fix and is not built.
+- **No guest networking at all.** Deliberate so far, but it is what forces the
+  NuGet workaround.
+- **GDI+ is missing**, so WinForms/WPF UI objects cannot be constructed. Fixing it
+  needs the Validation OS optional-package path, which needs Windows + DISM.
+- **Workspace is read-only in effect** — the guest can write, but nothing comes
+  back. Artifact extraction is not implemented.
+- `dotnet test` at 11 s is dominated by staging and SDK startup, not by the tests.

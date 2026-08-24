@@ -4,6 +4,9 @@
 WQ="$(cd "$(dirname "$0")/.." && pwd)/target/release/winquick"
 BASE=~/.winquick/images/validation-arm64/base.qcow2
 N=${1:-100}
+# Optional .NET fixtures, built on the host; tests are skipped when absent.
+FDAPP=${WQ_FDAPP:-/tmp/wqnet/out/fd-arm64}
+SCAPP=${WQ_SCAPP:-/tmp/wqnet/out/sc-arm64}
 pass=0; fail=0
 ok()   { printf "  PASS  %s\n" "$1"; pass=$((pass+1)); }
 bad()  { printf "  FAIL  %s -- %s\n" "$1" "$2"; fail=$((fail+1)); }
@@ -65,7 +68,7 @@ rm -rf ~/.winquick/states
 "$WQ" run -- cmd /c ver >/dev/null 2>&1
 check "missing ready state rebuilds automatically" "$?" "0"
 
-if [ -f ~/.winquick/images/validation-arm64/pwsh.img ]; then
+if [ -f ~/.winquick/capabilities/powershell.img ]; then
 echo "== powershell =="
 v=$("$WQ" run -- pwsh -NoProfile -NonInteractive -Command '$PSVersionTable.PSVersion.ToString()' 2>/dev/null | tr -d '\r\n')
 case "$v" in 7.*) ok "pwsh runs and reports version $v";; *) bad "pwsh version" "$v";; esac
@@ -90,8 +93,44 @@ check "pwsh argument quoting survives" "$o" 'spaced and "quoted"'
 o=$("$WQ" run -- pwsh -NoProfile -NonInteractive -Command 'Write-Output "C:\Program Files"' 2>/dev/null | tr -d '\r\n')
 check "pwsh path with space and backslash" "$o" 'C:\Program Files' 
 else
-  echo "== powershell (skipped: no pwsh.img) =="
+  echo "== powershell (skipped: capability not installed) =="
 fi
+
+if [ -f ~/.winquick/capabilities/dotnet-runtime.img ] || [ -f ~/.winquick/capabilities/dotnet-sdk.img ]; then
+echo "== dotnet =="
+v=$("$WQ" run -- dotnet --list-runtimes 2>/dev/null | tr -d '\r')
+case "$v" in *Microsoft.NETCore.App*) ok "dotnet runtime is visible in the guest";; *) bad "dotnet runtime" "$v";; esac
+
+if [ -d "$FDAPP" ]; then
+  o=$("$WQ" run -w "$FDAPP" -- dotnet hello.dll 2>/dev/null | tr -d '\r')
+  case "$o" in *"is windows   : True"*) ok "framework-dependent app runs on the guest .NET runtime";; *) bad "fd app" "$o";; esac
+
+  "$WQ" run -w "$FDAPP" -- dotnet hello.dll 42 >/dev/null 2>&1
+  check "framework-dependent app exit code propagates" "$?" "42"
+
+  "$WQ" run -w "$FDAPP" -- dotnet hello.dll >/tmp/wq_o 2>/tmp/wq_e
+  grep -q "WQNET hello" /tmp/wq_o && grep -q "WQNET stderr line" /tmp/wq_e \
+    && ok "dotnet stdout and stderr stay separate" || bad "dotnet streams" "out/err mixed"
+fi
+
+if [ -d "$SCAPP" ]; then
+  o=$("$WQ" run -w "$SCAPP" -- cmd /c hello.exe 2>/dev/null | tr -d '\r')
+  case "$o" in *".NET 10"*) ok "self-contained app runs (no guest .NET needed for it)";; *) bad "self-contained app" "$o";; esac
+fi
+else
+  echo "== dotnet (skipped: capability not installed) =="
+fi
+
+echo "== workspace =="
+WSTMP=$(mktemp -d)
+echo "hello-from-host" > "$WSTMP/probe.txt"
+o=$("$WQ" run -w "$WSTMP" -- cmd /c "type C:\workspace\probe.txt" 2>/dev/null | tr -d '\r\n')
+check "host directory appears at C:\\workspace" "$o" "hello-from-host"
+"$WQ" run -w "$WSTMP" -- cmd /c "echo guest-wrote-this > C:\workspace\fromguest.txt" >/dev/null 2>&1
+[ ! -f "$WSTMP/fromguest.txt" ] && ok "guest writes do not mutate the host project" || bad "workspace writeback" "host file was created"
+o=$("$WQ" run -w "$WSTMP" -- cmd /c "if exist C:\workspace\fromguest.txt (echo LEAKED) else (echo CLEAN)" 2>/dev/null | tr -d '\r\n')
+check "workspace is disposable between runs" "$o" "CLEAN"
+rm -rf "$WSTMP"
 
 echo "== $N consecutive warm runs =="
 python3 - "$WQ" "$N" <<'PY'

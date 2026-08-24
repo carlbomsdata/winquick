@@ -1,17 +1,20 @@
-//! Capability volumes: extra tooling attached to the guest as its own disk.
+//! Capability volumes: optional tooling attached to the guest as extra disks.
 //!
-//! PowerShell is the first one. It is 271 MiB of files, and baking that into the
-//! base image would grow a 763 MiB runtime by more than a third for something not
-//! every run needs. Instead it lives in its own FAT32 image which is attached
-//! only when it exists, cloned per run like everything else.
+//! The base runtime stays small and everything else is opt-in. Each capability
+//! is one FAT32 image under `~/.winquick/capabilities/`, attached as its own NVMe
+//! device and discovered by the guest agent, which puts it on `PATH`.
 //!
-//! This also sidesteps a practical problem: `ntfscp` cannot create directories,
-//! and PowerShell ships 41 of them, so writing it into the NTFS system volume
-//! from macOS is not straightforward. A FAT32 image we build ourselves is.
+//! Building an image instead of writing into the guest's NTFS system volume is
+//! not just a size decision: `ntfscp` cannot create directories, and these
+//! packages ship hundreds of them.
 //!
-//! The volume must be attached **writable**. Windows writes when it mounts a
-//! volume; a read-only NVMe makes those writes fail with `aio failed: Operation
-//! not permitted` and no volume appears at all. See docs/research.md.
+//! Two rules learned the hard way, both in docs/research.md:
+//!
+//! * Volumes must be attached **writable**. Windows writes when it mounts a
+//!   volume; a read-only NVMe makes those writes fail with `aio failed:
+//!   Operation not permitted` and no volume appears at all.
+//! * Volumes are cloned per run, never reformatted between runs, so the FAT
+//!   volume identity the guest remembers stays valid.
 
 use anyhow::{bail, Context, Result};
 use fatfs::{FatType, FileSystem, FormatVolumeOptions, FsOptions};
@@ -25,12 +28,175 @@ use crate::paths;
 const SECTOR: u64 = 512;
 const PART_START_LBA: u64 = 2048;
 
-/// Where the PowerShell capability volume lives, if it has been built.
-pub fn pwsh_image() -> Result<PathBuf> {
-    Ok(paths::root()?
-        .join("images")
-        .join(paths::IMAGE_NAME)
-        .join("pwsh.img"))
+/// A capability that can be installed.
+pub struct Spec {
+    /// Name used on the command line and for the image filename.
+    pub name: &'static str,
+    pub version: &'static str,
+    pub url: &'static str,
+    pub sha256: &'static str,
+    /// Directory the payload lands in on the volume; the agent probes for this.
+    pub dest: &'static str,
+    /// A file that must exist after unpacking, as a sanity check.
+    pub sentinel: &'static str,
+    pub description: &'static str,
+}
+
+pub const SPECS: &[Spec] = &[
+    Spec {
+        name: "powershell",
+        version: "7.6.5",
+        url: "https://github.com/PowerShell/PowerShell/releases/download/v7.6.5/PowerShell-7.6.5-win-arm64.zip",
+        sha256: "20514a755d16428dc4355c85e0883c859531e71cc3e122670aa1fccdbf96ba7e",
+        dest: "pwsh",
+        sentinel: "pwsh.exe",
+        description: "PowerShell 7 (pwsh)",
+    },
+    Spec {
+        name: "dotnet-runtime",
+        version: "10.0.5",
+        url: "https://builds.dotnet.microsoft.com/dotnet/Runtime/10.0.5/dotnet-runtime-10.0.5-win-arm64.zip",
+        sha256: "0368339d9ebd5e6d0a05e196fbe4c6d886e433373d772d41d9536cffe3e6e5f1",
+        dest: "dotnet",
+        sentinel: "dotnet.exe",
+        description: ".NET 10 runtime (framework-dependent apps)",
+    },
+    Spec {
+        name: "dotnet-sdk",
+        version: "10.0.201",
+        url: "https://builds.dotnet.microsoft.com/dotnet/Sdk/10.0.201/dotnet-sdk-10.0.201-win-arm64.zip",
+        sha256: "4fde214de7b4f52ab0d10d02ec99ff7c8a0d6682ad8d9f0e67c5725e0624bfcf",
+        dest: "dotnet",
+        sentinel: "dotnet.exe",
+        description: ".NET 10 SDK (dotnet build / test)",
+    },
+];
+
+pub fn spec(name: &str) -> Option<&'static Spec> {
+    SPECS.iter().find(|s| s.name == name)
+}
+
+pub struct Installed {
+    pub name: String,
+    pub image: PathBuf,
+}
+
+pub fn dir() -> Result<PathBuf> {
+    Ok(paths::root()?.join("capabilities"))
+}
+
+pub fn image_path(name: &str) -> Result<PathBuf> {
+    Ok(dir()?.join(format!("{name}.img")))
+}
+
+/// Every installed capability, in a stable order so the device topology — and
+/// therefore the prepared-guest fingerprint — is deterministic.
+pub fn installed() -> Result<Vec<Installed>> {
+    let d = match dir() {
+        Ok(d) if d.exists() => d,
+        _ => return Ok(Vec::new()),
+    };
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(d)? {
+        let p = e?.path();
+        if p.extension().map(|x| x == "img").unwrap_or(false) {
+            if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+                out.push(Installed { name: stem.to_string(), image: p.clone() });
+            }
+        }
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
+}
+
+pub fn remove(name: &str) -> Result<bool> {
+    let p = image_path(name)?;
+    if p.exists() {
+        std::fs::remove_file(&p)?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+/// Download (or reuse), verify, unpack and build a capability volume.
+pub fn install(name: &str, zip: Option<PathBuf>, verbose: bool) -> Result<u64> {
+    let sp = spec(name)
+        .ok_or_else(|| anyhow::anyhow!("unknown capability `{name}`"))?;
+    let cache = paths::cache()?;
+    std::fs::create_dir_all(&cache)?;
+
+    let archive = match zip {
+        Some(p) => p,
+        None => {
+            let file = sp.url.rsplit('/').next().unwrap();
+            let p = cache.join(file);
+            if !p.exists() {
+                println!("Downloading {} {} from Microsoft...", sp.description, sp.version);
+                let st = std::process::Command::new("/usr/bin/curl")
+                    .args(["-sSL", "-o"])
+                    .arg(&p)
+                    .arg(sp.url)
+                    .status()
+                    .context("running curl")?;
+                if !st.success() {
+                    let _ = std::fs::remove_file(&p);
+                    bail!("download failed");
+                }
+            }
+            p
+        }
+    };
+
+    if !sp.sha256.is_empty() {
+        let got = sha256_file(&archive)?;
+        if got != sp.sha256 {
+            bail!(
+                "checksum mismatch for {}\n  expected {}\n  got      {got}",
+                archive.display(),
+                sp.sha256
+            );
+        }
+        if verbose {
+            eprintln!("winquick: sha256 verified against the publisher's digest");
+        }
+    } else if verbose {
+        eprintln!("winquick: no pinned checksum for {name}; trusting HTTPS from Microsoft");
+    }
+
+    let work = paths::root()?.join("work").join(name);
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work)?;
+    let st = std::process::Command::new("/usr/bin/unzip")
+        .args(["-q", "-o"])
+        .arg(&archive)
+        .arg("-d")
+        .arg(&work)
+        .status()
+        .context("running unzip")?;
+    if !st.success() {
+        bail!("could not unpack {}", archive.display());
+    }
+    if !work.join(sp.sentinel).exists() {
+        bail!(
+            "{} does not look like {}: no {} inside",
+            archive.display(),
+            sp.description,
+            sp.sentinel
+        );
+    }
+
+    let image = image_path(name)?;
+    std::fs::create_dir_all(image.parent().unwrap())?;
+    println!("Building the {name} volume...");
+    let size = build(&image, &work, sp.dest)?;
+    let _ = std::fs::remove_dir_all(&work);
+    println!(
+        "{} {} ready ({:.0} MiB volume)",
+        sp.description,
+        sp.version,
+        size as f64 / (1024.0 * 1024.0)
+    );
+    Ok(size)
 }
 
 /// Build a FAT32 capability image containing `src_dir` at `dest_name`.
@@ -39,7 +205,13 @@ pub fn build(image: &Path, src_dir: &Path, dest_name: &str) -> Result<u64> {
     // FAT32 needs headroom for its tables and per-file cluster slack; 25% over
     // the payload has been comfortable, with a 64 MiB floor for the format.
     let size = (((content * 5) / 4) + 64 * 1024 * 1024).next_multiple_of(SECTOR);
+    build_sized(image, src_dir, dest_name, size)
+}
 
+/// Build a capability image of an explicit size. Used for the workspace volume,
+/// where the size has to stay constant across runs so the FAT volume identity
+/// the guest remembers keeps resolving.
+pub fn build_sized(image: &Path, src_dir: &Path, dest_name: &str, size: u64) -> Result<u64> {
     let img = OpenOptions::new()
         .read(true)
         .write(true)
@@ -63,11 +235,79 @@ pub fn build(image: &Path, src_dir: &Path, dest_name: &str) -> Result<u64> {
     {
         let root = fs.root_dir();
         let dest = root.create_dir(dest_name)?;
-        copy_tree(src_dir, &dest)?;
+        if src_dir.exists() {
+            copy_tree(src_dir, &dest)?;
+        }
     }
     fs.unmount()?;
     buf.flush()?;
     Ok(size)
+}
+
+/// Write the marker the guest agent looks for when hunting for the workspace.
+pub fn mark_workspace(image: &Path) -> Result<()> {
+    let img = OpenOptions::new().read(true).write(true).open(image)?;
+    let len = img.metadata()?.len();
+    let slice = StreamSlice::new(img, PART_START_LBA * SECTOR, len)?;
+    let mut buf = BufStream::new(slice);
+    let fs = FileSystem::new(&mut buf, FsOptions::new())?;
+    {
+        let root = fs.root_dir();
+        let mut f = root.create_file("WQWORK.TXT")?;
+        f.truncate()?;
+        f.write_all(b"winquick workspace\r\n")?;
+        if root.open_dir("workspace").is_err() {
+            root.create_dir("workspace")?;
+        }
+    }
+    fs.unmount()?;
+    buf.flush()?;
+    Ok(())
+}
+
+/// Replace the contents of `dest_name` inside an existing image, without
+/// reformatting — the volume identity has to survive.
+pub fn refill(image: &Path, src_dir: &Path, dest_name: &str) -> Result<()> {
+    let img = OpenOptions::new().read(true).write(true).open(image)?;
+    let len = img.metadata()?.len();
+    let slice = StreamSlice::new(img, PART_START_LBA * SECTOR, len)?;
+    let mut buf = BufStream::new(slice);
+    let fs = FileSystem::new(&mut buf, FsOptions::new())?;
+    {
+        let root = fs.root_dir();
+        // fatfs has no recursive delete; clear what is there, then refill.
+        let dest = match root.open_dir(dest_name) {
+            Ok(d) => {
+                purge(&d)?;
+                d
+            }
+            Err(_) => root.create_dir(dest_name)?,
+        };
+        copy_tree(src_dir, &dest)?;
+    }
+    fs.unmount()?;
+    buf.flush()?;
+    Ok(())
+}
+
+fn purge<T: fatfs::ReadWriteSeek>(d: &fatfs::Dir<T>) -> Result<()> {
+    let names: Vec<(String, bool)> = d
+        .iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            let n = e.file_name();
+            n != "." && n != ".."
+        })
+        .map(|e| (e.file_name(), e.is_dir()))
+        .collect();
+    for (n, is_dir) in names {
+        if is_dir {
+            let sub = d.open_dir(&n)?;
+            purge(&sub)?;
+        }
+        d.remove(&n)?;
+    }
+    Ok(())
 }
 
 fn dir_size(p: &Path) -> Result<u64> {
@@ -87,16 +327,17 @@ fn copy_tree<T: fatfs::ReadWriteSeek>(src: &Path, dst: &fatfs::Dir<T>) -> Result
         let name = e.file_name();
         let name = name.to_string_lossy();
         let path = e.path();
-        if e.metadata()?.is_dir() {
+        let md = e.metadata()?;
+        if md.is_dir() {
             let sub = dst.create_dir(&name)?;
             copy_tree(&path, &sub)?;
-        } else {
+        } else if md.is_file() {
             let mut f = dst.create_file(&name)?;
             f.truncate()?;
             let data = std::fs::read(&path)
                 .with_context(|| format!("reading {}", path.display()))?;
             f.write_all(&data)
-                .with_context(|| format!("writing {name} into the capability volume"))?;
+                .with_context(|| format!("writing {name} into the volume"))?;
         }
     }
     Ok(())
@@ -119,77 +360,6 @@ fn write_mbr(mut img: &File, size: u64) -> Result<()> {
     img.seek(std::io::SeekFrom::Start(0))?;
     img.write_all(&mbr)?;
     img.flush()?;
-    Ok(())
-}
-
-/// The official Microsoft PowerShell 7 ARM64 portable ZIP.
-pub const PWSH_URL: &str =
-    "https://github.com/PowerShell/PowerShell/releases/download/v7.6.5/PowerShell-7.6.5-win-arm64.zip";
-pub const PWSH_SHA256: &str =
-    "20514a755d16428dc4355c85e0883c859531e71cc3e122670aa1fccdbf96ba7e";
-pub const PWSH_VERSION: &str = "7.6.5";
-
-/// Fetch (or reuse) the PowerShell ZIP, verify it, unpack it, and build the volume.
-pub fn install_powershell(zip: Option<PathBuf>, verbose: bool) -> Result<()> {
-    let cache = paths::cache()?;
-    std::fs::create_dir_all(&cache)?;
-    let archive = match zip {
-        Some(p) => p,
-        None => {
-            let p = cache.join(format!("PowerShell-{PWSH_VERSION}-win-arm64.zip"));
-            if !p.exists() {
-                println!("Downloading PowerShell {PWSH_VERSION} for Windows ARM64 from Microsoft...");
-                let st = std::process::Command::new("/usr/bin/curl")
-                    .args(["-sSL", "-o"])
-                    .arg(&p)
-                    .arg(PWSH_URL)
-                    .status()
-                    .context("running curl")?;
-                if !st.success() {
-                    bail!("download failed");
-                }
-            }
-            p
-        }
-    };
-
-    let got = sha256_file(&archive)?;
-    if got != PWSH_SHA256 {
-        bail!(
-            "checksum mismatch for {}\n  expected {PWSH_SHA256}\n  got      {got}",
-            archive.display()
-        );
-    }
-    if verbose {
-        eprintln!("winquick: sha256 verified against Microsoft's published digest");
-    }
-
-    let work = paths::root()?.join("work").join("pwsh");
-    let _ = std::fs::remove_dir_all(&work);
-    std::fs::create_dir_all(&work)?;
-    let st = std::process::Command::new("/usr/bin/unzip")
-        .args(["-q", "-o"])
-        .arg(&archive)
-        .arg("-d")
-        .arg(&work)
-        .status()
-        .context("running unzip")?;
-    if !st.success() {
-        bail!("could not unpack {}", archive.display());
-    }
-    if !work.join("pwsh.exe").exists() {
-        bail!("{} does not look like a PowerShell ZIP", archive.display());
-    }
-
-    let image = pwsh_image()?;
-    std::fs::create_dir_all(image.parent().unwrap())?;
-    println!("Building the PowerShell volume...");
-    let size = build(&image, &work, "pwsh")?;
-    let _ = std::fs::remove_dir_all(&work);
-    println!(
-        "PowerShell {PWSH_VERSION} ready ({:.0} MiB volume)",
-        size as f64 / (1024.0 * 1024.0)
-    );
     Ok(())
 }
 

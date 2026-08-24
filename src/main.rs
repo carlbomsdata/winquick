@@ -42,12 +42,9 @@ enum Cmd {
         /// Rebuild even if a runtime already exists
         #[arg(long)]
         force: bool,
-        /// Also build the PowerShell 7 capability volume
-        #[arg(long)]
-        with_powershell: bool,
-        /// Use this PowerShell ARM64 ZIP instead of downloading one
-        #[arg(long, value_name = "ZIP")]
-        powershell_zip: Option<PathBuf>,
+        /// Also install these capabilities (powershell, dotnet-runtime, dotnet-sdk)
+        #[arg(long, value_name = "NAME", num_args = 1..)]
+        with: Vec<String>,
     },
     /// Run a command inside a throwaway Windows environment
     #[command(trailing_var_arg = true)]
@@ -67,6 +64,9 @@ enum Cmd {
         /// Boot Windows from scratch instead of resuming a prepared guest
         #[arg(long)]
         cold: bool,
+        /// Expose this host directory to the guest at C:\workspace
+        #[arg(short = 'w', long, value_name = "DIR")]
+        workspace: Option<PathBuf>,
         /// The Windows command, after `--`
         #[arg(required = true, value_name = "COMMAND")]
         argv: Vec<String>,
@@ -75,6 +75,65 @@ enum Cmd {
     Info,
     /// Discard the prepared guest so the next run rebuilds it
     Reset,
+    /// Manage optional capabilities (PowerShell, .NET)
+    Capability {
+        #[command(subcommand)]
+        action: CapabilityCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum CapabilityCmd {
+    /// Show which capabilities are available and installed
+    List,
+    /// Install a capability
+    Add {
+        /// powershell, dotnet-runtime or dotnet-sdk
+        name: String,
+        /// Use this ZIP instead of downloading one
+        #[arg(long, value_name = "ZIP")]
+        zip: Option<PathBuf>,
+    },
+    /// Remove a capability
+    Remove { name: String },
+}
+
+fn capability_cmd(action: CapabilityCmd) -> Result<i32> {
+    match action {
+        CapabilityCmd::List => {
+            let installed = capability::installed()?;
+            for sp in capability::SPECS {
+                let have = installed.iter().find(|i| i.name == sp.name);
+                let status = match have {
+                    Some(i) => {
+                        let m = std::fs::metadata(&i.image)?;
+                        use std::os::unix::fs::MetadataExt;
+                        format!(
+                            "installed ({:.0} MiB on disk)",
+                            (m.blocks() * 512) as f64 / (1024.0 * 1024.0)
+                        )
+                    }
+                    None => "not installed".to_string(),
+                };
+                println!("  {:<16} {:<10} {:<28} {}", sp.name, sp.version, sp.description, status);
+            }
+            Ok(0)
+        }
+        CapabilityCmd::Add { name, zip } => {
+            capability::install(&name, zip, true)?;
+            state::discard()?;
+            Ok(0)
+        }
+        CapabilityCmd::Remove { name } => {
+            if capability::remove(&name)? {
+                state::discard()?;
+                println!("Removed {name}.");
+            } else {
+                println!("{name} is not installed.");
+            }
+            Ok(0)
+        }
+    }
 }
 
 fn main() {
@@ -91,21 +150,25 @@ fn main() {
 
 fn dispatch(cli: Cli) -> Result<i32> {
     match cli.command {
-        Cmd::Setup { from, force, with_powershell, powershell_zip } => {
+        Cmd::Setup { from, force, with } => {
             setup::setup(from, force)?;
-            if with_powershell || powershell_zip.is_some() {
-                capability::install_powershell(powershell_zip, true)?;
+            for name in &with {
+                capability::install(name, None, true)?;
+            }
+            if !with.is_empty() {
                 // The device topology changed, so any frozen guest is stale.
                 state::discard()?;
             }
             Ok(0)
         }
+        Cmd::Capability { action } => capability_cmd(action),
         Cmd::Run {
             memory,
             cpus,
             timeout,
             verbose,
             cold,
+            workspace,
             argv,
         } => runner::run(
             &join_argv(&argv),
@@ -115,6 +178,7 @@ fn dispatch(cli: Cli) -> Result<i32> {
                 timeout: Duration::from_secs(timeout),
                 verbose,
                 force_cold: cold,
+                workspace,
             },
         ),
         Cmd::Info => {
@@ -257,13 +321,12 @@ fn info() -> Result<()> {
         _ => println!("prepared: no — first run will take longer"),
     }
 
-    match capability::pwsh_image() {
-        Ok(p) if p.exists() => println!(
-            "powershell: {} ({:.0} MiB volume)",
-            capability::PWSH_VERSION,
-            std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0) as f64 / (1024.0 * 1024.0)
-        ),
-        _ => println!("powershell: not installed — `winquick setup --with-powershell`"),
+    let caps = capability::installed()?;
+    if caps.is_empty() {
+        println!("caps:     none — see `winquick capability list`");
+    } else {
+        let names: Vec<&str> = caps.iter().map(|c| c.name.as_str()).collect();
+        println!("caps:     {}", names.join(", "));
     }
 
     let base = paths::base_image()?;
