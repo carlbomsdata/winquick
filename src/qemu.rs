@@ -5,7 +5,9 @@
 
 use anyhow::{anyhow, Context, Result};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
+
+pub const MACHINE: &str = "virt";
 
 pub struct Qemu {
     pub system: PathBuf,
@@ -61,6 +63,8 @@ impl Qemu {
 
 pub struct BootConfig<'a> {
     pub uefi_code: &'a Path,
+    /// Must be writable. A read-only variable store stops Windows booting at
+    /// all, silently, with a black framebuffer — see docs/research.md.
     pub uefi_vars: &'a Path,
     pub root_disk: &'a Path,
     pub mailbox: &'a Path,
@@ -68,15 +72,25 @@ pub struct BootConfig<'a> {
     pub cpus: u32,
     pub serial_log: &'a Path,
     pub qmp_socket: &'a Path,
+    /// When set, restore RAM and device state from this file instead of booting.
+    pub incoming: Option<&'a Path>,
+}
+
+/// Canonical description of the device topology, recorded in the ready-state
+/// fingerprint. Migration state is only meaningful against the same machine.
+pub fn device_signature(memory_mb: u32, cpus: u32) -> String {
+    format!(
+        "machine={MACHINE};accel=hvf;cpu=host;smp={cpus};mem={memory_mb};\
+         nvme:root=wqroot;nvme:mbox=wqmbox;pflash:code,vars(rw);ramfb;display=none;rtc=localtime"
+    )
 }
 
 impl Qemu {
     /// Spawn the VM headlessly. `-display none` means no window ever appears;
-    /// `ramfb` is still present because Windows expects a display device to
-    /// initialise against.
-    pub fn boot(&self, cfg: &BootConfig) -> Result<std::process::Child> {
+    /// `ramfb` is still present because Windows expects a display device.
+    pub fn boot(&self, cfg: &BootConfig) -> Result<Child> {
         let mut c = Command::new(&self.system);
-        c.args(["-M", "virt", "-accel", "hvf", "-cpu", "host"])
+        c.args(["-M", MACHINE, "-accel", "hvf", "-cpu", "host"])
             .args(["-smp", &cfg.cpus.to_string()])
             .args(["-m", &cfg.memory_mb.to_string()])
             .arg("-drive")
@@ -92,8 +106,8 @@ impl Qemu {
                 cfg.root_disk.display()
             ))
             .args(["-device", "nvme,drive=root,serial=wqroot"])
-            // writethrough so the guest's results are on the host's disk by the
-            // time QEMU exits, without relying on QEMU flush ordering.
+            // writethrough so the guest's results are on the host's disk as soon
+            // as the guest dismounts the volume
             .arg("-drive")
             .arg(format!(
                 "if=none,id=mbox,file={},format=raw,cache=writethrough",
@@ -105,8 +119,14 @@ impl Qemu {
             .arg("-serial")
             .arg(format!("file:{}", cfg.serial_log.display()))
             .arg("-qmp")
-            .arg(format!("unix:{},server=on,wait=off", cfg.qmp_socket.display()))
-            .stdin(Stdio::null())
+            .arg(format!(
+                "unix:{},server=on,wait=off",
+                cfg.qmp_socket.display()
+            ));
+        if let Some(state) = cfg.incoming {
+            c.arg("-incoming").arg(format!("file:{}", state.display()));
+        }
+        c.stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
         c.spawn().context("spawning qemu-system-aarch64")
@@ -123,4 +143,23 @@ pub fn which(bin: &str) -> Result<PathBuf> {
     Ok(PathBuf::from(
         String::from_utf8_lossy(&out.stdout).trim().to_string(),
     ))
+}
+
+/// Copy-on-write clone where the filesystem supports it. On APFS this is
+/// effectively free regardless of file size, which is what keeps per-run setup
+/// in the tens of milliseconds.
+pub fn clone_file(src: &Path, dst: &Path) -> Result<()> {
+    let _ = std::fs::remove_file(dst);
+    let st = Command::new("/bin/cp")
+        .arg("-c")
+        .arg(src)
+        .arg(dst)
+        .status()
+        .context("running cp -c")?;
+    if !st.success() {
+        std::fs::copy(src, dst).with_context(|| {
+            format!("copying {} to {}", src.display(), dst.display())
+        })?;
+    }
+    Ok(())
 }

@@ -6,8 +6,10 @@
 mod mailbox;
 mod paths;
 mod qemu;
+mod qmp;
 mod runner;
 mod setup;
+mod state;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -44,7 +46,7 @@ enum Cmd {
     #[command(trailing_var_arg = true)]
     Run {
         /// Guest RAM in MiB
-        #[arg(long, default_value_t = 2048, value_name = "MIB")]
+        #[arg(long, default_value_t = 1024, value_name = "MIB")]
         memory: u32,
         /// Guest vCPUs
         #[arg(long, default_value_t = 4)]
@@ -52,15 +54,20 @@ enum Cmd {
         /// Give up after this many seconds
         #[arg(long, default_value_t = 300, value_name = "SECS")]
         timeout: u64,
-        /// Report boot and teardown timings on stderr
+        /// Report phase timings and ready-state decisions on stderr
         #[arg(short, long)]
         verbose: bool,
+        /// Boot Windows from scratch instead of resuming a prepared guest
+        #[arg(long)]
+        cold: bool,
         /// The Windows command, after `--`
         #[arg(required = true, value_name = "COMMAND")]
         argv: Vec<String>,
     },
     /// Show host, runtime and QEMU status
     Info,
+    /// Discard the prepared guest so the next run rebuilds it
+    Reset,
 }
 
 fn main() {
@@ -86,6 +93,7 @@ fn dispatch(cli: Cli) -> Result<i32> {
             cpus,
             timeout,
             verbose,
+            cold,
             argv,
         } => runner::run(
             &argv.join(" "),
@@ -94,10 +102,16 @@ fn dispatch(cli: Cli) -> Result<i32> {
                 cpus,
                 timeout: Duration::from_secs(timeout),
                 verbose,
+                force_cold: cold,
             },
         ),
         Cmd::Info => {
             info()?;
+            Ok(0)
+        }
+        Cmd::Reset => {
+            state::discard()?;
+            println!("Prepared guest discarded; the next run will rebuild it.");
             Ok(0)
         }
     }
@@ -117,6 +131,14 @@ fn info() -> Result<()> {
     match paths::uefi_code() {
         Some(p) => println!("uefi:     {}", p.display()),
         None => println!("uefi:     MISSING (edk2-aarch64-code.fd)"),
+    }
+
+    match state::state_dir() {
+        Ok(d) if d.join("ready.json").exists() => {
+            let sz = std::fs::metadata(d.join("ready.state")).map(|m| m.len()).unwrap_or(0);
+            println!("prepared: yes ({:.0} MiB frozen guest)", sz as f64 / (1024.0 * 1024.0));
+        }
+        _ => println!("prepared: no — first run will take longer"),
     }
 
     let base = paths::base_image()?;

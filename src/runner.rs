@@ -1,21 +1,39 @@
 //! `winquick run` — the whole product, in one function.
+//!
+//! Two paths to the same guarantee:
+//!
+//! * **warm** — clone a frozen, already-booted guest, resume it, hand it the
+//!   command. About a fifth of a second.
+//! * **cold** — boot Windows from the base image. About eight and a half
+//!   seconds, and used only when there is no usable frozen guest, or when the
+//!   warm path fails.
+//!
+//! The cold path also *builds* the frozen guest, so the slow route happens once
+//! and pays for every run after it. Nothing about this is visible to the user:
+//! both paths take a command and return stdout, stderr and an exit code.
 
-use crate::{mailbox, paths, qemu};
-use anyhow::{anyhow, Context, Result};
+use crate::{mailbox, paths, qemu, qmp, state};
+use anyhow::{anyhow, bail, Context, Result};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Child;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+/// How long to wait for a freshly booted guest to announce itself.
+const READY_TIMEOUT: Duration = Duration::from_secs(90);
 
 pub struct Options {
     pub memory_mb: u32,
     pub cpus: u32,
     pub timeout: Duration,
     pub verbose: bool,
+    /// Skip the warm path entirely. For benchmarking and for `--cold`.
+    pub force_cold: bool,
 }
 
-/// Deletes the run directory no matter how we leave `run()` — normal exit,
-/// error, or panic. A run that leaves state behind is a bug: the promise is
-/// that the environment is discarded.
+/// Deletes the run directory no matter how we leave — normal exit, error, or
+/// panic. A run that leaves state behind is a bug: the promise is that the
+/// environment is discarded.
 struct Scratch(PathBuf);
 
 impl Drop for Scratch {
@@ -28,20 +46,138 @@ impl Drop for Scratch {
     }
 }
 
+struct Ctx {
+    q: qemu::Qemu,
+    base: PathBuf,
+    uefi_code: PathBuf,
+    opts_memory: u32,
+    opts_cpus: u32,
+    timeout: Duration,
+    verbose: bool,
+}
+
+impl Ctx {
+    fn vlog(&self, msg: impl std::fmt::Display) {
+        if self.verbose {
+            eprintln!("winquick: {msg}");
+        }
+    }
+}
+
+pub struct Outcome {
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub exit_code: i32,
+    pub warm: bool,
+}
+
 pub fn run(command: &str, opts: &Options) -> Result<i32> {
+    let t_start = Instant::now();
     let base = paths::base_image()?;
     if !base.exists() {
-        return Err(anyhow!(
+        bail!(
             "no Windows runtime found at {}\n\nRun `winquick setup` first.",
             base.display()
-        ));
+        );
+    }
+    let uefi_code = paths::uefi_code()
+        .ok_or_else(|| anyhow!("could not find edk2-aarch64-code.fd next to QEMU"))?;
+    let ctx = Ctx {
+        q: qemu::Qemu::locate()?,
+        base,
+        uefi_code,
+        opts_memory: opts.memory_mb,
+        opts_cpus: opts.cpus,
+        timeout: opts.timeout,
+        verbose: opts.verbose,
+    };
+    state::check_base_meta(&ctx.base, crate::setup::AGENT)?;
+    let want = fingerprint(&ctx)?;
+    ctx.vlog(format!("host startup {:.0}ms", t_start.elapsed().as_secs_f64() * 1000.0));
+
+    if !opts.force_cold {
+        match state::load_valid(&want) {
+            Ok(Some(ready)) => {
+                ctx.vlog("using existing ready state");
+                match warm_execute(&ctx, &ready, command) {
+                    Ok(o) => return emit(o, t_start, &ctx),
+                    Err(e) => {
+                        ctx.vlog(format!("warm path failed: {e:#}"));
+                        ctx.vlog("discarding ready state and falling back to cold boot");
+                        let _ = state::discard();
+                    }
+                }
+            }
+            Ok(None) => ctx.vlog("no ready state yet"),
+            Err(e) => {
+                ctx.vlog(format!("{e:#}"));
+                let _ = state::discard();
+            }
+        }
+    } else {
+        ctx.vlog("--cold: skipping the warm path");
     }
 
-    let q = qemu::Qemu::locate()?;
-    let uefi_code = paths::uefi_code().ok_or_else(|| {
-        anyhow!("could not find edk2-aarch64-code.fd next to QEMU; is QEMU installed?")
-    })?;
+    // Cold. Build a ready state first so future runs are fast, then use it — which
+    // doubles as verification that the state we just wrote actually works.
+    if !opts.force_cold {
+        match build_ready_state(&ctx, &want) {
+            Ok(ready) => match warm_execute(&ctx, &ready, command) {
+                Ok(o) => return emit(o, t_start, &ctx),
+                Err(e) => {
+                    ctx.vlog(format!("newly built ready state did not work: {e:#}"));
+                    let _ = state::discard();
+                }
+            },
+            Err(e) => ctx.vlog(format!("could not build a ready state: {e:#}")),
+        }
+    }
 
+    // Last resort: boot and run, no state involved. This is the path that must
+    // never fail for reasons of its own.
+    let o = cold_execute(&ctx, command)?;
+    emit(o, t_start, &ctx)
+}
+
+fn emit(o: Outcome, t_start: Instant, ctx: &Ctx) -> Result<i32> {
+    // Pass the guest's streams through, except for the CRLF that every Windows
+    // program emits — a Unix caller piping into `grep` should not have to strip
+    // carriage returns.
+    let mut out = std::io::stdout().lock();
+    out.write_all(&strip_cr(&o.stdout))?;
+    out.flush()?;
+    let mut err = std::io::stderr().lock();
+    err.write_all(&strip_cr(&o.stderr))?;
+    err.flush()?;
+    ctx.vlog(format!(
+        "{} run, total {:.0}ms",
+        if o.warm { "warm" } else { "cold" },
+        t_start.elapsed().as_secs_f64() * 1000.0
+    ));
+    Ok(o.exit_code)
+}
+
+fn fingerprint(ctx: &Ctx) -> Result<state::Fingerprint> {
+    let agent = crate::setup::AGENT;
+    Ok(state::Fingerprint {
+        winquick_version: env!("CARGO_PKG_VERSION").to_string(),
+        protocol_version: state::PROTOCOL_VERSION,
+        base_image: state::FileId::of(&ctx.base)?,
+        agent_hash: state::fnv1a(agent.as_bytes()),
+        qemu_binary: state::FileId::of(&ctx.q.system)?,
+        // Recorded from the binary's identity rather than by running it: shelling
+        // out to `qemu-system-aarch64 --version` costs ~10ms, which is 5% of the
+        // warm-run budget. The binary FileId already changes when QEMU is upgraded.
+        qemu_version: format!("id:{}", state::fnv1a(ctx.q.system.display().to_string().as_bytes())),
+        firmware: state::FileId::of(&ctx.uefi_code)?,
+        memory_mb: ctx.opts_memory,
+        cpus: ctx.opts_cpus,
+        machine: qemu::MACHINE.to_string(),
+        devices: qemu::device_signature(ctx.opts_memory, ctx.opts_cpus),
+    })
+}
+
+fn new_run_dir() -> Result<PathBuf> {
     let id = format!(
         "{}-{}",
         std::process::id(),
@@ -50,85 +186,224 @@ pub fn run(command: &str, opts: &Options) -> Result<i32> {
     let dir = paths::run_dir(&id)?;
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("creating run directory {}", dir.display()))?;
-    let _scratch = Scratch(dir.clone());
+    Ok(dir)
+}
 
-    let overlay = dir.join("root.qcow2");
-    let mbox = dir.join("mailbox.img");
-    let vars = dir.join("uefi-vars.fd");
-    let serial = dir.join("serial.log");
-    let qmp = dir.join("qmp.sock");
+fn fresh_vars(path: &Path) -> Result<()> {
+    let f = std::fs::File::create(path)?;
+    f.set_len(64 * 1024 * 1024)?;
+    Ok(())
+}
 
-    q.create_overlay(&base, &overlay)?;
-    mailbox::create(&mbox, command)?;
-
-    // Fresh UEFI variable store per run, so even firmware state is disposable.
-    let vf = std::fs::File::create(&vars)?;
-    vf.set_len(64 * 1024 * 1024)?;
-    drop(vf);
-
-    let started = Instant::now();
-    if opts.verbose {
-        eprintln!("winquick: booting ({} MiB, {} vCPU)", opts.memory_mb, opts.cpus);
+/// Wait for a mailbox file to appear, polling the image directly.
+///
+/// Cheap on purpose: FAT32 metadata for a handful of files is a few sectors, so
+/// a 2 ms poll does not distort the measurement it is part of.
+fn wait_for(
+    mbox: &Path,
+    name: &str,
+    child: &mut Child,
+    deadline: Instant,
+) -> Result<Vec<u8>> {
+    loop {
+        if let Some(v) = mailbox::probe(mbox, name) {
+            if !v.trim_ascii().is_empty() {
+                return Ok(v);
+            }
+        }
+        if let Some(st) = child.try_wait()? {
+            bail!("qemu exited ({st}) before {name} appeared");
+        }
+        if Instant::now() > deadline {
+            bail!("timed out waiting for {name} from the guest");
+        }
+        std::thread::sleep(Duration::from_millis(2));
     }
+}
 
-    let mut child = q.boot(&qemu::BootConfig {
-        uefi_code: &uefi_code,
+fn kill(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+// ---------------------------------------------------------------- warm path
+
+fn warm_execute(ctx: &Ctx, ready: &state::ReadyState, command: &str) -> Result<Outcome> {
+    let t0 = Instant::now();
+    let dir = new_run_dir()?;
+    let _scratch = Scratch(dir.clone());
+    let overlay = dir.join("root.qcow2");
+    let vars = dir.join("uefi-vars.fd");
+    let mbox = dir.join("mailbox.img");
+    let serial = dir.join("serial.log");
+    let qmp_sock = dir.join("qmp.sock");
+
+    // Clones, not copies: on APFS these are effectively free whatever the size.
+    qemu::clone_file(&ready.disk(), &overlay)?;
+    qemu::clone_file(&ready.vars(), &vars)?;
+    qemu::clone_file(&ready.mailbox(), &mbox)?;
+    mailbox::inject_command(&mbox, command)?;
+    let t_prep = t0.elapsed();
+
+    let mut child = ctx.q.boot(&qemu::BootConfig {
+        uefi_code: &ctx.uefi_code,
         uefi_vars: &vars,
         root_disk: &overlay,
         mailbox: &mbox,
-        memory_mb: opts.memory_mb,
-        cpus: opts.cpus,
+        memory_mb: ctx.opts_memory,
+        cpus: ctx.opts_cpus,
         serial_log: &serial,
-        qmp_socket: &qmp,
+        qmp_socket: &qmp_sock,
+        incoming: Some(&ready.state_file()),
     })?;
 
-    let mut timed_out = false;
-    loop {
-        match child.try_wait()? {
-            Some(status) => {
-                if !status.success() && opts.verbose {
-                    eprintln!("winquick: qemu exited with {status}");
-                }
-                break;
-            }
-            None => {
-                if started.elapsed() > opts.timeout {
-                    timed_out = true;
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
+    let result = (|| -> Result<Outcome> {
+        let mut q = qmp::Qmp::connect(&qmp_sock, Duration::from_secs(10))?;
+        let t_spawn = t0.elapsed();
+        q.wait_incoming(Duration::from_secs(30))?;
+        let t_restore = t0.elapsed();
+        q.cont()?;
+        let deadline = Instant::now() + ctx.timeout;
+        wait_for(&mbox, mailbox::CODE_FILE, &mut child, deadline)?;
+        let t_exec = t0.elapsed();
+        let r = mailbox::read_results(&mbox)?;
+        let code = r
+            .exit_code
+            .ok_or_else(|| anyhow!("guest wrote no exit code"))?;
+        ctx.vlog(format!(
+            "warm phases: prep {:.0}ms | qemu spawn {:.0}ms | state restore {:.0}ms | guest exec + mailbox sync {:.0}ms",
+            t_prep.as_secs_f64() * 1000.0,
+            (t_spawn - t_prep).as_secs_f64() * 1000.0,
+            (t_restore - t_spawn).as_secs_f64() * 1000.0,
+            (t_exec - t_restore).as_secs_f64() * 1000.0
+        ));
+        Ok(Outcome { stdout: r.stdout, stderr: r.stderr, exit_code: code, warm: true })
+    })();
+
+    let t_before_kill = Instant::now();
+    kill(&mut child);
+    ctx.vlog(format!(
+        "teardown {:.0}ms",
+        t_before_kill.elapsed().as_secs_f64() * 1000.0
+    ));
+    result
+}
+
+// ---------------------------------------------------------------- cold paths
+
+/// Boot a clean guest, wait until the agent says it is ready, and freeze it.
+fn build_ready_state(ctx: &Ctx, want: &state::Fingerprint) -> Result<state::ReadyState> {
+    let t0 = Instant::now();
+    ctx.vlog("preparing a reusable Windows image (one-off, takes a few seconds)");
+    let dir = new_run_dir()?;
+    let _scratch = Scratch(dir.clone());
+    let overlay = dir.join("root.qcow2");
+    let vars = dir.join("uefi-vars.fd");
+    let mbox = dir.join("mailbox.img");
+    let serial = dir.join("serial.log");
+    let qmp_sock = dir.join("qmp.sock");
+
+    ctx.q.create_overlay(&ctx.base, &overlay)?;
+    fresh_vars(&vars)?;
+    mailbox::create_template(&mbox)?;
+
+    let mut child = ctx.q.boot(&qemu::BootConfig {
+        uefi_code: &ctx.uefi_code,
+        uefi_vars: &vars,
+        root_disk: &overlay,
+        mailbox: &mbox,
+        memory_mb: ctx.opts_memory,
+        cpus: ctx.opts_cpus,
+        serial_log: &serial,
+        qmp_socket: &qmp_sock,
+        incoming: None,
+    })?;
+
+    let sdir = state::state_dir()?;
+    let build = (|| -> Result<state::ReadyMeta> {
+        let mut q = qmp::Qmp::connect(&qmp_sock, Duration::from_secs(30))?;
+        // Bounded independently of --timeout: a guest that never reports ready is
+        // broken, and burning the whole command timeout on it just delays the
+        // cold fallback that would have worked.
+        let deadline = Instant::now() + READY_TIMEOUT;
+        wait_for(&mbox, mailbox::READY, &mut child, deadline)?;
+        ctx.vlog(format!("guest ready after {:.1}s", t0.elapsed().as_secs_f64()));
+
+        q.stop()?;
+        std::fs::create_dir_all(&sdir)?;
+        let state_file = sdir.join("ready.state");
+        let _ = std::fs::remove_file(&state_file);
+        q.migrate_to_file(&state_file, Duration::from_secs(120))?;
+        // Quit cleanly rather than killing: the block layer has to flush before
+        // the overlay we are about to copy is trustworthy.
+        let _ = q.command("quit", serde_json::json!({}));
+        let _ = child.wait();
+
+        qemu::clone_file(&overlay, &sdir.join("ready-disk.qcow2"))?;
+        qemu::clone_file(&vars, &sdir.join("ready-vars.fd"))?;
+        qemu::clone_file(&mbox, &sdir.join("ready-mailbox.img"))?;
+        let meta = state::ReadyMeta {
+            fingerprint: want.clone(),
+            created_unix: SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
+            state_bytes: std::fs::metadata(&state_file)?.len(),
+        };
+        state::save(&meta)?;
+        ctx.vlog(format!(
+            "ready state built in {:.1}s ({:.0} MiB)",
+            t0.elapsed().as_secs_f64(),
+            meta.state_bytes as f64 / (1024.0 * 1024.0)
+        ));
+        Ok(meta)
+    })();
+
+    kill(&mut child);
+    match build {
+        Ok(meta) => Ok(state::ReadyState { dir: sdir, meta }),
+        Err(e) => {
+            let _ = state::discard();
+            Err(e)
         }
     }
+}
 
-    if opts.verbose {
-        eprintln!("winquick: vm finished in {:.1}s", started.elapsed().as_secs_f64());
-    }
+/// Boot, run, read results, kill. No ready state involved — the safety net.
+fn cold_execute(ctx: &Ctx, command: &str) -> Result<Outcome> {
+    ctx.vlog("cold boot");
+    let dir = new_run_dir()?;
+    let _scratch = Scratch(dir.clone());
+    let overlay = dir.join("root.qcow2");
+    let vars = dir.join("uefi-vars.fd");
+    let mbox = dir.join("mailbox.img");
+    let serial = dir.join("serial.log");
+    let qmp_sock = dir.join("qmp.sock");
 
-    let results = mailbox::read_results(&mbox)?;
+    ctx.q.create_overlay(&ctx.base, &overlay)?;
+    fresh_vars(&vars)?;
+    mailbox::create_template(&mbox)?;
+    mailbox::inject_command(&mbox, command)?;
 
-    // Pass the guest's streams through byte for byte, except for the CRLF that
-    // every Windows program emits — a Unix caller piping this into `grep` should
-    // not have to strip carriage returns.
-    let mut out = std::io::stdout().lock();
-    out.write_all(&strip_cr(&results.stdout))?;
-    out.flush()?;
-    let mut err = std::io::stderr().lock();
-    err.write_all(&strip_cr(&results.stderr))?;
-    err.flush()?;
+    let mut child = ctx.q.boot(&qemu::BootConfig {
+        uefi_code: &ctx.uefi_code,
+        uefi_vars: &vars,
+        root_disk: &overlay,
+        mailbox: &mbox,
+        memory_mb: ctx.opts_memory,
+        cpus: ctx.opts_cpus,
+        serial_log: &serial,
+        qmp_socket: &qmp_sock,
+        incoming: None,
+    })?;
 
-    if timed_out {
-        return Err(anyhow!(
-            "timed out after {}s waiting for the guest",
-            opts.timeout.as_secs()
-        ));
-    }
+    let result = (|| -> Result<Outcome> {
+        let deadline = Instant::now() + ctx.timeout;
+        wait_for(&mbox, mailbox::CODE_FILE, &mut child, deadline)?;
+        let r = mailbox::read_results(&mbox)?;
+        let code = r.exit_code.ok_or_else(|| anyhow!("guest wrote no exit code"))?;
+        Ok(Outcome { stdout: r.stdout, stderr: r.stderr, exit_code: code, warm: false })
+    })();
 
-    results.exit_code.ok_or_else(|| {
-        anyhow!("the guest never reported an exit code (it may have crashed or hung)")
-    })
+    kill(&mut child);
+    result
 }
 
 fn strip_cr(b: &[u8]) -> Vec<u8> {
