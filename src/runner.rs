@@ -72,8 +72,6 @@ struct Ctx {
     workspace: Option<PathBuf>,
     artifacts: Vec<String>,
     artifacts_dir: PathBuf,
-    /// The command line as sent to the guest, for diagnostics.
-    command: String,
 }
 
 impl Ctx {
@@ -89,6 +87,8 @@ pub struct Outcome {
     pub stderr: Vec<u8>,
     pub exit_code: i32,
     pub warm: bool,
+    /// The command line as sent to the guest, for diagnostics.
+    pub command: String,
 }
 
 /// Pull requested files off the artifact volume. Runs whether or not the command
@@ -128,13 +128,24 @@ fn collect_artifacts(ctx: &Ctx, image: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Execute and return the outcome without printing it. Used by `setup`'s smoke
+/// test, which wants to inspect the result rather than emit it.
+pub fn run_capture(command: &str, opts: &Options) -> Result<Outcome> {
+    execute(command, opts)
+}
+
 pub fn run(command: &str, opts: &Options) -> Result<i32> {
+    let t_start = Instant::now();
+    let o = execute(command, opts)?;
+    emit(o, t_start, opts.verbose)
+}
+
+fn execute(command: &str, opts: &Options) -> Result<Outcome> {
     let t_start = Instant::now();
     let base = paths::base_image()?;
     if !base.exists() {
         bail!(
-            "no Windows runtime found at {}\n\nRun `winquick setup` first.",
-            base.display()
+            "No Windows runtime is installed yet.\n\nSet one up with:\n    winquick setup"
         );
     }
     let uefi_code = paths::uefi_code()
@@ -152,7 +163,6 @@ pub fn run(command: &str, opts: &Options) -> Result<i32> {
         workspace: opts.workspace.clone(),
         artifacts: opts.artifacts.clone(),
         artifacts_dir: opts.artifacts_dir.clone(),
-        command: command.to_string(),
     };
     if !ctx.artifacts.is_empty() {
         crate::artifact::prepare_dest(&ctx.artifacts_dir, opts.artifact_overwrite)?;
@@ -166,7 +176,8 @@ pub fn run(command: &str, opts: &Options) -> Result<i32> {
             Ok(Some(ready)) => {
                 ctx.vlog("using existing ready state");
                 match warm_execute(&ctx, &ready, command) {
-                    Ok(o) => return emit(o, t_start, &ctx),
+                    Ok(o) => return Ok(o),
+                    Err(e) if crate::interrupt::interrupted() => return Err(e),
                     Err(e) => {
                         ctx.vlog(format!("warm path failed: {e:#}"));
                         ctx.vlog("discarding ready state and falling back to cold boot");
@@ -186,23 +197,42 @@ pub fn run(command: &str, opts: &Options) -> Result<i32> {
 
     // Cold. Build a ready state first so future runs are fast, then use it — which
     // doubles as verification that the state we just wrote actually works.
+    //
+    // The lock is held across both the re-check and the build: several runs can
+    // start at once with nothing prepared, and a run must never read a ready
+    // state that another process is still writing.
     if !opts.force_cold {
-        match build_ready_state(&ctx, &want) {
-            Ok(ready) => match warm_execute(&ctx, &ready, command) {
-                Ok(o) => return emit(o, t_start, &ctx),
-                Err(e) => {
-                    ctx.vlog(format!("newly built ready state did not work: {e:#}"));
-                    let _ = state::discard();
+        match crate::lock::acquire_build(Duration::from_secs(600))? {
+            Some(_guard) => {
+                // Someone may have built it while we waited.
+                if let Ok(Some(ready)) = state::load_valid(&want) {
+                    ctx.vlog("another run prepared the guest while we waited");
+                    match warm_execute(&ctx, &ready, command) {
+                        Ok(o) => return Ok(o),
+                        Err(e) if crate::interrupt::interrupted() => return Err(e),
+                        Err(e) => ctx.vlog(format!("that prepared guest did not work: {e:#}")),
+                    }
                 }
-            },
-            Err(e) => ctx.vlog(format!("could not build a ready state: {e:#}")),
+                match build_ready_state(&ctx, &want) {
+                    Ok(ready) => match warm_execute(&ctx, &ready, command) {
+                        Ok(o) => return Ok(o),
+                        Err(e) if crate::interrupt::interrupted() => return Err(e),
+                        Err(e) => {
+                            ctx.vlog(format!("newly built ready state did not work: {e:#}"));
+                            let _ = state::discard();
+                        }
+                    },
+                    Err(e) if crate::interrupt::interrupted() => return Err(e),
+                    Err(e) => ctx.vlog(format!("could not build a ready state: {e:#}")),
+                }
+            }
+            None => ctx.vlog("gave up waiting for another run to prepare the guest"),
         }
     }
 
     // Last resort: boot and run, no state involved. This is the path that must
     // never fail for reasons of its own.
-    let o = cold_execute(&ctx, command)?;
-    emit(o, t_start, &ctx)
+    cold_execute(&ctx, command)
 }
 
 /// The guest has no network on purpose, so a package that is not in the cache
@@ -254,7 +284,7 @@ fn argv_shape_hint(command: &str, o: &Outcome) -> Option<String> {
     ))
 }
 
-fn emit(o: Outcome, t_start: Instant, ctx: &Ctx) -> Result<i32> {
+fn emit(o: Outcome, t_start: Instant, verbose: bool) -> Result<i32> {
     // Pass the guest's streams through, except for the CRLF that every Windows
     // program emits — a Unix caller piping into `grep` should not have to strip
     // carriage returns.
@@ -266,15 +296,17 @@ fn emit(o: Outcome, t_start: Instant, ctx: &Ctx) -> Result<i32> {
     if let Some(hint) = nuget_hint(&o) {
         err.write_all(hint.as_bytes())?;
     }
-    if let Some(hint) = argv_shape_hint(&ctx.command, &o) {
+    if let Some(hint) = argv_shape_hint(&o.command, &o) {
         err.write_all(hint.as_bytes())?;
     }
     err.flush()?;
-    ctx.vlog(format!(
-        "{} run, total {:.0}ms",
-        if o.warm { "warm" } else { "cold" },
-        t_start.elapsed().as_secs_f64() * 1000.0
-    ));
+    if verbose {
+        eprintln!(
+            "winquick: {} run, total {:.0}ms",
+            if o.warm { "warm" } else { "cold" },
+            t_start.elapsed().as_secs_f64() * 1000.0
+        );
+    }
     Ok(o.exit_code)
 }
 
@@ -387,6 +419,9 @@ fn wait_for(
     deadline: Instant,
 ) -> Result<Vec<u8>> {
     loop {
+        if crate::interrupt::interrupted() {
+            bail!("interrupted");
+        }
         if let Some(v) = mailbox::probe(mbox, name) {
             if !v.trim_ascii().is_empty() {
                 return Ok(v);
@@ -405,6 +440,7 @@ fn wait_for(
 fn kill(child: &mut Child) {
     let _ = child.kill();
     let _ = child.wait();
+    crate::interrupt::clear_child();
 }
 
 // ---------------------------------------------------------------- warm path
@@ -448,6 +484,7 @@ fn warm_execute(ctx: &Ctx, ready: &state::ReadyState, command: &str) -> Result<O
         qmp_socket: &qmp_sock,
         incoming: Some(&ready.state_file()),
     })?;
+    crate::interrupt::watch_child(child.id());
 
     let result = (|| -> Result<Outcome> {
         let mut q = qmp::Qmp::connect(&qmp_sock, Duration::from_secs(10))?;
@@ -478,7 +515,7 @@ fn warm_execute(ctx: &Ctx, ready: &state::ReadyState, command: &str) -> Result<O
             (t_restore - t_spawn).as_secs_f64() * 1000.0,
             (t_exec - t_restore).as_secs_f64() * 1000.0
         ));
-        Ok(Outcome { stdout: r.stdout, stderr: r.stderr, exit_code: code, warm: true })
+        Ok(Outcome { stdout: r.stdout, stderr: r.stderr, exit_code: code, warm: true, command: command.to_string() })
     })();
 
     let t_before_kill = Instant::now();
@@ -527,6 +564,7 @@ fn build_ready_state(ctx: &Ctx, want: &state::Fingerprint) -> Result<state::Read
         qmp_socket: &qmp_sock,
         incoming: None,
     })?;
+    crate::interrupt::watch_child(child.id());
 
     let sdir = state::state_dir()?;
     let build = (|| -> Result<state::ReadyMeta> {
@@ -616,6 +654,7 @@ fn cold_execute(ctx: &Ctx, command: &str) -> Result<Outcome> {
         qmp_socket: &qmp_sock,
         incoming: None,
     })?;
+    crate::interrupt::watch_child(child.id());
 
     let result = (|| -> Result<Outcome> {
         let deadline = Instant::now() + ctx.timeout;
@@ -626,7 +665,7 @@ fn cold_execute(ctx: &Ctx, command: &str) -> Result<Outcome> {
         }
         let code = r.exit_code.ok_or_else(|| anyhow!("guest wrote no exit code"))?;
         collect_artifacts(ctx, &artifacts_img)?;
-        Ok(Outcome { stdout: r.stdout, stderr: r.stderr, exit_code: code, warm: false })
+        Ok(Outcome { stdout: r.stdout, stderr: r.stderr, exit_code: code, warm: false, command: command.to_string() })
     })();
 
     kill(&mut child);

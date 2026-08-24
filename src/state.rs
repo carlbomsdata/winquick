@@ -121,20 +121,20 @@ pub struct BaseMeta {
     pub agent_hash: String,
 }
 
-fn base_meta_path(base: &Path) -> PathBuf {
-    base.with_extension("json")
+pub fn base_meta_path(base: &Path) -> Result<PathBuf> {
+    Ok(base.with_extension("json"))
 }
 
 pub fn write_base_meta(base: &Path, agent: &str) -> Result<()> {
     let m = BaseMeta { protocol_version: PROTOCOL_VERSION, agent_hash: fnv1a(agent.as_bytes()) };
-    std::fs::write(base_meta_path(base), serde_json::to_vec_pretty(&m)?)
+    std::fs::write(base_meta_path(base)?, serde_json::to_vec_pretty(&m)?)
         .context("writing base image metadata")?;
     Ok(())
 }
 
 /// Confirm the agent baked into the base image is the one this binary expects.
 pub fn check_base_meta(base: &Path, agent: &str) -> Result<()> {
-    let p = base_meta_path(base);
+    let p = base_meta_path(base)?;
     let stale = "The Windows runtime was built by a different version of winquick.\n\nRebuild it with:  winquick setup --force";
     let text = std::fs::read_to_string(&p).map_err(|_| anyhow::anyhow!("{stale}"))?;
     let m: BaseMeta = serde_json::from_str(&text).map_err(|_| anyhow::anyhow!("{stale}"))?;

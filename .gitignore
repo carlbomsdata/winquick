@@ -10,6 +10,13 @@
 *.qcow2
 *.img
 
+# Built helper binaries; produced by scripts/build-ntfs-helpers.sh
+/vendor/
+
+# Release output
+/dist/
+
 # Local scratch
 /tmp/
 /scratch/
+winquick-artifacts/
