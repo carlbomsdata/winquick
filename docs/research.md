@@ -386,3 +386,212 @@ All verified through the real CLI against the base image built by
    content. `ntfsresize` is available and could cut the virtual size
    dramatically, which would speed up `qemu-img` and reduce overlay overhead.
 6. **Workspace mounting** (`C:\workspace`) — untouched so far.
+
+---
+
+# Warm start: eliminating the 8.5 s boot
+
+Everything in this section was measured on the same M4 Pro host described at the top.
+The warm mechanism below is a **validated prototype outside the CLI**; it is not yet wired
+into `winquick run`. The cold path is untouched and still works.
+
+## Where the 8.5 seconds goes
+
+Profiled by polling host-side file state (`serial.log` growth, overlay `st_blocks`, mailbox
+mtime) during a real `winquick run -- cmd /c ver`. QMP polling was tried first and rejected:
+polling `query-blockstats` every 20 ms added ~1 s of overhead and distorted the measurement.
+
+| Phase | Time | Notes |
+|---|---|---|
+| `winquick` startup, overlay create, mailbox build, QEMU spawn | **0.07 s** | negligible |
+| UEFI (EDK2) | **~0.4 s** | serial log stops growing here |
+| Windows boot → agent runs command → results written | **~6.5 s** | mailbox first written at t=6.92 s |
+| Windows shutdown → QEMU exit | **~1.4 s** | overlay jumps 0.6 → 43 MiB (dirty page writeback) |
+| **Total** | **8.33 s** | |
+
+The host-side code is not the problem. Essentially all of the time is Windows booting and
+then shutting down again. The overlay barely grows until the very end, which confirms the
+boot is CPU/decompression-bound rather than write-bound.
+
+## Mechanisms evaluated
+
+### `savevm` / `loadvm` (qcow2 internal snapshots) — rejected
+
+Raw timings were excellent: **savevm 0.07 s, loadvm 0.03–0.05 s** (mean 0.038 s). But it is
+unusable here for two independent reasons.
+
+**Every writable block device must support snapshots.** The mailbox is a raw image, which
+does not, so `savevm` fails outright:
+
+```
+Error: Device 'mbox' is writable but does not support snapshots
+```
+
+Converting the mailbox to qcow2 does not help, because `loadvm` would then *revert* the
+mailbox — discarding the very command we just wrote into it.
+
+**Where the VM state lands is not controllable.** QEMU stores it in the first snapshot-capable
+writable device. With a qcow2 UEFI varstore, the RAM state went into the *varstore* (405 MiB)
+rather than the root overlay, and `loadvm` then crashed QEMU outright:
+
+```
+Assertion failed: (!auto_alloc || *pptr == NULL), function vmstate_load_next, file vmstate.c, line 265
+```
+
+### `migrate` to file + `-incoming` — selected
+
+Migration has no snapshot-capability requirement on block devices; disk consistency is the
+caller's responsibility, which suits us exactly since we already control the overlay.
+
+| Operation | Measured |
+|---|---|
+| `migrate file:<path>` (1024 MiB guest, stopped) | **3.4 s**, one-off at build time |
+| Ready-state file | **407 MiB** |
+| Ready disk (overlay at migration instant) | **41 MiB** |
+| `-incoming file:<path>` restore to `paused` | **52–86 ms** |
+
+Restore spawns a fresh QEMU process each run, so there is no long-lived daemon, no resident
+RAM, and no idle CPU — and crash recovery is trivial because nothing persists between runs.
+
+### Keeping QEMU paused between runs — not needed
+
+Given a 52–86 ms cold restore from file, a resident daemon would save at most a few tens of
+milliseconds while costing ~400 MiB RSS permanently and requiring lifecycle management. Not
+pursued; revisit only if the per-run figure has to drop below ~100 ms.
+
+## The blocker that mattered: Windows filesystem caching
+
+A booted, resumed Windows does **not** see host-side changes to the mailbox, and its own
+writes do **not** reach the host image. The mailbox only synchronises at volume mount and
+dismount — which in the cold path happen to coincide with boot and shutdown.
+
+Measured directly: with the guest running and the host rewriting the mailbox image
+underneath (including with `cache=none`), the guest never observed the change within 30 s.
+
+### The primitive that fixes it
+
+`mountvol.exe` is present in Validation OS and provides a complete invalidation cycle:
+
+```bat
+for /f "tokens=*" %%v in ('mountvol D: /L') do set VOL=%%v   :: stable volume GUID
+mountvol D: /P            :: dismount -> flushes guest writes out to the host image
+mountvol D: %VOL%         :: recreate mount point -> next read comes from disk
+```
+
+Verified in a diagnostic boot (results written to `C:` and read back with `ntfscat`):
+
+```
+VOL=[\\?\Volume{47b92dd1-a01d-11f1-97e6-806e6f6e6963}\]
+GO:YES                 <- file visible before dismount
+after-P errorlevel=0
+afterP-GO:NO           <- volume gone, cache dropped
+after-remount errorlevel=0
+afterRemount-GO:YES    <- re-read from disk, fresh content
+```
+
+A separate test confirmed the flush direction: a file written by the guest then followed by
+`mountvol D: /P` appeared in the host image **without any shutdown**.
+
+`mountvol /R` does *not* bring a dismounted volume back — it only prunes stale entries. The
+mount point must be recreated explicitly from the volume GUID.
+
+**Consequence for the per-run mailbox:** the volume GUID is derived from the filesystem, so
+the mailbox image must keep its identity across runs. Reformatting it per run (`mformat`)
+changes the serial and the agent's saved GUID stops resolving. The prototype instead copies
+a pristine ready-mailbox with `cp -c` (APFS clone, effectively free) and rewrites only the
+files inside it.
+
+## The warm-mode guest agent
+
+Same shape as the cold agent, but it waits instead of shutting down:
+
+```bat
+for /f "tokens=*" %%v in ('mountvol %WQ% /L') do set VOL=%%v
+mountvol %WQ% /P
+:loop
+mountvol %WQ% %VOL%                  :: remount -> fresh view
+if exist %WQ%\WQGO.TXT goto run
+mountvol %WQ% /P
+goto loop
+:run
+cmd /c %WQ%\WQCMD.CMD > %WQ%\WQOUT.TXT 2> %WQ%\WQERR.TXT
+set RC=%errorlevel%
+>%WQ%\WQCODE.TXT echo %RC%
+mountvol %WQ% /P                     :: dismount -> flush results to the host
+```
+
+The poll loop spins, but only while the VM is actually running; between runs no VM exists at
+all.
+
+## A trap worth recording: read-only UEFI varstore
+
+Several hours were lost to this. To satisfy `savevm`'s "writable devices must support
+snapshots" rule, the UEFI variable store was made `readonly=on`. **Windows then never boots** —
+EDK2 cannot persist boot variables, the guest sits in firmware, and the symptom is a
+completely black framebuffer with no error anywhere.
+
+This produced a cascade of false conclusions: a "stale cache" verdict that was really "the
+guest never booted", and a 63 MiB ready-state file that looked plausible but contained a VM
+stuck in UEFI. The giveaway is state-file size: a genuinely booted 1024 MiB guest produces
+**~407 MiB**, not 63 MiB.
+
+The varstore must stay writable. It is copied per run alongside the disk, so it stays
+disposable.
+
+## Measured results
+
+Prototype: fresh QEMU per run, `-incoming file:` restore, APFS-cloned ready disk + varstore +
+mailbox, warm agent, teardown by killing QEMU.
+
+**20 consecutive warm runs of `cmd /c ver`** — 0 failures, output verified each time:
+
+| | |
+|---|---|
+| min | **0.199 s** |
+| p50 | **0.210 s** |
+| mean | **0.209 s** |
+| p95 | **0.214 s** |
+| max | **0.214 s** |
+
+Against a cold baseline of mean 8.5 s (min 8.31, max 9.65): **~40× faster**, and comfortably
+inside the "< 1 second" goal.
+
+Per-run breakdown: ~20–40 ms host prep (three APFS clones + two `mcopy`), ~55–85 ms QEMU
+start and RAM restore, remainder is the guest's poll iteration plus command execution.
+
+### Correctness
+
+| Check | Result |
+|---|---|
+| `cmd /c ver` → correct build string, exit 0 | ✅ 0.21 s |
+| `cmd /c exit 42` → exit 42 | ✅ |
+| stdout and stderr separated, exit 7 preserved | ✅ `OUT1` / `ERR1` / 7 |
+| unknown command → stderr message, exit 1 | ✅ |
+| **disk** changes discarded between runs | ✅ file written in run 1 absent in run 2 |
+| **registry** changes discarded between runs | ✅ `HKLM\SOFTWARE\WQTEST` absent next run |
+| **environment** changes discarded between runs | ✅ |
+| base image SHA-256 unchanged | ✅ |
+| cold path still works after all of this | ✅ 8.80 s |
+
+### Storage cost
+
+| Artifact | Size |
+|---|---|
+| Ready state (RAM + device state) | 407 MiB |
+| Ready disk (overlay at snapshot) | 41 MiB |
+| Ready varstore | 64 MiB (sparse) |
+| Ready mailbox | 64 MiB (sparse) |
+
+Per-run copies are APFS clones, so they cost approximately nothing until written.
+
+## Not yet done
+
+- **Not integrated into the CLI.** `winquick run` still always takes the cold path.
+- **No staleness/invalidation metadata yet.** A ready state must be invalidated when the base
+  image, QEMU version, guest agent, firmware, vCPU count or memory size changes. Nothing
+  records those today, and restoring a mismatched state is unsafe.
+- **No automatic fallback** from a missing or corrupt ready state to the cold path.
+- Guest RAM for the warm prototype was 1024 MiB (the cold default is 2048 MiB). The ready
+  state scales with RAM, so this is a real trade-off that has not been explored.
+- The warm agent's poll loop spins a vCPU while running; acceptable now, but it sets a floor
+  on how low per-run latency can go.
