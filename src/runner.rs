@@ -72,6 +72,8 @@ struct Ctx {
     workspace: Option<PathBuf>,
     artifacts: Vec<String>,
     artifacts_dir: PathBuf,
+    /// The command line as sent to the guest, for diagnostics.
+    command: String,
 }
 
 impl Ctx {
@@ -150,6 +152,7 @@ pub fn run(command: &str, opts: &Options) -> Result<i32> {
         workspace: opts.workspace.clone(),
         artifacts: opts.artifacts.clone(),
         artifacts_dir: opts.artifacts_dir.clone(),
+        command: command.to_string(),
     };
     if !ctx.artifacts.is_empty() {
         crate::artifact::prepare_dest(&ctx.artifacts_dir, opts.artifact_overwrite)?;
@@ -230,6 +233,27 @@ fn nuget_hint(o: &Outcome) -> Option<String> {
     ))
 }
 
+/// `run -- <command>` takes the program and its arguments as separate words, the
+/// way `docker run` does. Passing the whole command line as one quoted string is
+/// an easy mistake, and cmd.exe's complaint about it is not obvious.
+fn argv_shape_hint(command: &str, o: &Outcome) -> Option<String> {
+    let text = String::from_utf8_lossy(&o.stderr);
+    if !text.contains("is not recognized as an internal or external command") {
+        return None;
+    }
+    // The whole thing arrived quoted, so the first word carries a space.
+    let looks_quoted = command.starts_with('"') && command.trim_end().ends_with('"');
+    if !looks_quoted {
+        return None;
+    }
+    let inner = command.trim().trim_matches('"');
+    Some(format!(
+        "\nwinquick: `run` takes the program and its arguments as separate words,\n\
+         winquick: like `docker run`. Try:\n\
+         winquick:     winquick run -- {inner}\n"
+    ))
+}
+
 fn emit(o: Outcome, t_start: Instant, ctx: &Ctx) -> Result<i32> {
     // Pass the guest's streams through, except for the CRLF that every Windows
     // program emits — a Unix caller piping into `grep` should not have to strip
@@ -240,6 +264,9 @@ fn emit(o: Outcome, t_start: Instant, ctx: &Ctx) -> Result<i32> {
     let mut err = std::io::stderr().lock();
     err.write_all(&strip_cr(&o.stderr))?;
     if let Some(hint) = nuget_hint(&o) {
+        err.write_all(hint.as_bytes())?;
+    }
+    if let Some(hint) = argv_shape_hint(&ctx.command, &o) {
         err.write_all(hint.as_bytes())?;
     }
     err.flush()?;
