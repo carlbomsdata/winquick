@@ -1455,3 +1455,142 @@ winquick:     winquick run -- dotnet test --nologo
 edge in this milestone was cosmetic; that one stops a new user from getting to
 their first `winquick run` at all. It has been deferred three times now and is the
 thing standing between "works on this Mac" and "works on someone else's".
+
+---
+
+# v0.1.0: productisation
+
+What changed between the working prototype and a release, and what it cost.
+
+## The setup blocker, solved
+
+`winquick setup` needs two things macOS cannot do: write files into an NTFS
+volume, and set a value in a Windows registry hive. Previously this meant asking
+users to build `ntfsprogs` from source, which is not a product.
+
+Options considered, in the order the brief suggested:
+
+1. **Vendor the helpers** — chosen. `scripts/build-ntfs-helpers.sh` builds
+   `ntfscp` and `ntfscat` from unmodified ntfs-3g/ntfsprogs 2022.10.3, statically
+   linked against `libntfs-3g`, producing **312 KiB arm64 binaries whose only
+   dynamic dependencies are `/usr/lib/libSystem` and CoreFoundation**. They ship
+   in the release archive.
+2. **Another library** — hivex is already a Homebrew formula that works on macOS,
+   so the registry side needs no vendoring at all: the formula declares it.
+3. **Custom NTFS write logic** — rejected. Overwriting an existing same-size file
+   would have been tractable, but creating one requires MFT allocation, bitmap
+   updates and directory B-tree insertion. Not simpler, and far riskier.
+
+QEMU takes the same route: a Homebrew dependency, so `brew install` handles it
+and the user never types a QEMU command. All three stay separate executables,
+which is the licensing boundary as much as the design.
+
+Result: `brew install` then `winquick setup`, with nothing to compile.
+
+## Setup as an experience
+
+Setup now explains the Microsoft licensing boundary in plain language and offers
+either `--accept-microsoft-terms` or `--from <path>`; looks for an image already
+in `~/Downloads` or the cache; builds into a staging file and moves it into place
+only when complete, so an interrupted run leaves nothing half-installed; and
+finishes by **booting Windows and running a real command**. It never says "Ready"
+without proving it.
+
+Measured: **15 s** end to end with the image already downloaded.
+
+## Bugs found by productising
+
+Each of these was found by testing a path the prototype had never exercised.
+
+**Ctrl-C left a virtual machine running.** Rust's default SIGINT terminates the
+process without running any `Drop`, so the QEMU child kept its gigabyte of RAM and
+the run directory stayed behind. Fixed with a signal handler that does only
+async-signal-safe work — record the interruption, signal the child — and lets the
+main thread unwind normally. A second bug hid behind it: interruption was being
+treated as a recoverable warm-path failure, so WinQuick helpfully started a
+*second* VM. Now: exit 130, nothing left behind.
+
+**Concurrent cold starts raced.** The prepared-guest lock was acquired, the state
+checked, and the lock dropped — all before the build began. Two runs could then
+build simultaneously, and one could read a state the other was still writing. The
+lock now spans the re-check and the build. Four concurrent runs, repeatedly, all
+correct.
+
+**`cp` wrote into the caller's stdout.** During that race, `cp: ... No such file`
+appeared in a run's output while the run still reported success — a corrupted
+result presented as a clean one. Child helper processes now have their output
+captured.
+
+**`winquick --help | grep -q` panicked.** Rust ignores SIGPIPE at startup, which
+turns a closed pipe into `failed printing to stdout: Broken pipe`. Restored the
+normal command-line behaviour. Safe here because nothing reaches stdout until
+QEMU has already been shut down.
+
+**Artifact names were trusted.** Entries came off a filesystem the guest
+controlled and were joined onto the destination path directly. Now anything that
+is not a single ordinary path component is skipped with a warning.
+
+## Cache sync no longer costs 12 seconds
+
+The prepared guest is fingerprinted over the capability volumes, so rebuilding
+the package-cache volume invalidated it. But a sync that adds nothing does not
+need to rebuild the volume at all: `cache sync` now counts packages before and
+after and skips the rebuild when nothing changed. **0.6 s instead of ~12 s** for
+the common no-op, with no loss of correctness — a sync that *does* add packages
+still rebuilds and still invalidates, because the guest cannot re-read a volume
+after the frozen image was captured.
+
+## Measured, release build
+
+| Command | p50 | p95 |
+|---|---|---|
+| `cmd /c ver` | **284 ms** | 295 ms |
+| `pwsh -Command "'WQ-'+(6*7)"` | **644 ms** | 657 ms |
+| framework-dependent .NET app | **378 ms** | 392 ms |
+| `dotnet test`, small project | ~10 s | — |
+| `winquick setup` | 15 s | — |
+| first run after a change (rebuild) | ~12 s | — |
+
+30 consecutive warm runs: min 266 ms, p50 288 ms, p95 298 ms, zero failures.
+
+| Artifact | Size |
+|---|---|
+| `winquick` binary | 888 KiB |
+| Release archive | 840 KiB |
+| Windows runtime | 763 MiB |
+| Prepared guest | 433 MiB |
+| `powershell` | 273 MiB |
+| `dotnet-runtime` | 90 MiB |
+| `dotnet-sdk` | 837 MiB |
+
+## Tests
+
+74 integration checks and 9 unit tests. Beyond the earlier coverage, the suite now
+exercises `--version`/`--help`/`doctor`/`info`/`clean --dry-run`, command
+timeouts, Ctrl-C (exit code, no orphaned QEMU, no leftover directories), four
+concurrent runs, and two artifact-safety cases: a pattern that tries to escape
+the workspace, and the refusal to write into a non-empty artifacts directory.
+
+## New-user validation
+
+Performed against the release archive on a wiped `~/.winquick`, following only
+the public documentation: doctor before setup (names the missing runtime), setup,
+doctor --smoke, run, install PowerShell, install the SDK, workspace + cache +
+`dotnet test`, artifact extraction, reset and rebuild, exit codes, and both
+cleanup paths. Everything worked; the only fixes needed were cosmetic — `doctor`
+reporting "prepared guest not built" as a failure when it is normal, and `info`
+listing the internal package-cache volume as a capability with version `?`.
+
+## Dogfood, v0.1.0
+
+A fresh `claude` session in the buggy DevicePrep project, with the released
+binary installed per `docs/install.md` and one line in the project README:
+
+- **86 seconds, 9 turns, 5 winquick invocations, 2 test runs**
+- Ran `winquick doctor`, `winquick info` and `winquick run --help` to orient
+- Fixed all four Windows-only defects; 9/9 passing, verified independently
+- No attempt at Wine, Docker, or a remote Windows machine
+- No human intervention
+
+Faster and more direct than the pre-productisation run (191 s, 6 invocations),
+which is what the new diagnostic commands were for.

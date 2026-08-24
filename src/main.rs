@@ -433,13 +433,18 @@ fn info() -> Result<i32> {
         _ => println!("prepared     no — the first run will take longer"),
     }
     let caps = capability::installed()?;
-    if caps.is_empty() {
+    let named: Vec<_> = caps.iter().filter(|c| capability::spec(&c.name).is_some()).collect();
+    if named.is_empty() {
         println!("capabilities none — see `winquick capability list`");
     } else {
-        for c in &caps {
-            let v = capability::spec(&c.name).map(|s| s.version).unwrap_or("?");
+        for c in &named {
+            let v = capability::spec(&c.name).map(|s| s.version).unwrap_or("");
             println!("capability   {} {} ({})", c.name, v, helpers::human(helpers::allocated(&c.image)));
         }
+    }
+    // The package cache is an internal volume, not something you install.
+    if let Some(nc) = caps.iter().find(|c| c.name == "nuget-cache") {
+        println!("packages     cached, {}", helpers::human(helpers::allocated(&nc.image)));
     }
     println!("data         {}", paths::root()?.display());
     Ok(0)
@@ -500,7 +505,12 @@ fn doctor(smoke: bool) -> Result<i32> {
         problems.push(format!("{e:#}"));
     }
     let prepared = state::state_dir().map(|d| d.join("ready.json").exists()).unwrap_or(false);
-    println!("  {} prepared guest {}", tick(prepared), if prepared { "ready" } else { "will be built on first run" });
+    // Not having one is normal, not a fault: the first run builds it.
+    println!(
+        "  {} prepared guest {}",
+        if prepared { tick(true) } else { "·   " },
+        if prepared { "ready (runs are fast)" } else { "not built yet; the first run will build it" }
+    );
 
     let caps = capability::installed()?;
     println!(
