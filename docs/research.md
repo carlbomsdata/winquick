@@ -595,3 +595,132 @@ Per-run copies are APFS clones, so they cost approximately nothing until written
   state scales with RAM, so this is a real trade-off that has not been explored.
 - The warm agent's poll loop spins a vCPU while running; acceptable now, but it sets a floor
   on how low per-run latency can go.
+
+---
+
+# Warm path in the CLI: measured results
+
+The prototype above is now `winquick run`. Everything below was measured on the
+real CLI, not a harness, on the same M4 Pro.
+
+Reproduce with:
+
+```console
+cargo build --release
+winquick setup --force        # rebuilds the base image with the waiting agent
+rm -rf ~/.winquick/states     # or: winquick reset
+./tests/integration.sh 100
+```
+
+## What changed in the product
+
+- The guest agent no longer calls `shutdown`. It writes `WQREADY.TXT`, then waits.
+  The host kills QEMU once the exit code lands, which also removes ~1.4 s of
+  Windows shutdown from the cold path (cold is now **7.9 s**, was 8.5 s).
+- `winquick run` resumes a frozen guest when one is valid, and builds one when it
+  is not.
+- New `winquick reset` discards the frozen guest; new `--cold` forces a full boot.
+- Mailbox protocol is versioned (v1) and documented in `src/mailbox.rs`.
+
+## Timings
+
+**First run after `setup`** (no prepared guest):
+
+```
+host startup 2ms
+no ready state yet
+preparing a reusable Windows image (one-off, takes a few seconds)
+guest ready after 7.9s
+ready state built in 11.3s (414 MiB)
+warm phases: prep 5ms | qemu spawn 41ms | state restore 105ms | guest exec + mailbox sync 80ms
+teardown 7ms
+warm run, total 11581ms
+```
+
+**Steady state**, 100 consecutive `winquick run -- cmd /c ver`, zero failures:
+
+| | |
+|---|---|
+| min | 216 ms |
+| p50 | **225 ms** |
+| mean | 225 ms |
+| p95 | **234 ms** |
+| p99 | 236 ms |
+| max | 236 ms |
+
+Acceptance target was p95 < 300 ms. Met with margin.
+
+**Phase breakdown** of a representative warm run (229 ms total):
+
+| Phase | Time |
+|---|---|
+| WinQuick host startup | 2 ms |
+| Prep — clone 4 files, inject command | 4 ms |
+| QEMU process startup to QMP | 31 ms |
+| State restore (`-incoming file:`) | 103 ms |
+| Guest execution + mailbox synchronisation | 80 ms |
+| QEMU termination | 7 ms |
+
+State restore and the guest's own mount/execute/dismount cycle dominate. The
+80 ms guest phase includes at least one full dismount-remount cycle of the
+mailbox volume, which is the price of cache coherency without a driver.
+
+## Resource cost
+
+| | |
+|---|---|
+| `ready.state` | 415 MiB |
+| `ready-disk.qcow2` | 40 MiB |
+| `ready-vars.fd` | 64 MiB (sparse) |
+| `ready-mailbox.img` | 64 MiB (sparse) |
+| **Prepared guest, total on disk** | **460 MiB** |
+| Peak QEMU RSS during a warm run | **1286 MiB** |
+| Guest RAM | 1024 MiB |
+
+Peak RSS is roughly guest RAM plus QEMU overhead: restoring the state faults the
+whole guest RAM in. There is no resident daemon, so this exists only while a
+command is actually running.
+
+## Integration tests
+
+`tests/integration.sh` runs the real CLI. 23 checks, all passing:
+
+| Group | Checks |
+|---|---|
+| Streams and exit codes | build string on stdout; exit codes 0/1/7/42/99/255 round-trip; stdout and stderr never cross-contaminate; unknown command exits 1 with a message on stderr |
+| Disposability | filesystem, `HKLM` registry and environment mutations all absent in the next run |
+| Base immutability | `base.qcow2` SHA-256 unchanged across runs |
+| Invalidation | changing `--memory` or `--cpus` invalidates the prepared guest, with `--verbose` naming the reason |
+| Corruption | a truncated `ready.state` is detected, discarded, rebuilt, and the command still returns the right answer and exit code |
+| Rebuild | a deleted prepared guest is rebuilt automatically |
+| Reliability | 100 consecutive warm runs, zero failures |
+
+Invalidation and fallback are exercised automatically, not just reasoned about.
+
+### A test that was wrong, not a bug
+
+The environment-leak check initially asserted that `cmd /c echo [%WQLEAK%]`
+returns the literal `[%WQLEAK%]`. It does not: an undefined variable expands to
+nothing, so the correct clean result is `[]`, and a leak would show `[1]`. The
+assertion was fixed; no product change was needed.
+
+## Known issues and limits
+
+- **1024 MiB guest RAM** on both paths now, down from the cold default of 2048 MiB,
+  because that is the configuration the warm prototype proved. Larger workloads
+  may need more, and the prepared-guest size scales with it.
+- **Peak RSS is ~1.3 GiB while a command runs.** Fine for one at a time; running
+  many concurrently would need thought.
+- **Building the prepared guest takes ~11 s** and is not optimised. Migration
+  alone is ~3.4 s of that.
+- **The agent's wait loop spins a vCPU** while the VM is running. It costs nothing
+  between runs, because between runs there is no VM, but it sets a floor on
+  per-run latency.
+- **Concurrent `winquick run` invocations are untested.** They would share the
+  prepared guest read-only, which should be safe, but nothing verifies it.
+- **`qemu_version` in the fingerprint is derived from the binary path**, not from
+  running `--version`, to keep the warm path fast. An in-place QEMU upgrade
+  changes the binary's mtime and inode, which is what actually triggers
+  invalidation.
+- The two `setup` caveats are unchanged: `ntfsprogs` must be built from source,
+  and the ISO is left mounted at `/private/tmp/winquick-vos`.

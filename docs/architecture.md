@@ -138,40 +138,126 @@ This runs natively on macOS via `qemu-img`, `hdiutil`, `hivexsh` and `ntfscp`.
 The NTFS tooling currently has to be built from source, which is a known rough
 edge; see research.md.
 
+## Two execution paths
+
+```
+                      winquick run -- <command>
+                                |
+                      valid prepared guest?
+                        /                \
+                     yes                  no
+                      |                    |
+              clone + resume        boot from base image
+              (~225 ms)             wait for the agent
+                      |             freeze it  -> prepared guest
+                      |                    |
+                      +---------> clone + resume
+                                           |
+                                  (if that fails: boot and run directly)
+```
+
+The cold path is not just a fallback — it is how the prepared guest gets built,
+so the slow route happens once and pays for every run after it.
+
+### Warm path
+
+1. clone the prepared guest's four files (APFS clone, ~4 ms regardless of size)
+2. write the command into the cloned mailbox
+3. start QEMU with `-incoming file:<state>`; it loads RAM and device state paused
+4. `cont`
+5. the agent's wait loop remounts the mailbox, sees the command, runs it
+6. the agent writes stdout, stderr and the exit code, then dismounts to flush
+7. kill QEMU, delete the clones
+
+Measured phase breakdown of a 229 ms run: prep 4 ms, QEMU spawn 31 ms, state
+restore 103 ms, guest execution and mailbox synchronisation 80 ms, teardown 7 ms.
+
+### Cold path
+
+Boot the base image, wait for the agent's `WQREADY.TXT`, `stop`, migrate RAM and
+device state to a file, and keep the root overlay, UEFI varstore and mailbox as
+they were at that instant. About 11 seconds, once.
+
+Note the cold path no longer waits for Windows to shut down — the host kills QEMU
+once the exit code has been written, which removes ~1.4 s.
+
+**Migration, not `savevm`.** `savevm` requires every writable block device to
+support snapshots, which the raw mailbox does not, and it chooses which device
+stores the state — putting it in the UEFI varstore, where `loadvm` crashed QEMU.
+Migration has no such requirement. See docs/research.md.
+
+**The UEFI variable store must stay writable.** Making it read-only satisfies
+`savevm`'s constraint and silently prevents Windows from booting at all.
+
+## The prepared guest
+
+```
+~/.winquick/states/validation-arm64/
+    ready.state         RAM + device state (~415 MiB)
+    ready-disk.qcow2    root overlay at the freeze instant (~40 MiB)
+    ready-vars.fd       UEFI variable store at that instant
+    ready-mailbox.img   mailbox at that instant
+    ready.json          fingerprint
+```
+
+All four restore together. RAM restored against a different disk is not a
+slightly-wrong VM, it is an undefined one.
+
+`ready-mailbox.img` is there because the guest re-reads the mailbox by dismounting
+it and re-creating the mount point from its **volume GUID**, which is derived from
+the filesystem. Reformatting the mailbox between runs would change that GUID and
+the guest could never mount it again — so it is formatted once, here, and cloned
+from then on.
+
+### Invalidation
+
+`ready.json` fingerprints everything the frozen state depends on: WinQuick
+version, mailbox protocol version, base image, guest agent, QEMU binary, UEFI
+firmware, guest RAM, vCPU count, machine type and device topology.
+
+Large files are identified by length, mtime and inode rather than hashed. Hashing
+a 763 MiB base image costs several times the entire warm-run budget, and the case
+that matters — `setup` rewriting the image — changes all three.
+
+The guest agent is a special case: it lives *inside* the base image, so changing
+it needs a `setup` rebuild rather than just a new prepared guest. `setup` records
+the agent's hash beside the image and `run` checks it, so a mismatch produces a
+clear instruction instead of a mysterious hang.
+
+### Failure handling
+
+Warm execution must never make WinQuick fragile, so failures are layered:
+
+1. stale fingerprint, missing file, wrong-sized state, failed restore, unresponsive
+   guest → discard the prepared guest, rebuild it, run
+2. that fails too → boot and run directly, with no prepared guest involved
+
+Every step is reported under `--verbose`; default output stays clean.
+
 ## Disposable execution
 
 ```
   base.qcow2                 read-only backing file, never written
       |
-      +-- root.qcow2         copy-on-write overlay, one per run, then deleted
+      +-- ready-disk.qcow2   frozen guest, written once
+              |
+              +-- root.qcow2 per-run clone, deleted afterwards
 ```
 
-`winquick run`:
-
-1. ensure the runtime exists (otherwise say to run `winquick setup`)
-2. `qemu-img create -f qcow2 -b base.qcow2 -F qcow2 <overlay>`
-3. build the mailbox image and write the command into it
-4. boot headlessly from the overlay
-5. the guest agent runs the command and shuts the VM down
-6. read stdout, stderr and the exit code out of the mailbox
-7. write them to the host's stdout and stderr, translating CRLF to LF
-8. delete the entire run directory
-9. exit with the guest process's exit code
-
-Three properties are worth being pedantic about, because they are the product:
+`winquick run` guarantees three things, and they are the product:
 
 **The base image is never written.** qcow2 backing files are opened read-only.
-A run that destroys Windows destroys one overlay. Verified by SHA-256 across
-many runs — that is what makes it safe to hand to an agent.
+Verified by SHA-256 across many runs.
 
-**Nothing survives a run.** The run directory holds the overlay, the mailbox and
-the UEFI variable store, and is removed by a `Drop` guard that fires on success,
-error and panic alike. Set `WINQUICK_KEEP=1` to keep it for debugging.
+**Nothing survives a run.** The run directory holds the overlay, mailbox and UEFI
+variable store, and is removed by a `Drop` guard that fires on success, error and
+panic alike. Set `WINQUICK_KEEP=1` to keep it for debugging. Because every run
+starts from a clone of the same frozen guest, filesystem, registry and environment
+changes are all discarded — tested explicitly.
 
 **Streams and exit codes pass through.** stdout and stderr stay separate and are
 never interleaved or prefixed; the Windows exit code becomes the CLI's exit code.
-The one deliberate transformation is CRLF → LF, so that piping into `grep` on the
-host behaves.
+The one deliberate transformation is CRLF → LF, so piping into `grep` behaves.
 
 ## Workspace
 

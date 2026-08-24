@@ -42,28 +42,36 @@ There is no GUI, and there will not be one. You never see or manage a VM.
 | Host | macOS on Apple Silicon (M1–M5). Nothing else. |
 | Virtualization | QEMU + Apple Hypervisor Framework (HVF), as a separate subprocess |
 | Guest | Microsoft Validation OS ARM64, obtained by you from Microsoft |
-| Control channel | A FAT mailbox disk. No SSH, no WinRM, no RDP, no open ports |
-| Commands | `winquick setup`, `winquick run -- <command>`, `winquick info` |
+| Control channel | A private disk. No SSH, no WinRM, no RDP, no open ports |
+| Commands | `winquick setup`, `winquick run -- <command>`, `winquick info`, `winquick reset` |
 
 Deliberately out of scope for now: Linux/Windows/Intel hosts, cloud execution, GUI
 virtualization, full Windows 11 guests, MCP integration, a large command tree.
 
-### Measured on an M4 Pro
+### Speed
+
+The first run after `winquick setup` takes about 11 seconds: Windows boots, and
+WinQuick keeps a copy of the booted machine so it never has to boot it again.
+Every run after that starts from that copy.
+
+Measured on an M4 Pro, 100 consecutive runs of `winquick run -- cmd /c ver`,
+zero failures:
 
 | | |
 |---|---|
-| `winquick run -- cmd /c ver`, end to end | **8.4–9.2 s** |
-| Base image | **763 MiB** |
-| Per-run disk written | **44 MiB**, deleted afterwards |
-| Minimum working guest RAM | **512 MiB** |
+| median | **225 ms** |
+| p95 | **234 ms** |
+| p99 | **236 ms** |
+| first run (or after `winquick reset`) | ~11 s |
+| base image | 763 MiB |
+| prepared guest | ~460 MiB |
 
-Full numbers and method in [docs/research.md](docs/research.md).
+Full method and numbers in [docs/research.md](docs/research.md).
 
 ### Known limits
 
-- **One command per boot, and no streaming.** Output arrives when the VM shuts
-  down. Fine for `run`; it is the main reason the control channel will move to
-  virtio-serial.
+- **One command per run, and no streaming.** Output arrives when the command
+  finishes, not as it is produced.
 - **Validation OS is minimal.** It has `cmd.exe` and 538 files in `System32`. No
   PowerShell, no .NET. So `winquick run -- powershell ...` and
   `winquick run -- dotnet test` do **not** work yet — the packages exist on
