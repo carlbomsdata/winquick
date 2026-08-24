@@ -18,7 +18,7 @@ for c in 0 1 7 42 99 255; do
   check "exit code $c propagates" "$?" "$c"
 done
 
-"$WQ" run -- 'cmd /c echo S-OUT & echo S-ERR 1>&2 & exit 7' >/tmp/wq_o 2>/tmp/wq_e
+"$WQ" run -- cmd /c "echo S-OUT & echo S-ERR 1>&2 & exit 7" >/tmp/wq_o 2>/tmp/wq_e
 check "exit code alongside output" "$?" "7"
 grep -q S-OUT /tmp/wq_o && ! grep -q S-ERR /tmp/wq_o && ok "stdout holds only stdout" || bad "stdout separation" "$(cat /tmp/wq_o)"
 grep -q S-ERR /tmp/wq_e && ! grep -q S-OUT /tmp/wq_e && ok "stderr holds only stderr" || bad "stderr separation" "$(cat /tmp/wq_e)"
@@ -28,17 +28,17 @@ check "unknown command exits 1" "$?" "1"
 grep -qi "not recognized" /tmp/wq_e && ok "unknown command explains itself on stderr" || bad "stderr message" "$(cat /tmp/wq_e)"
 
 echo "== disposability =="
-"$WQ" run -- 'cmd /c echo SENTINEL> C:\wqtest.txt' >/dev/null 2>&1
-"$WQ" run -- 'cmd /c type C:\wqtest.txt' >/dev/null 2>&1
+"$WQ" run -- cmd /c "echo SENTINEL> C:\wqtest.txt" >/dev/null 2>&1
+"$WQ" run -- cmd /c "type C:\wqtest.txt" >/dev/null 2>&1
 [ $? -ne 0 ] && ok "filesystem mutation does not survive" || bad "filesystem" "C:\\wqtest.txt persisted"
 
-"$WQ" run -- 'cmd /c reg add HKLM\SOFTWARE\WQTEST /v X /t REG_SZ /d LEAK /f' >/dev/null 2>&1
-"$WQ" run -- 'cmd /c reg query HKLM\SOFTWARE\WQTEST /v X' >/dev/null 2>&1
+"$WQ" run -- cmd /c "reg add HKLM\SOFTWARE\WQTEST /v X /t REG_SZ /d LEAK /f" >/dev/null 2>&1
+"$WQ" run -- cmd /c "reg query HKLM\SOFTWARE\WQTEST /v X" >/dev/null 2>&1
 [ $? -ne 0 ] && ok "registry mutation does not survive" || bad "registry" "HKLM\\SOFTWARE\\WQTEST persisted"
 
 # A leak would echo [1]; an unset variable expands to nothing, so [] is clean.
-"$WQ" run -- 'cmd /c set WQLEAK=1' >/dev/null 2>&1
-env_out=$("$WQ" run -- 'cmd /c echo [%WQLEAK%]' 2>/dev/null | tr -d '\n')
+"$WQ" run -- cmd /c "set WQLEAK=1" >/dev/null 2>&1
+env_out=$("$WQ" run -- cmd /c "echo [%WQLEAK%]" 2>/dev/null | tr -d '\n')
 check "environment mutation does not survive" "$env_out" "[]"
 
 echo "== base image immutability =="
@@ -64,6 +64,34 @@ case "$v" in *"size does not match"*|*"warm path failed"*) ok "corrupt ready.sta
 rm -rf ~/.winquick/states
 "$WQ" run -- cmd /c ver >/dev/null 2>&1
 check "missing ready state rebuilds automatically" "$?" "0"
+
+if [ -f ~/.winquick/images/validation-arm64/pwsh.img ]; then
+echo "== powershell =="
+v=$("$WQ" run -- pwsh -NoProfile -NonInteractive -Command '$PSVersionTable.PSVersion.ToString()' 2>/dev/null | tr -d '\r\n')
+case "$v" in 7.*) ok "pwsh runs and reports version $v";; *) bad "pwsh version" "$v";; esac
+
+o=$("$WQ" run -- pwsh -NoProfile -NonInteractive -Command "'WQ-' + (6*7)" 2>/dev/null | tr -d '\r\n')
+check "pwsh evaluates expressions" "$o" "WQ-42"
+
+"$WQ" run -- pwsh -NoProfile -NonInteractive -Command "exit 42" >/dev/null 2>&1
+check "pwsh exit code propagates" "$?" "42"
+
+"$WQ" run -- pwsh -NoProfile -NonInteractive -Command 'Write-Output OUT; [Console]::Error.WriteLine("ERR"); exit 3' >/tmp/wq_o 2>/tmp/wq_e
+check "pwsh mixed streams exit code" "$?" "3"
+check "pwsh stdout" "$(tr -d '\r\n' </tmp/wq_o)" "OUT"
+check "pwsh stderr" "$(tr -d '\r\n' </tmp/wq_e)" "ERR"
+
+"$WQ" run -- pwsh -NoProfile -NonInteractive -Command 'Write-Error "boom"' >/tmp/wq_o 2>/tmp/wq_e
+check "pwsh Write-Error exits nonzero" "$?" "1"
+[ -s /tmp/wq_e ] && [ ! -s /tmp/wq_o ] && ok "pwsh error goes to stderr only" || bad "pwsh error routing" "out=$(wc -c </tmp/wq_o) err=$(wc -c </tmp/wq_e)"
+
+o=$("$WQ" run -- pwsh -NoProfile -NonInteractive -Command 'Write-Output "spaced and `"quoted`""' 2>/dev/null | tr -d '\r\n')
+check "pwsh argument quoting survives" "$o" 'spaced and "quoted"' 
+o=$("$WQ" run -- pwsh -NoProfile -NonInteractive -Command 'Write-Output "C:\Program Files"' 2>/dev/null | tr -d '\r\n')
+check "pwsh path with space and backslash" "$o" 'C:\Program Files' 
+else
+  echo "== powershell (skipped: no pwsh.img) =="
+fi
 
 echo "== $N consecutive warm runs =="
 python3 - "$WQ" "$N" <<'PY'

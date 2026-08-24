@@ -26,6 +26,15 @@ rem see the host's. The volume GUID is stable for the life of the filesystem, so
 rem stash it and use it to re-create the mount point on demand.
 for /f "tokens=*" %%v in ('mountvol %WQ% /L') do set WQVOL=%%v
 
+rem If a capability volume is attached (PowerShell, and later others), put it on
+rem PATH so the user can just say `pwsh`. Drive letters are not guaranteed, so
+rem probe rather than hard-coding one.
+set WQPS=
+for %%d in (D E F G H I J K L M N O P) do (
+  if not defined WQPS if exist %%d:\pwsh\pwsh.exe set WQPS=%%d:\pwsh
+)
+if defined WQPS set PATH=%WQPS%;%PATH%
+
 >%WQ%\WQREADY.TXT echo 1
 mountvol %WQ% /P >nul 2>&1
 

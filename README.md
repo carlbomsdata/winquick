@@ -44,6 +44,7 @@ There is no GUI, and there will not be one. You never see or manage a VM.
 | Guest | Microsoft Validation OS ARM64, obtained by you from Microsoft |
 | Control channel | A private disk. No SSH, no WinRM, no RDP, no open ports |
 | Commands | `winquick setup`, `winquick run -- <command>`, `winquick info`, `winquick reset` |
+| Optional | PowerShell 7 (`winquick setup --with-powershell`) |
 
 Deliberately out of scope for now: Linux/Windows/Intel hosts, cloud execution, GUI
 virtualization, full Windows 11 guests, MCP integration, a large command tree.
