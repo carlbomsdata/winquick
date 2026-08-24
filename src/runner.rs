@@ -22,6 +22,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 /// How long to wait for a freshly booted guest to announce itself.
 const READY_TIMEOUT: Duration = Duration::from_secs(90);
 
+/// Fixed size for the workspace volume. Constant across runs so the FAT volume
+/// identity the guest remembers keeps resolving; sparse, so an unused one costs
+/// almost nothing.
+const WORKSPACE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
 pub struct Options {
     pub memory_mb: u32,
     pub cpus: u32,
@@ -29,6 +34,8 @@ pub struct Options {
     pub verbose: bool,
     /// Skip the warm path entirely. For benchmarking and for `--cold`.
     pub force_cold: bool,
+    /// Host directory to expose to the guest at `C:\workspace`.
+    pub workspace: Option<PathBuf>,
 }
 
 /// Deletes the run directory no matter how we leave — normal exit, error, or
@@ -50,12 +57,13 @@ struct Ctx {
     q: qemu::Qemu,
     base: PathBuf,
     uefi_code: PathBuf,
-    /// Capability volume (PowerShell), if one has been built.
-    capability: Option<PathBuf>,
+    /// Capability volumes to attach, in a deterministic order.
+    capabilities: Vec<crate::capability::Installed>,
     opts_memory: u32,
     opts_cpus: u32,
     timeout: Duration,
     verbose: bool,
+    workspace: Option<PathBuf>,
 }
 
 impl Ctx {
@@ -84,18 +92,17 @@ pub fn run(command: &str, opts: &Options) -> Result<i32> {
     }
     let uefi_code = paths::uefi_code()
         .ok_or_else(|| anyhow!("could not find edk2-aarch64-code.fd next to QEMU"))?;
-    let capability = crate::capability::pwsh_image()
-        .ok()
-        .filter(|p| p.exists());
+    let capabilities = crate::capability::installed()?;
     let ctx = Ctx {
         q: qemu::Qemu::locate()?,
         base,
         uefi_code,
-        capability,
+        capabilities,
         opts_memory: opts.memory_mb,
         opts_cpus: opts.cpus,
         timeout: opts.timeout,
         verbose: opts.verbose,
+        workspace: opts.workspace.clone(),
     };
     state::check_base_meta(&ctx.base, crate::setup::AGENT)?;
     let want = fingerprint(&ctx)?;
@@ -179,11 +186,12 @@ fn fingerprint(ctx: &Ctx) -> Result<state::Fingerprint> {
         memory_mb: ctx.opts_memory,
         cpus: ctx.opts_cpus,
         machine: qemu::MACHINE.to_string(),
-        capability: match &ctx.capability {
-            Some(p) => Some(state::FileId::of(p)?),
-            None => None,
-        },
-        devices: qemu::device_signature(ctx.opts_memory, ctx.opts_cpus, ctx.capability.is_some()),
+        capabilities: ctx
+            .capabilities
+            .iter()
+            .map(|c| Ok((c.name.clone(), state::FileId::of(&c.image)?)))
+            .collect::<Result<Vec<_>>>()?,
+        devices: qemu::device_signature(ctx.opts_memory, ctx.opts_cpus, ctx.capabilities.len()),
     })
 }
 
@@ -201,15 +209,36 @@ fn new_run_dir() -> Result<PathBuf> {
 
 /// Clone the capability volume for this run, if there is one. Cloned rather than
 /// shared because the guest writes to it when mounting.
-fn clone_capability(ctx: &Ctx, dir: &Path) -> Result<Option<PathBuf>> {
-    match &ctx.capability {
-        Some(src) => {
-            let dst = dir.join("caps.img");
-            qemu::clone_file(src, &dst)?;
-            Ok(Some(dst))
-        }
-        None => Ok(None),
+fn clone_capability(ctx: &Ctx, dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    for (i, c) in ctx.capabilities.iter().enumerate() {
+        let dst = dir.join(format!("cap{i}.img"));
+        qemu::clone_file(&c.image, &dst)?;
+        out.push(dst);
     }
+    Ok(out)
+}
+
+/// Build the per-run workspace volume: clone the ready template so the FAT
+/// identity is preserved, then write this run's project into it.
+fn prepare_workspace(ctx: &Ctx, template: Option<&Path>, dst: &Path) -> Result<()> {
+    match template {
+        Some(t) => qemu::clone_file(t, dst)?,
+        None => {
+            crate::capability::build_sized(dst, Path::new("/nonexistent"), "workspace", WORKSPACE_BYTES)?;
+        }
+    }
+    crate::capability::mark_workspace(dst)?;
+    if let Some(src) = &ctx.workspace {
+        let t = Instant::now();
+        crate::capability::refill(dst, src, "workspace")?;
+        ctx.vlog(format!(
+            "workspace: {} staged in {:.0}ms",
+            src.display(),
+            t.elapsed().as_secs_f64() * 1000.0
+        ));
+    }
+    Ok(())
 }
 
 fn fresh_vars(path: &Path) -> Result<()> {
@@ -261,12 +290,14 @@ fn warm_execute(ctx: &Ctx, ready: &state::ReadyState, command: &str) -> Result<O
     let serial = dir.join("serial.log");
     let qmp_sock = dir.join("qmp.sock");
     let caps = clone_capability(ctx, &dir)?;
+    let workspace = dir.join("workspace.img");
 
     // Clones, not copies: on APFS these are effectively free whatever the size.
     qemu::clone_file(&ready.disk(), &overlay)?;
     qemu::clone_file(&ready.vars(), &vars)?;
     qemu::clone_file(&ready.mailbox(), &mbox)?;
     mailbox::inject_command(&mbox, command)?;
+    prepare_workspace(ctx, Some(&ready.workspace()), &workspace)?;
     let t_prep = t0.elapsed();
 
     let mut child = ctx.q.boot(&qemu::BootConfig {
@@ -274,7 +305,8 @@ fn warm_execute(ctx: &Ctx, ready: &state::ReadyState, command: &str) -> Result<O
         uefi_vars: &vars,
         root_disk: &overlay,
         mailbox: &mbox,
-        capability: caps.as_deref(),
+        capabilities: &caps,
+        workspace: &workspace,
         memory_mb: ctx.opts_memory,
         cpus: ctx.opts_cpus,
         serial_log: &serial,
@@ -328,17 +360,20 @@ fn build_ready_state(ctx: &Ctx, want: &state::Fingerprint) -> Result<state::Read
     let serial = dir.join("serial.log");
     let qmp_sock = dir.join("qmp.sock");
     let caps = clone_capability(ctx, &dir)?;
+    let workspace = dir.join("workspace.img");
 
     ctx.q.create_overlay(&ctx.base, &overlay)?;
     fresh_vars(&vars)?;
     mailbox::create_template(&mbox)?;
+    prepare_workspace(ctx, None, &workspace)?;
 
     let mut child = ctx.q.boot(&qemu::BootConfig {
         uefi_code: &ctx.uefi_code,
         uefi_vars: &vars,
         root_disk: &overlay,
         mailbox: &mbox,
-        capability: caps.as_deref(),
+        capabilities: &caps,
+        workspace: &workspace,
         memory_mb: ctx.opts_memory,
         cpus: ctx.opts_cpus,
         serial_log: &serial,
@@ -369,6 +404,7 @@ fn build_ready_state(ctx: &Ctx, want: &state::Fingerprint) -> Result<state::Read
         qemu::clone_file(&overlay, &sdir.join("ready-disk.qcow2"))?;
         qemu::clone_file(&vars, &sdir.join("ready-vars.fd"))?;
         qemu::clone_file(&mbox, &sdir.join("ready-mailbox.img"))?;
+        qemu::clone_file(&workspace, &sdir.join("ready-workspace.img"))?;
         let meta = state::ReadyMeta {
             fingerprint: want.clone(),
             created_unix: SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
@@ -404,18 +440,21 @@ fn cold_execute(ctx: &Ctx, command: &str) -> Result<Outcome> {
     let serial = dir.join("serial.log");
     let qmp_sock = dir.join("qmp.sock");
     let caps = clone_capability(ctx, &dir)?;
+    let workspace = dir.join("workspace.img");
 
     ctx.q.create_overlay(&ctx.base, &overlay)?;
     fresh_vars(&vars)?;
     mailbox::create_template(&mbox)?;
     mailbox::inject_command(&mbox, command)?;
+    prepare_workspace(ctx, None, &workspace)?;
 
     let mut child = ctx.q.boot(&qemu::BootConfig {
         uefi_code: &ctx.uefi_code,
         uefi_vars: &vars,
         root_disk: &overlay,
         mailbox: &mbox,
-        capability: caps.as_deref(),
+        capabilities: &caps,
+        workspace: &workspace,
         memory_mb: ctx.opts_memory,
         cpus: ctx.opts_cpus,
         serial_log: &serial,

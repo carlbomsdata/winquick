@@ -72,10 +72,10 @@ pub struct Fingerprint {
     pub memory_mb: u32,
     pub cpus: u32,
     pub machine: String,
-    /// Identity of the attached capability volume, or `None` when there is none.
-    /// Attaching or rebuilding one changes the device topology, so the frozen
+    /// Identity of every attached capability volume, in attach order. Adding,
+    /// removing or rebuilding one changes the device topology, so the frozen
     /// guest has to be rebuilt.
-    pub capability: Option<FileId>,
+    pub capabilities: Vec<(String, FileId)>,
     /// Canonical description of the device topology. Migration state is only
     /// meaningful against the exact machine it came from.
     pub devices: String,
@@ -105,6 +105,9 @@ impl ReadyState {
     }
     pub fn mailbox(&self) -> PathBuf {
         self.dir.join("ready-mailbox.img")
+    }
+    pub fn workspace(&self) -> PathBuf {
+        self.dir.join("ready-workspace.img")
     }
 }
 
@@ -161,7 +164,7 @@ pub fn load_valid(want: &Fingerprint) -> Result<Option<ReadyState>> {
         }
     };
     let rs = ReadyState { dir, meta };
-    for f in [rs.state_file(), rs.disk(), rs.vars(), rs.mailbox()] {
+    for f in [rs.state_file(), rs.disk(), rs.vars(), rs.mailbox(), rs.workspace()] {
         if !f.exists() {
             anyhow::bail!("ready state incomplete: {} is missing", f.display());
         }
@@ -196,7 +199,7 @@ fn describe_mismatch(have: &Fingerprint, want: &Fingerprint) -> String {
     chk!(memory_mb, "guest memory");
     chk!(cpus, "vcpu count");
     chk!(machine, "machine type");
-    chk!(capability, "capability volume");
+    chk!(capabilities, "installed capabilities");
     chk!(devices, "device configuration");
     if d.is_empty() {
         "ready state fingerprint differs".into()

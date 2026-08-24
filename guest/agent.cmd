@@ -26,14 +26,35 @@ rem see the host's. The volume GUID is stable for the life of the filesystem, so
 rem stash it and use it to re-create the mount point on demand.
 for /f "tokens=*" %%v in ('mountvol %WQ% /L') do set WQVOL=%%v
 
-rem If a capability volume is attached (PowerShell, and later others), put it on
-rem PATH so the user can just say `pwsh`. Drive letters are not guaranteed, so
-rem probe rather than hard-coding one.
+rem Capability volumes (PowerShell, .NET) are attached as extra disks. Drive
+rem letters are not guaranteed, so probe for known layouts rather than assuming.
 set WQPS=
+set WQDOTNET=
 for %%d in (D E F G H I J K L M N O P) do (
   if not defined WQPS if exist %%d:\pwsh\pwsh.exe set WQPS=%%d:\pwsh
+  if not defined WQDOTNET if exist %%d:\dotnet\dotnet.exe set WQDOTNET=%%d:\dotnet
 )
 if defined WQPS set PATH=%WQPS%;%PATH%
+if defined WQDOTNET (
+  set PATH=%WQDOTNET%;%PATH%
+  set DOTNET_ROOT=%WQDOTNET%
+  rem Keep the CLI quiet and self-contained: no telemetry, no first-run banner,
+  rem and a writable home on C: rather than wherever it would otherwise guess.
+  set DOTNET_CLI_TELEMETRY_OPTOUT=1
+  set DOTNET_NOLOGO=1
+  set DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1
+  set DOTNET_CLI_HOME=C:\dotnet-home
+  if not exist C:\dotnet-home mkdir C:\dotnet-home
+)
+
+rem The workspace volume carries the host project. Its contents change every run,
+rem so remember its identity now and re-read it just before executing.
+set WQWS=
+set WQWSVOL=
+for %%d in (D E F G H I J K L M N O P) do (
+  if not defined WQWS if exist %%d:\WQWORK.TXT set WQWS=%%d:
+)
+if defined WQWS for /f "tokens=*" %%v in ('mountvol %WQWS% /L') do set WQWSVOL=%%v
 
 >%WQ%\WQREADY.TXT echo 1
 mountvol %WQ% /P >nul 2>&1
@@ -46,6 +67,17 @@ goto wait
 
 :exec
 del %WQ%\WQGO.TXT >nul 2>&1
+rem Same cache problem as the mailbox: the guest is holding a stale view of the
+rem workspace from before it was frozen. Dismount and remount to see this run's
+rem files, then surface them at a predictable path.
+if defined WQWSVOL (
+  mountvol %WQWS% /P >nul 2>&1
+  mountvol %WQWS% %WQWSVOL% >nul 2>&1
+  if exist %WQWS%\workspace (
+    if not exist C:\workspace mklink /J C:\workspace %WQWS%\workspace >nul 2>&1
+    cd /d C:\workspace >nul 2>&1
+  )
+)
 rem A child cmd.exe, not `call`: the workload must not be able to end the agent
 rem with `exit`, and its errorlevel has to come back cleanly.
 cmd /c %WQ%\WQCMD.CMD > %WQ%\WQOUT.TXT 2> %WQ%\WQERR.TXT
