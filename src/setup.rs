@@ -128,6 +128,11 @@ pub fn setup(source: Option<PathBuf>, force: bool) -> Result<()> {
     q.convert(&raw, &base, "qcow2")?;
     let _ = std::fs::remove_dir_all(&work);
 
+    // Record which agent is baked in. The agent lives inside the image, so a
+    // change to it needs a `setup` rebuild — not just a new ready state — and
+    // `run` has no cheap way to look inside the qcow2 to find out.
+    crate::state::write_base_meta(&base, AGENT)?;
+
     let size = std::fs::metadata(&base)?.len();
     println!(
         "\nRuntime ready: {} ({:.0} MiB)",
