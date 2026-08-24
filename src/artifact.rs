@@ -128,6 +128,21 @@ pub fn extract(image: &Path, dest: &Path) -> Result<Extracted> {
     Ok(Extracted { files, bytes, log })
 }
 
+/// Names come off a filesystem the guest could have written, so treat them as
+/// hostile: reject anything that is not a single, ordinary path component.
+/// Without this, an entry called `..` or `../../.ssh/authorized_keys` would let a
+/// run write outside the artifacts directory.
+fn safe_component(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name.contains('/')
+        && !name.contains('\\')
+        && !name.contains('\0')
+        && !Path::new(name).is_absolute()
+        && Path::new(name).components().count() == 1
+}
+
 fn copy_out<T: fatfs::ReadWriteSeek>(
     src: &fatfs::Dir<T>,
     dest: &Path,
@@ -138,6 +153,10 @@ fn copy_out<T: fatfs::ReadWriteSeek>(
         let e = e?;
         let name = e.file_name();
         if name == "." || name == ".." {
+            continue;
+        }
+        if !safe_component(&name) {
+            eprintln!("winquick: skipping artifact with an unsafe name: {name:?}");
             continue;
         }
         let out = dest.join(&name);

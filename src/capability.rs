@@ -23,6 +23,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{Seek, Write};
 use std::path::{Path, PathBuf};
 
+use crate::helpers::which;
 use crate::paths;
 
 const SECTOR: u64 = 512;
@@ -402,9 +403,24 @@ fn sha256_file(p: &Path) -> Result<String> {
 /// Only host-side tooling ever writes the canonical cache. The guest gets a
 /// throwaway clone of the resulting image, so a build script cannot leave
 /// anything behind that a later run would pick up.
-pub fn nuget_sync(project: &Path, rid: &str, verbose: bool) -> Result<(u64, usize)> {
+pub struct SyncResult {
+    pub packages: usize,
+    pub added: usize,
+    pub bytes: u64,
+    /// Whether the volume the guest sees had to be rebuilt.
+    pub rebuilt: bool,
+}
+
+pub fn nuget_sync(project: &Path, rid: &str, verbose: bool) -> Result<SyncResult> {
     let cache = nuget_dir()?;
     std::fs::create_dir_all(&cache)?;
+    if which("dotnet").is_none() {
+        bail!(
+            "The .NET SDK is not installed on this Mac, so packages cannot be restored here.\n\n\
+             Install it from https://dotnet.microsoft.com/download, or `brew install dotnet-sdk`."
+        );
+    }
+    let before = count_packages(&cache);
     if verbose {
         eprintln!("winquick: restoring {} into {}", project.display(), cache.display());
     }
@@ -419,12 +435,33 @@ pub fn nuget_sync(project: &Path, rid: &str, verbose: bool) -> Result<(u64, usiz
         .context("running `dotnet restore` on the host — is the .NET SDK installed?")?;
     if !out.status.success() {
         bail!(
-            "host restore failed:\n{}{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
+            "restoring packages on this Mac failed:\n{}{}",
+            String::from_utf8_lossy(&out.stdout).trim(),
+            String::from_utf8_lossy(&out.stderr).trim()
         );
     }
-    rebuild_nuget_image(verbose)
+
+    let after = count_packages(&cache);
+    let image = nuget_image()?;
+    // Rebuilding the volume changes its identity, which invalidates the prepared
+    // guest. Skip it entirely when nothing was actually added.
+    if after == before && image.exists() {
+        use std::os::unix::fs::MetadataExt;
+        return Ok(SyncResult {
+            packages: after,
+            added: 0,
+            bytes: std::fs::metadata(&image)?.blocks() * 512,
+            rebuilt: false,
+        });
+    }
+    let (bytes, packages) = rebuild_nuget_image(verbose)?;
+    Ok(SyncResult { packages, added: after.saturating_sub(before), bytes, rebuilt: true })
+}
+
+fn count_packages(dir: &Path) -> usize {
+    std::fs::read_dir(dir)
+        .map(|d| d.filter_map(|e| e.ok()).filter(|e| e.path().is_dir()).count())
+        .unwrap_or(0)
 }
 
 /// Rebuild the package-cache volume from the canonical directory.

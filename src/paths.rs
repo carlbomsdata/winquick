@@ -35,12 +35,10 @@ pub fn run_dir(id: &str) -> Result<PathBuf> {
 
 /// UEFI firmware shipped with QEMU.
 pub fn uefi_code() -> Option<PathBuf> {
-    const CANDIDATES: &[&str] = &[
-        "/opt/homebrew/share/qemu/edk2-aarch64-code.fd",
-        "/usr/local/share/qemu/edk2-aarch64-code.fd",
-    ];
-    CANDIDATES
-        .iter()
-        .map(PathBuf::from)
-        .find(|p| p.exists())
+    crate::helpers::uefi_firmware()
+}
+
+/// Transient per-run state. Everything here is deleted when a run ends.
+pub fn run_root() -> Result<PathBuf> {
+    Ok(root()?.join("run"))
 }

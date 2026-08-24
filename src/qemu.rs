@@ -167,15 +167,9 @@ impl Qemu {
 }
 
 pub fn which(bin: &str) -> Result<PathBuf> {
-    let out = Command::new("/usr/bin/which").arg(bin).output()?;
-    if !out.status.success() {
-        return Err(anyhow!(
-            "{bin} not found on PATH. Install QEMU (e.g. `brew install qemu`)."
-        ));
-    }
-    Ok(PathBuf::from(
-        String::from_utf8_lossy(&out.stdout).trim().to_string(),
-    ))
+    crate::helpers::which(bin).ok_or_else(|| {
+        anyhow!("QEMU is not installed.\n\nInstall it with:\n    brew install qemu")
+    })
 }
 
 /// Copy-on-write clone where the filesystem supports it. On APFS this is
@@ -183,15 +177,22 @@ pub fn which(bin: &str) -> Result<PathBuf> {
 /// in the tens of milliseconds.
 pub fn clone_file(src: &Path, dst: &Path) -> Result<()> {
     let _ = std::fs::remove_file(dst);
-    let st = Command::new("/bin/cp")
+    // Captured, not inherited: a message from `cp` must never end up mixed into
+    // the guest's stdout, which is the caller's actual result.
+    let out = Command::new("/bin/cp")
         .arg("-c")
         .arg(src)
         .arg(dst)
-        .status()
+        .output()
         .context("running cp -c")?;
-    if !st.success() {
+    if !out.status.success() {
         std::fs::copy(src, dst).with_context(|| {
-            format!("copying {} to {}", src.display(), dst.display())
+            format!(
+                "copying {} to {} ({})",
+                src.display(),
+                dst.display(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            )
         })?;
     }
     Ok(())
