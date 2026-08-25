@@ -28,6 +28,11 @@ which `winquick capability install desktop` builds inside Windows. `release.sh`
 refuses to package without them, and `winquick doctor` reports whether an
 installed copy can find them.
 
+The tarball records file mtimes, so **rebuilding produces a different checksum
+even when nothing changed**. Publish the `dist/` you hashed; do not re-run
+`release.sh` after filling the formula in, or the formula will point at a
+checksum no published file has.
+
 ## Sign and notarize (needs an Apple Developer ID)
 
 ```console
