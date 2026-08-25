@@ -143,6 +143,10 @@ pub fn install(opts: &Options) -> Result<()> {
     println!("  [5/5] building the guest bridge");
     build_bridge(opts.verbose)?;
 
+    // A prepared desktop state is a frozen guest running the old bridge from the
+    // old image. Both just changed.
+    let _ = crate::state::discard_desktop();
+
     let _ = std::fs::remove_dir_all(&work);
     println!(
         "Desktop capability ready ({:.1} GiB image).",
@@ -398,8 +402,10 @@ fn build_bridge(verbose: bool) -> Result<()> {
     std::fs::create_dir_all(&dest)?;
 
     let opts = runner::Options {
-        memory_mb: 2048,
-        cpus: 4,
+        // The same shape as a plain `winquick run`, so this shares its prepared
+        // guest instead of invalidating it.
+        memory_mb: runner::DEFAULT_MEMORY_MB,
+        cpus: runner::DEFAULT_CPUS,
         timeout: Duration::from_secs(900),
         verbose,
         force_cold: false,

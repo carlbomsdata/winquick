@@ -87,6 +87,7 @@ public static class Program
         "windows" => Windows(a),
         "display" => Display(a),
         "launch" => Launch(a),
+        "remount" => Remount(a),
         "wait-window" => WaitWindow(a),
         "focus" => Focus(a),
         "screenshot" => Screenshot(a),
@@ -280,11 +281,37 @@ public static class Program
     {
         var rest = a.Rest;
         if (rest.Count == 0) throw new ArgumentException("launch needs a program to run");
-        var psi = new ProcessStartInfo(rest[0]) { UseShellExecute = false };
+        string program = Volumes.ResolveProgram(rest[0]);
+        if (!System.IO.File.Exists(program))
+            throw new System.IO.FileNotFoundException($"no such program in this session: {rest[0]}");
+
+        var psi = new ProcessStartInfo(program) { UseShellExecute = false };
         for (int i = 1; i < rest.Count; i++) psi.ArgumentList.Add(rest[i]);
-        if (a.Has("cwd")) psi.WorkingDirectory = a.Get("cwd");
+        // Default to the application's own directory, which is what a program
+        // loading files next to itself expects.
+        psi.WorkingDirectory = a.Has("cwd")
+            ? a.Get("cwd")
+            : System.IO.Path.GetDirectoryName(program);
         var p = Process.Start(psi);
-        return new JsonObject { ["pid"] = p.Id, ["program"] = rest[0] };
+        return new JsonObject { ["pid"] = p.Id, ["program"] = program };
+    }
+
+    /// <summary>
+    /// Re-read the application volume. The host calls this once, immediately
+    /// after restoring a session, because the guest was frozen with a different
+    /// application volume attached.
+    /// </summary>
+    static JsonObject Remount(Args a)
+    {
+        string drive = Volumes.RemountApp();
+        var listing = new JsonArray();
+        string appDir = drive + "\\app";
+        if (System.IO.Directory.Exists(appDir))
+        {
+            foreach (var f in System.IO.Directory.GetFiles(appDir))
+                listing.Add(System.IO.Path.GetFileName(f));
+        }
+        return new JsonObject { ["drive"] = drive, ["files"] = listing.Count };
     }
 
     // ---- capture ----------------------------------------------------------

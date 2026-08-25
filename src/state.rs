@@ -227,3 +227,247 @@ pub fn discard() -> Result<()> {
     }
     Ok(())
 }
+
+// ---------------------------------------------------------- desktop state
+
+/// A prepared desktop guest: Windows booted, the desktop stack up, and the
+/// bridge already answering on the control channel — frozen at that instant.
+///
+/// It exists for the same reason the command ready state does. Booting Windows
+/// takes about nine seconds and every one of those seconds is spent doing
+/// exactly what the last session did. Restoring RAM and devices instead takes a
+/// few hundred milliseconds.
+///
+/// Freezing *after* the bridge answers is the part that matters. A state frozen
+/// at the login prompt would still need the desktop stack and the bridge to
+/// come up on every restore, which is most of the cost.
+#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+pub struct DesktopFingerprint {
+    pub winquick_version: String,
+    /// Mailbox protocol, used once per session to start the bridge.
+    pub protocol_version: u32,
+    /// Control-disk layout the frozen guest speaks.
+    pub control_protocol_version: u32,
+    pub desktop_image: FileId,
+    pub agent_hash: String,
+    /// Identity of the built guest bridge. A rebuilt bridge is a different
+    /// program and the frozen guest is running the old one.
+    pub bridge_hash: String,
+    pub qemu_binary: FileId,
+    pub qemu_version: String,
+    pub firmware: FileId,
+    pub memory_mb: u32,
+    pub cpus: u32,
+    pub machine: String,
+    pub capabilities: Vec<(String, FileId)>,
+    pub devices: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct DesktopMeta {
+    pub fingerprint: DesktopFingerprint,
+    pub created_unix: u64,
+    pub state_bytes: u64,
+}
+
+pub struct DesktopReady {
+    pub dir: PathBuf,
+    pub meta: DesktopMeta,
+}
+
+impl DesktopReady {
+    pub fn state_file(&self) -> PathBuf {
+        self.dir.join("ready.state")
+    }
+    pub fn disk(&self) -> PathBuf {
+        self.dir.join("ready-disk.qcow2")
+    }
+    pub fn vars(&self) -> PathBuf {
+        self.dir.join("ready-vars.fd")
+    }
+    pub fn mailbox(&self) -> PathBuf {
+        self.dir.join("ready-mailbox.img")
+    }
+    pub fn bridge(&self) -> PathBuf {
+        self.dir.join("ready-bridge.img")
+    }
+    pub fn app(&self) -> PathBuf {
+        self.dir.join("ready-app.img")
+    }
+    pub fn control(&self) -> PathBuf {
+        self.dir.join("ready-control.img")
+    }
+    pub fn files(&self) -> [PathBuf; 6] {
+        [
+            self.state_file(),
+            self.disk(),
+            self.vars(),
+            self.mailbox(),
+            self.bridge(),
+            self.app(),
+        ]
+    }
+}
+
+pub fn desktop_state_dir() -> Result<PathBuf> {
+    Ok(paths::root()?.join("states").join(crate::desktop::IMAGE_NAME))
+}
+
+fn desktop_meta_path() -> Result<PathBuf> {
+    Ok(desktop_state_dir()?.join("ready.json"))
+}
+
+/// Load the prepared desktop state, but only if it is complete and still
+/// describes the world we are about to run in.
+pub fn load_desktop_valid(want: &DesktopFingerprint) -> Result<Option<DesktopReady>> {
+    let dir = desktop_state_dir()?;
+    let mp = desktop_meta_path()?;
+    if !mp.exists() {
+        return Ok(None);
+    }
+    let text = std::fs::read_to_string(&mp).context("reading the desktop ready.json")?;
+    let meta: DesktopMeta = serde_json::from_str(&text)
+        .map_err(|e| anyhow::anyhow!("the desktop ready.json is unreadable: {e}"))?;
+    let rs = DesktopReady { dir, meta };
+    for f in rs.files() {
+        if !f.exists() {
+            anyhow::bail!("prepared desktop state incomplete: {} is missing", f.display());
+        }
+    }
+    if std::fs::metadata(rs.state_file())?.len() != rs.meta.state_bytes {
+        anyhow::bail!("ready.state size does not match ready.json");
+    }
+    if &rs.meta.fingerprint != want {
+        anyhow::bail!("{}", describe_desktop_mismatch(&rs.meta.fingerprint, want));
+    }
+    Ok(Some(rs))
+}
+
+/// Say *what* changed, so a rebuild explains itself instead of just happening.
+pub fn describe_desktop_mismatch(have: &DesktopFingerprint, want: &DesktopFingerprint) -> String {
+    let mut d = Vec::new();
+    macro_rules! chk {
+        ($f:ident, $label:expr) => {
+            if have.$f != want.$f {
+                d.push($label);
+            }
+        };
+    }
+    chk!(winquick_version, "winquick version");
+    chk!(protocol_version, "mailbox protocol");
+    chk!(control_protocol_version, "control protocol");
+    chk!(desktop_image, "desktop image");
+    chk!(agent_hash, "guest agent");
+    chk!(bridge_hash, "guest bridge");
+    chk!(qemu_binary, "qemu binary");
+    chk!(qemu_version, "qemu version");
+    chk!(firmware, "uefi firmware");
+    chk!(memory_mb, "guest memory");
+    chk!(cpus, "vcpu count");
+    chk!(machine, "machine type");
+    chk!(capabilities, "installed capabilities");
+    chk!(devices, "device configuration");
+    if d.is_empty() {
+        "prepared desktop state fingerprint differs".into()
+    } else {
+        format!("prepared desktop state stale: {}", d.join(", "))
+    }
+}
+
+pub fn save_desktop(meta: &DesktopMeta) -> Result<()> {
+    let mp = desktop_meta_path()?;
+    std::fs::create_dir_all(mp.parent().unwrap())?;
+    std::fs::write(&mp, serde_json::to_vec_pretty(meta)?)
+        .context("writing the desktop ready.json")?;
+    Ok(())
+}
+
+pub fn discard_desktop() -> Result<()> {
+    if let Ok(d) = desktop_state_dir() {
+        let _ = std::fs::remove_dir_all(&d);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod desktop_tests {
+    use super::*;
+
+    fn id(name: &str, len: u64) -> FileId {
+        FileId { path: name.into(), len, mtime_ns: 1, inode: 1 }
+    }
+
+    fn base() -> DesktopFingerprint {
+        DesktopFingerprint {
+            winquick_version: "0.2.0".into(),
+            protocol_version: 1,
+            control_protocol_version: 1,
+            desktop_image: id("desktop.qcow2", 100),
+            agent_hash: "aaaa".into(),
+            bridge_hash: "bbbb".into(),
+            qemu_binary: id("qemu", 10),
+            qemu_version: "QEMU 11.1.0".into(),
+            firmware: id("edk2.fd", 20),
+            memory_mb: 2048,
+            cpus: 2,
+            machine: "virt".into(),
+            capabilities: vec![("dotnet-sdk".into(), id("dotnet-sdk.img", 30))],
+            devices: "machine=virt;...".into(),
+        }
+    }
+
+    /// Restoring RAM against a machine it did not come from is undefined, so
+    /// every input that can change the machine has to be part of the identity.
+    /// This is a checklist as much as a test: each case is a way a stale state
+    /// could otherwise be run.
+    #[test]
+    fn every_input_that_changes_the_machine_invalidates_the_state() {
+        let cases: Vec<(&str, Box<dyn Fn(&mut DesktopFingerprint)>)> = vec![
+            ("winquick version", Box::new(|f: &mut DesktopFingerprint| f.winquick_version = "0.3.0".into())),
+            ("mailbox protocol", Box::new(|f: &mut DesktopFingerprint| f.protocol_version = 2)),
+            ("control protocol", Box::new(|f: &mut DesktopFingerprint| f.control_protocol_version = 2)),
+            ("desktop image", Box::new(|f: &mut DesktopFingerprint| f.desktop_image = id("desktop.qcow2", 101))),
+            ("guest agent", Box::new(|f: &mut DesktopFingerprint| f.agent_hash = "cccc".into())),
+            ("guest bridge", Box::new(|f: &mut DesktopFingerprint| f.bridge_hash = "dddd".into())),
+            ("qemu binary", Box::new(|f: &mut DesktopFingerprint| f.qemu_binary = id("qemu", 11))),
+            ("qemu version", Box::new(|f: &mut DesktopFingerprint| f.qemu_version = "QEMU 12".into())),
+            ("uefi firmware", Box::new(|f: &mut DesktopFingerprint| f.firmware = id("edk2.fd", 21))),
+            ("guest memory", Box::new(|f: &mut DesktopFingerprint| f.memory_mb = 4096)),
+            ("vcpu count", Box::new(|f: &mut DesktopFingerprint| f.cpus = 4)),
+            ("machine type", Box::new(|f: &mut DesktopFingerprint| f.machine = "virt-9".into())),
+            ("installed capabilities", Box::new(|f: &mut DesktopFingerprint| f.capabilities.clear())),
+            ("device configuration", Box::new(|f: &mut DesktopFingerprint| f.devices = "other".into())),
+        ];
+
+        for (label, mutate) in cases {
+            let have = base();
+            let mut want = base();
+            mutate(&mut want);
+            assert_ne!(have, want, "{label} did not change the fingerprint");
+            let why = describe_desktop_mismatch(&have, &want);
+            assert!(
+                why.contains(label),
+                "a stale state caused by {label} would be reported as {why:?}"
+            );
+        }
+    }
+
+    /// Rebuilding a capability changes its identity even at the same size, and
+    /// the frozen guest has the old one mounted.
+    #[test]
+    fn a_rebuilt_capability_invalidates_the_state() {
+        let have = base();
+        let mut want = base();
+        want.capabilities = vec![(
+            "dotnet-sdk".into(),
+            FileId { path: "dotnet-sdk.img".into(), len: 30, mtime_ns: 999, inode: 7 },
+        )];
+        assert_ne!(have, want);
+        assert!(describe_desktop_mismatch(&have, &want).contains("installed capabilities"));
+    }
+
+    #[test]
+    fn an_identical_fingerprint_is_reusable() {
+        assert_eq!(base(), base());
+    }
+}

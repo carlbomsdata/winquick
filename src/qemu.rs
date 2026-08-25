@@ -209,8 +209,13 @@ pub struct DesktopBoot<'a> {
     pub uefi_vars: &'a Path,
     pub root_disk: &'a Path,
     pub mailbox: &'a Path,
-    /// Volume carrying the bridge and the application under test.
-    pub files: &'a Path,
+    /// Volume carrying the bridge. Frozen into the prepared state and never
+    /// rewritten, because `wqui.exe` is executing from it.
+    pub bridge: &'a Path,
+    /// Volume carrying the application under test. Refilled per session, which
+    /// is why it cannot share a volume with the bridge: refreshing the guest's
+    /// view of it means dismounting it.
+    pub app: &'a Path,
     /// Raw disk the session's control channel runs on. Deliberately has no
     /// partition table, so Windows never mounts or caches it.
     pub control: &'a Path,
@@ -219,6 +224,23 @@ pub struct DesktopBoot<'a> {
     pub cpus: u32,
     pub serial_log: &'a Path,
     pub qmp_socket: &'a Path,
+    /// When set, restore RAM and devices from this file instead of booting.
+    pub incoming: Option<&'a Path>,
+}
+
+/// Canonical description of the desktop topology, recorded in the prepared
+/// state's fingerprint. Migration state is only meaningful against the same
+/// machine it came from.
+pub fn desktop_device_signature(memory_mb: u32, cpus: u32, capability_count: usize) -> String {
+    let caps: String = (0..capability_count)
+        .map(|i| format!(";nvme:cap{i}=wqcap{i}"))
+        .collect();
+    format!(
+        "machine={MACHINE};accel=hvf;cpu=host;smp={cpus};mem={memory_mb};\
+         nvme:root=wqroot;nvme:mbox=wqmbox;nvme:bridge=wqbridge;nvme:app=wqapp;\
+         nvme:ctl=wqctl{caps};pflash:code,vars(rw);xhci+kbd+tablet;virtio-gpu-pci;\
+         display=none;rtc=localtime"
+    )
 }
 
 impl Qemu {
@@ -252,10 +274,16 @@ impl Qemu {
             .args(["-device", "nvme,drive=mbox,serial=wqmbox"])
             .arg("-drive")
             .arg(format!(
-                "if=none,id=files,file={},format=raw,cache=writethrough",
-                cfg.files.display()
+                "if=none,id=bridge,file={},format=raw,cache=writethrough",
+                cfg.bridge.display()
             ))
-            .args(["-device", "nvme,drive=files,serial=wqfiles"])
+            .args(["-device", "nvme,drive=bridge,serial=wqbridge"])
+            .arg("-drive")
+            .arg(format!(
+                "if=none,id=app,file={},format=raw,cache=writethrough",
+                cfg.app.display()
+            ))
+            .args(["-device", "nvme,drive=app,serial=wqapp"])
             // writethrough, like every other volume: the host writes through
             // its page cache and QEMU reads through the same one, so both sides
             // see each other's bytes. `cache=none` makes QEMU bypass that cache
@@ -287,6 +315,9 @@ impl Qemu {
                 "unix:{},server=on,wait=off",
                 cfg.qmp_socket.display()
             ));
+        if let Some(state) = cfg.incoming {
+            c.arg("-incoming").arg(format!("file:{}", state.display()));
+        }
         c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
         c.spawn().context("spawning the desktop guest")
     }

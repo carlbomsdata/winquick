@@ -81,6 +81,7 @@ pub fn spec(name: &str) -> Option<&'static Spec> {
     SPECS.iter().find(|s| s.name == name)
 }
 
+#[derive(Clone)]
 pub struct Installed {
     pub name: String,
     pub image: PathBuf,

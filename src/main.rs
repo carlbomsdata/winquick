@@ -121,10 +121,10 @@ cannot change your source. Ask for output explicitly with --artifact.
         #[arg(long, default_value_t = 300, value_name = "SECONDS")]
         timeout: u64,
         /// Guest memory in MiB
-        #[arg(long, default_value_t = 1024, value_name = "MIB")]
+        #[arg(long, default_value_t = runner::DEFAULT_MEMORY_MB, value_name = "MIB")]
         memory: u32,
         /// Guest processors
-        #[arg(long, default_value_t = 4)]
+        #[arg(long, default_value_t = runner::DEFAULT_CPUS)]
         cpus: u32,
         /// Start Windows from scratch instead of resuming the prepared guest
         #[arg(long)]
@@ -208,7 +208,7 @@ For example:
         #[arg(long)]
         keep: bool,
         /// Guest memory in MiB
-        #[arg(long, default_value_t = 4096, value_name = "MIB")]
+        #[arg(long, default_value_t = desktop::DEFAULT_MEMORY_MB, value_name = "MIB")]
         memory: u32,
     },
 
@@ -269,10 +269,10 @@ enum DesktopCmd {
         #[arg(long, value_name = "DIR")]
         app: Option<PathBuf>,
         /// Guest memory in MiB
-        #[arg(long, default_value_t = 4096, value_name = "MIB")]
+        #[arg(long, default_value_t = desktop::DEFAULT_MEMORY_MB, value_name = "MIB")]
         memory: u32,
         /// Guest processors
-        #[arg(long, default_value_t = 4)]
+        #[arg(long, default_value_t = desktop::DEFAULT_CPUS)]
         cpus: u32,
     },
     /// Shut the desktop guest down and delete its disposable disk
@@ -402,7 +402,8 @@ fn dispatch(cli: Cli) -> Result<i32> {
         Cmd::Info => info(),
         Cmd::Reset => {
             state::discard()?;
-            println!("Prepared guest discarded; the next run will rebuild it.");
+            state::discard_desktop()?;
+            println!("Prepared guest and desktop discarded; the next run rebuilds them.");
             Ok(0)
         }
         Cmd::Clean { all, dry_run } => clean(all, dry_run),
@@ -502,7 +503,7 @@ fn ui_test(
     desktop::start(&desktop::StartOptions {
         app: Some(published),
         memory_mb: memory,
-        cpus: 4,
+        cpus: desktop::DEFAULT_CPUS,
         verbose,
     })?;
 
@@ -550,8 +551,11 @@ fn build_project(project: &std::path::Path, verbose: bool) -> Result<PathBuf> {
     let outcome = runner::run_capture(
         &format!("dotnet publish {name} -c Release -o publish --nologo"),
         &runner::Options {
-            memory_mb: 2048,
-            cpus: 4,
+            // The same shape as a plain `winquick run`, so this shares its
+            // prepared guest instead of invalidating it and making the next
+            // ordinary command pay for a rebuild.
+            memory_mb: runner::DEFAULT_MEMORY_MB,
+            cpus: runner::DEFAULT_CPUS,
             timeout: Duration::from_secs(900),
             verbose,
             force_cold: false,
@@ -918,6 +922,21 @@ fn doctor(smoke: bool) -> Result<i32> {
     // The bridge is built from source inside Windows at install time, so an
     // installation that lost these files fails at the very last step of
     // `capability install desktop`.
+    let dstate = state::desktop_state_dir()?;
+    if dstate.join("ready.json").exists() {
+        println!(
+            "  {} {:<20} prepared ({})",
+            tick(true),
+            "session state",
+            helpers::human(dir_size(&dstate))
+        );
+    } else if desk.exists() {
+        println!(
+            "  {} {:<20} not prepared yet (the first start takes ~20s)",
+            tick(true),
+            "session state"
+        );
+    }
     match servicing::bridge_source() {
         Ok(p) => println!("  {} {:<20} {}", tick(true), "bridge sources", p.display()),
         Err(_) => println!(
@@ -967,8 +986,8 @@ fn doctor(smoke: bool) -> Result<i32> {
 
 fn smoke_opts() -> runner::Options {
     runner::Options {
-        memory_mb: 1024,
-        cpus: 4,
+        memory_mb: runner::DEFAULT_MEMORY_MB,
+        cpus: runner::DEFAULT_CPUS,
         timeout: Duration::from_secs(300),
         verbose: false,
         force_cold: false,
@@ -1014,6 +1033,7 @@ fn clean(all: bool, dry_run: bool) -> Result<i32> {
 
     let mut targets: Vec<(PathBuf, &str)> = vec![
         (state::state_dir()?, "prepared guest"),
+        (state::desktop_state_dir()?, "prepared desktop"),
         (root.join("run"), "leftover run directories"),
         (root.join("work"), "temporary build files"),
         (desktop::dir()?, "desktop session"),

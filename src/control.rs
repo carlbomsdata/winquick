@@ -36,6 +36,10 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+/// Bumped whenever the on-disk request/response layout changes. A prepared
+/// desktop state freezes a guest that speaks one particular version of this.
+pub const PROTOCOL_VERSION: u32 = 1;
+
 pub const SECTOR: u64 = 512;
 pub const ID_OFFSET: u64 = 0;
 pub const REQUEST_OFFSET: u64 = 1 << 20;
