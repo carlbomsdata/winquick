@@ -1,0 +1,42 @@
+=== release archive smoke test (running the archived binary, not target/) ===
+binary: /tmp/wq-archive-test/winquick-0.2.0-darwin-arm64/bin/winquick
+winquick 0.2.0
+  --help ok
+--- layout ---
+  ok   bin/winquick
+  ok   libexec/winquick/ntfscp
+  ok   libexec/winquick/ntfscat
+  ok   share/winquick/wqui/wqui.csproj
+  ok   share/winquick/wqui/Program.cs
+  ok   share/winquick/wqui/Volumes.cs
+  ok   share/winquick/wqui/Control.cs
+  ok   share/doc/winquick/LICENSE
+  ok   share/doc/winquick/THIRD_PARTY_NOTICES.md
+  ok   share/doc/winquick/docs/desktop.md
+  ok   libexec/winquick/LICENSE.ntfsprogs
+--- doctor, from the archive ---
+Tools
+  ok   qemu-system-aarch64  /opt/homebrew/bin/qemu-system-aarch64
+  ok   qemu-img             /opt/homebrew/bin/qemu-img
+  ok   ntfscp               /private/tmp/wq-archive-test/winquick-0.2.0-darwin-arm64/libexec/winquick/ntfscp
+  ok   ntfscat              /private/tmp/wq-archive-test/winquick-0.2.0-darwin-arm64/libexec/winquick/ntfscat
+  ok   hivexsh              /opt/homebrew/bin/hivexsh
+  ok   unzip                /usr/bin/unzip
+  ok   uefi firmware        /opt/homebrew/Cellar/qemu/11.1.0/share/qemu/edk2-aarch64-code.fd
+
+Runtime
+  ok   Windows runtime 763 MiB
+  ok   prepared guest ready (runs are fast)
+  · capabilities: dotnet-sdk, nuget-cache, powershell
+
+Desktop
+  ok   desktop image        2 GiB
+  ok   session              none running
+  ok   session state        prepared (914 MiB)
+  ok   bridge sources       /private/tmp/wq-archive-test/winquick-0.2.0-darwin-arm64/share/winquick/wqui
+
+Disk
+  ok   166 GiB free in /Users/tobiascarlbom/.winquick
+--- a real command, from the archive ---
+
+Microsoft Windows [Version 10.0.26100.8972]
