@@ -1,6 +1,6 @@
 [package]
 name = "winquick"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Run real Windows commands on an Apple Silicon Mac"
 repository = "https://github.com/Carlboms-Data-AB/winquick"

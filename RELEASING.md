@@ -1,22 +1,31 @@
 # Releasing
 
-Everything for v0.1.0 is built and committed. What remains needs credentials
+Everything for v0.2.0 is built and committed. What remains needs credentials
 this machine does not have.
+
+v0.1.0 was tagged but never published, so v0.2.0 is the first release anyone
+will see. It is a different product from v0.1.0 in one important way: it can
+build, render and drive Windows GUI applications.
 
 ## Build the artifacts
 
 ```console
-./scripts/release.sh 0.1.0
+./scripts/release.sh 0.2.0
 ```
 
 Produces `dist/`:
 
 | File | What |
 |---|---|
-| `winquick-0.1.0-darwin-arm64.tar.gz` | the release archive |
-| `winquick-0.1.0-darwin-arm64.tar.gz.sha256` | its checksum |
+| `winquick-0.2.0-darwin-arm64.tar.gz` | the release archive |
+| `winquick-0.2.0-darwin-arm64.tar.gz.sha256` | its checksum |
 | `ntfs-3g_ntfsprogs-2022.10.3.tgz` | GPL corresponding source, must ship with it |
 | `SHA256SUMS` | all of the above |
+
+The archive also carries `share/winquick/wqui/` — the guest bridge sources,
+which `winquick capability install desktop` builds inside Windows. `release.sh`
+refuses to package without them, and `winquick doctor` reports whether an
+installed copy can find them.
 
 ## Sign and notarize (needs an Apple Developer ID)
 
@@ -27,7 +36,7 @@ export WINQUICK_NOTARY_PROFILE="winquick-notary"
 xcrun notarytool store-credentials winquick-notary \
     --apple-id you@example.com --team-id TEAMID --password <app-specific-password>
 
-./scripts/release.sh 0.1.0        # signs and notarizes automatically when set
+./scripts/release.sh 0.2.0        # signs and notarizes automatically when set
 ```
 
 Without these, `release.sh` still produces a working archive and says clearly
@@ -47,8 +56,8 @@ git push origin v0.1.0
 gh release create v0.1.0 \
     --title "WinQuick v0.1.0" \
     --notes-file CHANGELOG.md \
-    dist/winquick-0.1.0-darwin-arm64.tar.gz \
-    dist/winquick-0.1.0-darwin-arm64.tar.gz.sha256 \
+    dist/winquick-0.2.0-darwin-arm64.tar.gz \
+    dist/winquick-0.2.0-darwin-arm64.tar.gz.sha256 \
     dist/ntfs-3g_ntfsprogs-2022.10.3.tgz \
     dist/SHA256SUMS
 ```
