@@ -175,9 +175,36 @@ public static class Uia
         return false;
     }
 
+    /// <summary>
+    /// Refuse to act on an element the user cannot act on either.
+    ///
+    /// Windows answers an invoke on a disabled control with a bare COM failure
+    /// that surfaced as "Unrecognized error", which says nothing about the one
+    /// thing worth knowing.
+    /// </summary>
+    static void RequireEnabled(AutomationElement e, string action)
+    {
+        bool enabled;
+        try { enabled = e.Current.IsEnabled; }
+        catch { return; }   // if we cannot tell, let the attempt speak for itself
+        if (enabled) return;
+
+        string id = "";
+        try
+        {
+            var c = e.Current;
+            id = !string.IsNullOrEmpty(c.AutomationId) ? c.AutomationId
+               : !string.IsNullOrEmpty(c.Name) ? c.Name : c.ControlType.ProgrammaticName;
+        }
+        catch { }
+        throw new InvalidOperationException(
+            $"cannot {action}: {id} is disabled");
+    }
+
     /// <summary>Invoke an element through the best pattern it supports.</summary>
     public static string Invoke(AutomationElement e)
     {
+        RequireEnabled(e, "click");
         if (TryPattern<InvokePattern>(e, InvokePattern.Pattern, out var ip)) { ip.Invoke(); return "Invoke"; }
         if (TryPattern<TogglePattern>(e, TogglePattern.Pattern, out var tp)) { tp.Toggle(); return "Toggle"; }
         if (TryPattern<SelectionItemPattern>(e, SelectionItemPattern.Pattern, out var sp)) { sp.Select(); return "SelectionItem"; }
@@ -192,6 +219,7 @@ public static class Uia
 
     public static void SetValue(AutomationElement e, string text)
     {
+        RequireEnabled(e, "type into");
         if (TryPattern<ValuePattern>(e, ValuePattern.Pattern, out var vp) && !vp.Current.IsReadOnly)
         {
             vp.SetValue(text);

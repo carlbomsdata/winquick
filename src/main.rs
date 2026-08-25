@@ -1,6 +1,8 @@
 //! WinQuick — run real Windows commands on an Apple Silicon Mac.
 
+mod argv;
 mod artifact;
+mod artifact_patterns;
 mod capability;
 mod control;
 mod desktop;
@@ -34,7 +36,15 @@ Getting started:
   winquick setup                            install the Windows runtime
   winquick capability install powershell    add PowerShell 7
   winquick capability install dotnet-sdk    add the .NET SDK
+  winquick capability install desktop       add a real Windows desktop
   winquick doctor                           check the installation
+
+Windows GUI applications:
+  winquick ui-test MyApp.csproj --script my.uitest
+  winquick desktop start --app ./publish
+  winquick desktop launch app\\MyApp.exe
+  winquick desktop screenshot app.png
+  winquick desktop click --automation-id SaveButton
 
 Every run gets a clean Windows. Files, registry keys and environment
 variables written by one run are gone in the next. Windows has no network
@@ -287,6 +297,10 @@ enum DesktopCmd {
         /// Capture only the window whose title contains this
         #[arg(long, value_name = "TITLE")]
         title: Option<String>,
+        /// Capture the window with this handle, from `winquick desktop windows`
+        /// (use when two windows share a title)
+        #[arg(long, value_name = "HWND")]
+        hwnd: Option<i64>,
         /// Capture a screen rectangle: x,y,width,height
         #[arg(long, value_name = "X,Y,W,H")]
         rect: Option<String>,
@@ -377,8 +391,10 @@ fn dispatch(cli: Cli) -> Result<i32> {
             cpus,
             cold,
             argv,
-        } => runner::run(
-            &join_argv(&argv),
+        } => {
+            artifact_patterns::validate(&artifacts)?;
+            runner::run(
+            &argv::join(&argv),
             &runner::Options {
                 memory_mb: memory,
                 cpus,
@@ -390,7 +406,8 @@ fn dispatch(cli: Cli) -> Result<i32> {
                 artifacts_dir: artifacts_dir.unwrap_or_else(artifact::default_dest),
                 artifact_overwrite,
             },
-        ),
+        )
+        }
 
         Cmd::Desktop { action } => desktop_cmd(action, verbose),
         Cmd::UiTest { app, script, out, keep, memory } => {
@@ -424,42 +441,6 @@ fn dispatch(cli: Cli) -> Result<i32> {
 /// special immediately before a quote, so a run of N backslashes before a quote
 /// becomes 2N+1 (the extra one escaping the quote), and a run at the end of a
 /// quoted argument becomes 2N so it does not escape the closing quote.
-pub(crate) fn join_argv(argv: &[String]) -> String {
-    argv.iter().map(|a| quote_arg(a)).collect::<Vec<_>>().join(" ")
-}
-
-fn quote_arg(a: &str) -> String {
-    if !a.is_empty() && !a.contains([' ', '\t']) {
-        return a.to_string();
-    }
-    let mut out = String::from('"');
-    let mut backslashes = 0usize;
-    for ch in a.chars() {
-        match ch {
-            '\\' => backslashes += 1,
-            '"' => {
-                for _ in 0..backslashes * 2 + 1 {
-                    out.push('\\');
-                }
-                backslashes = 0;
-                out.push('"');
-            }
-            _ => {
-                for _ in 0..backslashes {
-                    out.push('\\');
-                }
-                backslashes = 0;
-                out.push(ch);
-            }
-        }
-    }
-    for _ in 0..backslashes * 2 {
-        out.push('\\');
-    }
-    out.push('"');
-    out
-}
-
 // ------------------------------------------------------------ subcommands
 
 /// Build or accept an application, drive its UI, and report.
@@ -646,7 +627,7 @@ fn desktop_cmd(action: DesktopCmd, verbose: bool) -> Result<i32> {
             }
         },
 
-        DesktopCmd::Screenshot { file, title, rect, host } => {
+        DesktopCmd::Screenshot { file, title, hwnd, rect, host } => {
             if host {
                 let png = desktop::host_screenshot(&file)?;
                 println!("Wrote {} ({} bytes) from QEMU's framebuffer.", file.display(), png);
@@ -656,6 +637,10 @@ fn desktop_cmd(action: DesktopCmd, verbose: bool) -> Result<i32> {
             if let Some(t) = title {
                 extra.push("--title".into());
                 extra.push(t);
+            }
+            if let Some(h) = hwnd {
+                extra.push("--hwnd".into());
+                extra.push(h.to_string());
             }
             if let Some(r) = rect {
                 extra.push("--rect".into());
@@ -675,6 +660,10 @@ fn desktop_cmd(action: DesktopCmd, verbose: bool) -> Result<i32> {
         }
 
         DesktopCmd::Bridge(argv) => {
+            // Syntax before state: an unrecognised verb used to be reported as
+            // "no desktop session is running", which sends the reader looking
+            // in the wrong place entirely.
+            desktop::check_verb(argv.first().map(String::as_str))?;
             let r = desktop::call(&argv, CALL_TIMEOUT)?;
             // The bridge already speaks JSON; pretty-print it so a person can
             // read it and a script can still parse it.
@@ -831,6 +820,25 @@ fn info() -> Result<i32> {
     if let Some(nc) = caps.iter().find(|c| c.name == "nuget-cache") {
         println!("packages     cached, {}", helpers::human(helpers::allocated(&nc.image)));
     }
+    let desk = desktop::base_image()?;
+    if desk.exists() {
+        println!(
+            "capability   desktop ({}), WPF/WinForms and UI automation",
+            helpers::human(helpers::allocated(&desk))
+        );
+        let dstate = state::desktop_state_dir()?;
+        if dstate.join("ready.json").exists() {
+            println!("desktop      prepared, {} (sessions start in ~0.4 s)", helpers::human(dir_size(&dstate)));
+        } else {
+            println!("desktop      not prepared yet (the first session takes ~20 s)");
+        }
+        match desktop::running() {
+            Some(sess) => println!("session      running, pid {}", sess.pid),
+            None => println!("session      none running"),
+        }
+    } else {
+        println!("capability   desktop not installed (winquick capability install desktop)");
+    }
     println!("data         {}", paths::root()?.display());
     Ok(0)
 }
@@ -936,6 +944,24 @@ fn doctor(smoke: bool) -> Result<i32> {
             tick(true),
             "session state"
         );
+    }
+    if desk.exists() {
+        let built = desktop::bridge_dir()?;
+        if built.join("wqui.exe").exists() {
+            println!("  {} {:<20} built", tick(true), "guest bridge");
+        } else {
+            println!(
+                "  {} {:<20} missing from {} (winquick capability install desktop --force)",
+                tick(false),
+                "guest bridge",
+                built.display()
+            );
+            problems.push(
+                "The desktop capability is installed but its guest bridge is missing. \
+                 Rebuild it with `winquick capability install desktop --force`."
+                    .to_string(),
+            );
+        }
     }
     match servicing::bridge_source() {
         Ok(p) => println!("  {} {:<20} {}", tick(true), "bridge sources", p.display()),
@@ -1092,54 +1118,4 @@ fn dir_size(p: &std::path::Path) -> u64 {
         }
     }
     total
-}
-
-#[cfg(test)]
-mod tests {
-    use super::join_argv;
-
-    fn j(v: &[&str]) -> String {
-        join_argv(&v.iter().map(|s| s.to_string()).collect::<Vec<_>>())
-    }
-
-    #[test]
-    fn plain_arguments_are_untouched() {
-        assert_eq!(j(&["cmd", "/c", "ver"]), "cmd /c ver");
-    }
-
-    #[test]
-    fn arguments_with_spaces_stay_one_argument() {
-        assert_eq!(
-            j(&["pwsh", "-Command", "Write-Output hello"]),
-            "pwsh -Command \"Write-Output hello\""
-        );
-    }
-
-    #[test]
-    fn embedded_quotes_are_escaped() {
-        assert_eq!(
-            j(&["pwsh", "-Command", "Write-Output \"hi\""]),
-            "pwsh -Command \"Write-Output \\\"hi\\\"\""
-        );
-    }
-
-    #[test]
-    fn windows_paths_without_spaces_pass_through_verbatim() {
-        assert_eq!(j(&["cmd", "/c", "dir", r"C:\Windows\System32"]), r"cmd /c dir C:\Windows\System32");
-    }
-
-    #[test]
-    fn backslashes_before_a_quote_are_doubled() {
-        assert_eq!(j(&[r#"a\"b c"#]), r#""a\\\"b c""#);
-    }
-
-    #[test]
-    fn trailing_backslash_does_not_escape_the_closing_quote() {
-        assert_eq!(j(&[r"c:\some path\"]), r#""c:\some path\\""#);
-    }
-
-    #[test]
-    fn shell_metacharacters_are_preserved_when_unquoted() {
-        assert_eq!(j(&["cmd", "/c", "a&b"]), "cmd /c a&b");
-    }
 }

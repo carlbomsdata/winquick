@@ -26,6 +26,7 @@ public static class Program
         {
             if (argv.Length > 0 && argv[0] == "serve") return Serve(new Args(argv));
             var args = new Args(argv);
+            args.RejectUnknownEarly();
             JsonObject result = Dispatch(args);
             args.RejectUnknown();
             result["ok"] = true;
@@ -65,6 +66,7 @@ public static class Program
             try
             {
                 var args = new Args(request.Argv);
+                args.RejectUnknownEarly();
                 result = Dispatch(args);
                 args.RejectUnknown();
                 result["ok"] = true;
@@ -541,6 +543,30 @@ sealed class Args
             }
             else Rest.Add(s);
         }
+    }
+
+    /// <summary>Every option any verb accepts.</summary>
+    static readonly string[] Known = {
+        "automation-id", "name", "class", "control-type", "title", "hwnd", "depth",
+        "text", "item", "state", "key", "x", "y", "right", "move", "mouse", "settle",
+        "timeout", "cwd", "out", "rect", "all", "poll",
+    };
+
+    /// <summary>
+    /// Reject an option no verb understands, before the verb runs.
+    ///
+    /// Without this a typo like `--id` fell through to the verb, which then
+    /// complained that no selector had been given — true, but it never
+    /// mentioned the option that had been ignored.
+    /// </summary>
+    public void RejectUnknownEarly()
+    {
+        var unknown = _opts.Keys
+            .Where(k => !Known.Contains(k, StringComparer.OrdinalIgnoreCase))
+            .OrderBy(k => k).ToList();
+        if (unknown.Count == 0) return;
+        throw new ArgumentException(
+            $"unknown option --{string.Join(", --", unknown)}. Options are: --{string.Join(", --", Known.OrderBy(k => k))}");
     }
 
     public bool Has(string k)

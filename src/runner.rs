@@ -419,6 +419,11 @@ fn clone_capability(ctx: &Ctx, dir: &Path) -> Result<Vec<PathBuf>> {
 /// Build the per-run workspace volume: clone the ready template so the FAT
 /// identity is preserved, then write this run's project into it.
 fn prepare_workspace(ctx: &Ctx, template: Option<&Path>, dst: &Path) -> Result<()> {
+    // Check the whole tree before copying any of it, so an unrepresentable name
+    // is reported by path rather than as a bare failure part-way through.
+    if let Some(src) = &ctx.workspace {
+        crate::capability::reject_unsupported_names(src, "the workspace")?;
+    }
     match template {
         Some(t) => qemu::clone_file(t, dst)?,
         None => {

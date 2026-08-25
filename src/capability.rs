@@ -355,6 +355,73 @@ fn dir_size(p: &Path) -> Result<u64> {
     Ok(total)
 }
 
+/// Names the FAT volume cannot hold, found before anything is copied.
+///
+/// The filesystem crate WinQuick builds these volumes with accepts characters
+/// up to `U+FFFF` only, so a name containing an emoji — or anything else
+/// outside the basic multilingual plane, which needs a surrogate pair — is
+/// rejected. Everyday non-ASCII is fine: accents, CJK, Cyrillic and Greek all
+/// work.
+///
+/// The point of checking first is the error message. Failing part-way through
+/// copying reported only "File name contains unsupported characters", leaving
+/// the user to find the offending file in a tree of thousands.
+pub fn unsupported_names(root: &Path) -> Vec<PathBuf> {
+    let mut bad = Vec::new();
+    collect_unsupported(root, &mut bad);
+    bad
+}
+
+fn collect_unsupported(dir: &Path, bad: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.flatten() {
+        let path = e.path();
+        if !name_fits_fat(&e.file_name().to_string_lossy()) {
+            bad.push(path.clone());
+        }
+        if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            collect_unsupported(&path, bad);
+        }
+    }
+}
+
+/// Mirrors what the filesystem layer will accept, so the check and the failure
+/// agree.
+fn name_fits_fat(name: &str) -> bool {
+    name.chars().all(|c| match c {
+        'a'..='z' | 'A'..='Z' | '0'..='9' => true,
+        '\u{80}'..='\u{FFFF}' => true,
+        '$' | '%' | '\'' | '-' | '_' | '@' | '~' | '`' | '!' | '(' | ')' | '{' | '}' | '.'
+        | ' ' | '+' | ',' | ';' | '=' | '[' | ']' | '^' | '#' | '&' => true,
+        _ => false,
+    })
+}
+
+/// Refuse a tree the volume cannot represent, saying exactly which files.
+pub fn reject_unsupported_names(root: &Path, what: &str) -> Result<()> {
+    let bad = unsupported_names(root);
+    if bad.is_empty() {
+        return Ok(());
+    }
+    let listed: Vec<String> = bad
+        .iter()
+        .take(10)
+        .map(|p| format!("  {}", p.strip_prefix(root).unwrap_or(p).display()))
+        .collect();
+    let more = if bad.len() > 10 {
+        format!("\n  ...and {} more", bad.len() - 10)
+    } else {
+        String::new()
+    };
+    bail!(
+        "{what} contains {} file name(s) the Windows volume cannot hold:\n{}{more}\n\n\
+         Names may use accents, CJK, Cyrillic and Greek, but not characters outside the\n\
+         basic multilingual plane — emoji are the usual cause. Rename or exclude them.",
+        bad.len(),
+        listed.join("\n")
+    )
+}
+
 fn copy_tree<T: fatfs::ReadWriteSeek>(src: &Path, dst: &fatfs::Dir<T>) -> Result<()> {
     let mut entries: Vec<_> = std::fs::read_dir(src)?.collect::<Result<Vec<_>, _>>()?;
     entries.sort_by_key(|e| e.file_name());
