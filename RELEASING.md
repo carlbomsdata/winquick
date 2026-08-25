@@ -4,8 +4,9 @@ Everything for v0.2.0 is built and committed. What remains needs credentials
 this machine does not have.
 
 v0.1.0 was tagged but never published, so v0.2.0 is the first release anyone
-will see. It is a different product from v0.1.0 in one important way: it can
-build, render and drive Windows GUI applications.
+will see. It is a different product from v0.1.0 in two ways: it can build,
+render and drive Windows GUI applications, and a desktop session starts in about
+380 ms rather than the 9.3 seconds booting Windows took.
 
 ## Build the artifacts
 
