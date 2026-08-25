@@ -74,6 +74,45 @@ Invoked as a separate child process; not linked into WinQuick.
 
 ---
 
+## virtio-win drivers — required by the desktop capability, not distributed
+
+`winquick capability install desktop` stages two Windows ARM64 drivers into the
+desktop image it builds: `viogpudo`, Red Hat's display-only VirtIO GPU driver,
+and `vioinput`. Validation OS has no inbox driver for a plain framebuffer — it
+registers the `BasicDisplay` service but does not ship `BasicDisplay.sys` — so
+without `viogpudo` there is no display adapter and nothing renders.
+
+WinQuick does not distribute these. They come from Red Hat's `virtio-win` ISO,
+which the user downloads:
+
+    https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/
+
+    winquick capability install desktop --virtio ~/Downloads/virtio-win.iso
+
+The drivers are copied into an image generated on the user's own machine, under
+`~/.winquick/images/desktop-arm64/`, and never leave it.
+
+They are three-clause BSD:
+
+> Copyright 2009-2022 Red Hat, Inc. and/or its affiliates.
+> Copyright 2016 Google, Inc.
+> Copyright 2016 Virtuozzo, Inc.
+> Copyright 2007 IBM Corporation
+>
+> Redistribution and use in source and binary forms, with or without
+> modification, are permitted provided that the following conditions are met:
+> redistributions of source code must retain the above copyright notice, this
+> list of conditions and the following disclaimer; redistributions in binary
+> form must reproduce it in the documentation and/or other materials provided
+> with the distribution; and neither the name of the copyright holder nor the
+> names of its contributors may be used to endorse or promote products derived
+> from this software without specific prior written permission.
+>
+> THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+> AND ANY EXPRESS OR IMPLIED WARRANTIES ARE DISCLAIMED.
+
+The full text is `virtio-win_license.txt` on the ISO.
+
 ## Microsoft software — never distributed
 
 WinQuick ships no Microsoft software. Microsoft Validation OS, PowerShell and
