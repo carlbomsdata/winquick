@@ -307,6 +307,35 @@ application's contents change per session and refreshing the guest's view of a
 volume means dismounting it — which is not an option for the volume the bridge
 is executing from.
 
+## Why output is not streamed, and the guest has no network
+
+Both come down to the same thing: the base runtime deliberately contains no
+third-party driver and no compiled WinQuick code. Everything crosses the
+boundary through inbox components — NVMe and FAT — driven by a batch agent.
+
+That is enough to hand a command in and results out, and not enough for a live
+channel. Windows only synchronises a FAT volume with the disk beneath it at
+mount and dismount, so the host cannot watch a file the guest is still writing;
+that is exactly the incoherency that forced the desktop session onto a
+partitionless raw disk. The two alternatives both break the constraint:
+
+* **A serial port.** QEMU's `virt` machine has a PL011 and Windows enumerates it
+  as `ACPI\ARMH0011`, but no driver binds and `HKLM\HARDWARE\DEVICEMAP\SERIALCOMM`
+  is empty, so there is no `COM1` to write to.
+* **A raw control disk**, as desktop sessions use. That works, and needs a
+  compiled program in the guest to poll it.
+
+Networking is the same story with a different device: attaching
+`virtio-net-pci` does enumerate `PCI\VEN_1AF4&DEV_1000`, and Windows binds
+nothing to it, so `ipconfig` reports no adapters. Red Hat's `netkvm` driver for
+ARM64 exists and could be staged with `dism /Add-Driver`, exactly as the display
+driver is — but only the *desktop* image is serviced today, so this would mean
+adding a servicing pass to `winquick setup` and making the virtio-win media a
+dependency of basic installation.
+
+Both are therefore deferred rather than impossible, and the route for each is
+known.
+
 ## Concurrency and interruption
 
 Several `winquick run` invocations can proceed at once: each gets its own run

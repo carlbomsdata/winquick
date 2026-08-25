@@ -1,5 +1,68 @@
 # Changelog
 
+## v0.2.1 — hardening
+
+Everything here came from using v0.2.0 as an outside user would, in an isolated
+environment, from the published archive.
+
+### Fixed
+
+- **Quoting reaching `cmd` was corrupted.** `winquick run -- cmd /c 'echo say
+  "hi"'` printed `say \"hi\"`, and a quoted path failed outright. The command
+  line is now built for whoever parses it: `cmd` gets what you wrote, a program
+  gets arguments its own runtime will split correctly. Removing the escaping
+  outright was tried first and broke PowerShell, so both rules are kept and the
+  first argument chooses.
+- **A filename outside the basic multilingual plane** — an emoji, usually —
+  aborted the whole workspace transfer with a message that named no file. The
+  tree is now checked before anything is copied, and every offending path is
+  listed. Accents, CJK, Cyrillic and Greek were never affected.
+- **`winquick desktop screenshot --hwnd`** exists, so one of two windows sharing
+  a title can be captured. `get` and `tree` already accepted it.
+- **Ctrl-C during `winquick desktop start`** exits 130 and says whether a session
+  was left running, instead of exiting 0 in silence.
+- **Clicking a disabled control** says `cannot click: SaveButton is disabled`
+  rather than `Unrecognized error`.
+- **A mistyped option is named.** `--id` reported "no selector given"; it now
+  reports the unknown option and lists the ones that exist.
+- **An unknown desktop verb is a syntax error**, reported without needing a
+  session. It used to surface as "no desktop session is running".
+- **`winquick doctor` notices a missing guest bridge**, which previously only
+  failed later, at `desktop start`.
+
+### Improved
+
+- **Artifact patterns are a real glob subset**: `**/*.dll`, `bin/**/*.exe`,
+  `logs/*.txt`, `foo?.txt`, `bin/Release/**` and named files. A single `*` is one
+  directory deep and `**` recurses, as everywhere else — in v0.2.0 `dir/*` meant
+  the whole tree. Patterns that try to leave the workspace are refused before the
+  run starts.
+- **`winquick info` reports the desktop capability**, its prepared state and any
+  running session.
+- **`winquick desktop start` lists everything still missing at once**, in the
+  order it has to be done, instead of one failed command at a time.
+- Getting-started help introduces the desktop.
+- Documentation: WinForms needs `Control.Name` for an AutomationId, `%` follows
+  batch rules, `--hwnd` disambiguates windows, and the measured numbers agree
+  with each other.
+
+### Investigated and deferred
+
+- **Opt-in guest networking.** Attaching a NIC enumerates
+  `PCI\VEN_1AF4&DEV_1000` and Windows binds nothing to it. `netkvm` for ARM64
+  exists and could be staged with `dism /Add-Driver`, but only the desktop image
+  is serviced today, so this means adding a servicing pass to `winquick setup`.
+  Deferred; offline stays the default regardless.
+- **Live output streaming.** The guest has no channel that reaches the host
+  while a command runs: FAT only synchronises at dismount, and the PL011 serial
+  port enumerates as `ACPI\ARMH0011` with no driver bound and no `COM1`. A raw
+  control disk works — that is what desktop sessions use — and needs a compiled
+  program in the guest. Deferred.
+- **The desktop capability's `dotnet-sdk` dependency.** A standalone Windows
+  Desktop runtime for `win-arm64` exists at 34 MB, but it is an add-on without a
+  base runtime, so a smaller capability means merging two archives into one
+  volume. Practical; deferred to keep this release small.
+
 ## v0.2.0 — the desktop capability
 
 ### Windows GUI applications, built and driven from the Mac

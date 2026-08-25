@@ -170,3 +170,41 @@ changes, cache sync, clean — take a lock and will say if they are waiting.
 
 `winquick --verbose run -- ...` shows what WinQuick is doing: which path it took,
 phase timings, and why it rebuilt anything. Include that when reporting a bug.
+
+## `%` in a command does not mean what it does at a Windows prompt
+
+A command is delivered to the guest as a batch file, so `%` follows batch rules
+rather than interactive-prompt rules. `%PATH%` expands as expected, but a `for`
+loop variable needs doubling:
+
+```console
+$ winquick run -- cmd /c 'for /L %%i in (1,1,3) do @echo %%i'
+```
+
+Written with a single `%`, cmd reports `i was unexpected at this time.` — the
+same thing it would say inside any `.cmd` file. Nothing else about your quoting
+needs adjusting: quotes, spaces, `&`, `|` and Unicode all reach cmd exactly as
+you typed them.
+
+## Quoting
+
+WinQuick chooses how to quote based on what you are running.
+
+`cmd` is a shell, so what follows it is passed through as you wrote it:
+
+```console
+$ winquick run -- cmd /c 'echo say "hi"'
+say "hi"
+$ winquick run -- cmd /c 'type "C:\Program Files\app\readme.txt"'
+```
+
+Anything else is a program, so each argument is quoted so its own runtime splits
+the command line back into exactly the arguments you gave:
+
+```console
+$ winquick run -- pwsh -NoProfile -Command 'Write-Output "quoted string"'
+quoted string
+```
+
+In v0.2.0 both cases used the second rule, which corrupted quotes bound for
+`cmd`. If you worked around it by avoiding quotes, you no longer need to.
