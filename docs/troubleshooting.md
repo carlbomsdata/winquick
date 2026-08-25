@@ -122,17 +122,25 @@ specific files back.
 
 **`--artifact` found nothing**
 
-Patterns are relative to the workspace root and support three shapes only:
+Patterns are relative to the workspace root and are matched inside Windows:
 
 | Pattern | Meaning |
 |---|---|
-| `bin/Release/**` | that directory, recursively |
+| `bin/Release/**` | that directory, recursively, hierarchy preserved |
+| `**/*.dll` | every `.dll` anywhere under the workspace |
+| `bin/**/*.exe` | every `.exe` anywhere under `bin` |
 | `*.log`, `logs/*.txt` | wildcard within one directory |
+| `foo?.txt` | `?` matches exactly one character |
 | `logs/build.log` | one named file or directory |
 
-`**` in the middle of a path is not supported. Check where your build actually
-writes — `dotnet build` in a solution puts output under `<project>/bin`, not a
-top-level `bin`.
+A single `*` matches one directory level, as it does in any other glob; use `**`
+to recurse. Slashes may lean either way. Patterns stay inside the workspace: one
+containing `..`, or an absolute path, is refused before the run starts.
+
+If a pattern matched nothing the run says so on stdout (`winquick: no match for
+...`) without failing the command. Check where your build actually writes —
+`dotnet build` in a solution puts output under `<project>/bin`, not a top-level
+`bin`.
 
 **"already exists and is not empty"**
 
