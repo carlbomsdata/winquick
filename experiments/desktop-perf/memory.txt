@@ -1,0 +1,19 @@
+=== guest memory sizing (cpus=2) ===
+--- memory=2048MiB ---
+  prepared state: 849M
+  steady start  : 349ms
+  WPF app       : launches fine
+    Wrote /tmp/mem.png (1280x800, 100.0% non-black, 956 distinct colours).
+  RSS           : 2561 MiB
+--- memory=3072MiB ---
+  prepared state: 865M
+  steady start  : 427ms
+  WPF app       : launches fine
+    Wrote /tmp/mem.png (1280x800, 100.0% non-black, 956 distinct colours).
+  RSS           : 3581 MiB
+--- memory=4096MiB ---
+  prepared state: 886M
+  steady start  : 507ms
+  WPF app       : launches fine
+    Wrote /tmp/mem.png (1280x800, 100.0% non-black, 956 distinct colours).
+  RSS           : 4605 MiB

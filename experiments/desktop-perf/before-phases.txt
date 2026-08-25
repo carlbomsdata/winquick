@@ -1,0 +1,31 @@
+=== desktop start phase breakdown, before optimization (3 runs) ===
+--- run 1 ---
+winquick: [      0ms] session directory
+winquick: [     20ms] disk overlay
+winquick: [     22ms] mailbox
+winquick: [     36ms] files volume
+winquick: [     37ms] control disk
+winquick: [     43ms] qemu spawned
+winquick: [   9332ms] guest agent ready (windows booted)
+winquick: [   9333ms] serve command injected
+winquick: [   9517ms] bridge answering
+--- run 2 ---
+winquick: [      0ms] session directory
+winquick: [     13ms] disk overlay
+winquick: [     15ms] mailbox
+winquick: [     28ms] files volume
+winquick: [     29ms] control disk
+winquick: [     34ms] qemu spawned
+winquick: [   9142ms] guest agent ready (windows booted)
+winquick: [   9142ms] serve command injected
+winquick: [   9342ms] bridge answering
+--- run 3 ---
+winquick: [      0ms] session directory
+winquick: [     13ms] disk overlay
+winquick: [     15ms] mailbox
+winquick: [     28ms] files volume
+winquick: [     29ms] control disk
+winquick: [     34ms] qemu spawned
+winquick: [   9105ms] guest agent ready (windows booted)
+winquick: [   9105ms] serve command injected
+winquick: [   9295ms] bridge answering

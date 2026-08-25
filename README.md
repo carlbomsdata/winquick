@@ -1,6 +1,9 @@
 # WinQuick
 
-Run real Windows commands on an Apple Silicon Mac.
+**Instant disposable Windows environments.**
+
+Run a real Windows command from your Mac in about a quarter of a second, in a
+clean Windows that is thrown away afterwards.
 
 ```console
 $ winquick run -- cmd /c ver
@@ -8,11 +11,17 @@ $ winquick run -- cmd /c ver
 Microsoft Windows [Version 10.0.26100.8972]
 ```
 
-That is a real Windows kernel, started and thrown away in about a quarter of a
-second. No VM to manage, no window, no desktop.
+A real Windows ARM64 kernel under QEMU with Apple's Hypervisor Framework —
+not Wine, not an emulator, not a container. Every run starts from a pristine
+image and leaves nothing behind.
 
-**Status: v0.1.0, experimental.** It works well on the machines it has been
-tested on, but it is young. See [Known limits](#known-limits).
+| | |
+|---|---|
+| Windows command | **~288 ms** |
+| PowerShell command | ~840 ms |
+| Desktop session start | **~380 ms** |
+| UI automation step in a session | ~20 ms |
+| Host | Apple Silicon macOS (Linux and Windows hosts planned) |
 
 ## Why
 
@@ -133,8 +142,9 @@ winquick desktop screenshot after.png
 winquick desktop stop
 ```
 
-The guest boots once (~9 s) and stays up; each step after that takes tens of
-milliseconds. Controls are addressed by `AutomationId`, and a selector matching
+A session starts in about 380 ms and stays up; each step after that takes tens
+of milliseconds. It is not booting Windows that fast — it restores a Windows
+that already booted. Controls are addressed by `AutomationId`, and a selector matching
 more than one element is an error listing the candidates rather than a guess.
 
 Or put the whole thing in a script and run it in one command:
@@ -176,10 +186,11 @@ knowing anything about how WinQuick works. See
 |---|---|
 | Windows | Microsoft Validation OS, build 10.0.26100 ARM64 |
 | Runtime size | 763 MiB |
-| Trivial command | ~270 ms |
-| PowerShell command | ~600 ms |
+| Trivial command | ~288 ms |
+| PowerShell command | ~840 ms |
+| `dotnet --version` | ~500 ms |
 | `dotnet test` on a small project | ~10 s |
-| Desktop session start | ~10 s, then ~10 ms per UI step |
+| Desktop session start | ~380 ms, then ~20 ms per UI step |
 
 Optional capabilities, installed only if you ask:
 

@@ -1,0 +1,28 @@
+=== full WPF pipeline on the restored session ===
+start ok
+launch ok
+window ok
+Wrote experiments/desktop-perf/after-opt-before.png (600x470, 99.9% non-black, 867 distinct colours).
+      TitleBar   TitleBar
+        MenuBar    SystemMenuBar
+          MenuItem   Item 1
+        Button     Minimize
+        Button     Maximize
+        Button     Close
+      Text       HeaderText
+      Edit       DeviceNameBox
+      ComboBox   ModeCombo
+      CheckBox   LoggingCheck
+      Button     SaveButton
+      List       HistoryList
+type ok
+select ok
+toggle ok
+click ok
+status: Saved: PLC-42 (Diagnostic, logging on)
+Wrote experiments/desktop-perf/after-opt-after.png (600x470, 99.9% non-black, 1110 distinct colours).
+
+=== raw input fallback ===
+coordinate click: On -> Off WORKS
+keyboard: 'RAW-1'
+Tab ok

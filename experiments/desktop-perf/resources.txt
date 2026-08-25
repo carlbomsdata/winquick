@@ -1,0 +1,9 @@
+=== resource usage, default session (2 vCPU / 2048 MiB) ===
+  idle CPU / RSS      : 6.8%  2268 MiB
+  session dir on disk : 1.8G (allocated  12G logical)
+  prepared state      : 912M
+     ready.state      : 847M
+     ready-disk.qcow2 :  39M
+  command ready state : 486M
+  desktop image       : 1.7G
+  total ~/.winquick   : 9.5G

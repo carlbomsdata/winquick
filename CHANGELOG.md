@@ -48,6 +48,31 @@ $ winquick ui-test MyApp.csproj --script my.uitest --out ./shots
   empty file `set /p` falls back to reading the console, which wedged the agent
   permanently.
 
+### Fast
+
+A desktop session starts in **~380 ms**, down from 9.3 s.
+
+It stopped booting Windows. `winquick run` has always frozen a booted guest with
+QEMU's migration and restored it per run; a desktop session now does the same,
+frozen at the point where the bridge is already answering rather than at the
+login prompt. Preparing that state costs about 17 s, once, after the capability
+is installed or anything about the machine changes.
+
+Measured over 30 consecutive sessions, each verified by launching a WPF
+application, reading its UI Automation tree and taking a screenshot before being
+stopped: 30/30, min 373 ms, p50 380 ms, p95 399 ms, max 402 ms.
+
+Two other things came out of that work:
+
+- **Default session sizing is now 2 processors and 2048 MiB**, measured rather
+  than assumed. Four processors is no faster at anything a session does, and a
+  `winquick run` issued alongside a four-processor session used to take minutes;
+  alongside a two-processor one it takes 290 ms. Halving the memory took a start
+  from 507 ms to 349 ms and resident size from 4.6 GiB to 2.3 GiB.
+- **Installing the desktop capability no longer invalidates the command guest.**
+  The internal build ran with different memory than `winquick run` defaults to,
+  so the next ordinary command silently paid for a full rebuild.
+
 ### Found by dogfooding it
 
 A fresh Claude Code session was given a WPF utility with five planted defects

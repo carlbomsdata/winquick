@@ -1,0 +1,34 @@
+=== 30 consecutive desktop sessions: start, verify bridge, do real UI work, stop ===
+   1: 380ms  ok
+   2: 377ms  ok
+   3: 382ms  ok
+   4: 373ms  ok
+   5: 394ms  ok
+   6: 388ms  ok
+   7: 380ms  ok
+   8: 374ms  ok
+   9: 379ms  ok
+  10: 402ms  ok
+  11: 376ms  ok
+  12: 399ms  ok
+  13: 376ms  ok
+  14: 394ms  ok
+  15: 379ms  ok
+  16: 378ms  ok
+  17: 375ms  ok
+  18: 383ms  ok
+  19: 374ms  ok
+  20: 379ms  ok
+  21: 378ms  ok
+  22: 383ms  ok
+  23: 380ms  ok
+  24: 382ms  ok
+  25: 374ms  ok
+  26: 381ms  ok
+  27: 381ms  ok
+  28: 391ms  ok
+  29: 380ms  ok
+  30: 376ms  ok
+
+  successes 30/30   failures 0
+  min=373ms p50=380ms mean=382ms p95=399ms max=402ms

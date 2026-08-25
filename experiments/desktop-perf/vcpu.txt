@@ -1,0 +1,25 @@
+=== vCPU comparison (each config rebuilds its own prepared state) ===
+--- cpus=1 ---
+  prepare+start : 18479ms
+  steady start  : 499ms (mean of 3)
+  launch+window : 684ms
+  5x UIA get    : 223ms
+  screenshot    : 133ms
+  idle CPU/RSS  : 3.2% CPU, 4635 MiB RSS
+  concurrent run: 12533ms
+--- cpus=2 ---
+  prepare+start : 17302ms
+  steady start  : 490ms (mean of 3)
+  launch+window : 665ms
+  5x UIA get    : 269ms
+  screenshot    : 134ms
+  idle CPU/RSS  : 4.2% CPU, 4639 MiB RSS
+  concurrent run: 341ms
+--- cpus=4 ---
+  prepare+start : 17183ms
+  steady start  : 533ms (mean of 3)
+  launch+window : 683ms
+  5x UIA get    : 272ms
+  screenshot    : 156ms
+  idle CPU/RSS  : 3.7% CPU, 4660 MiB RSS
+  concurrent run: 312ms

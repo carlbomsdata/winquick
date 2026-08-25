@@ -1661,3 +1661,83 @@ A `winquick run` issued while a desktop session is up takes **5 minutes**
 instead of 300 ms. That is not a regression; it is a four-processor, 4 GiB
 virtual machine competing for the same host. Measured, documented, and worth
 knowing before concluding something has broken.
+
+## Making a desktop session start in 380 ms
+
+The first working desktop capability took 9.3 seconds to start a session. For a
+product called WinQuick that is the wrong number, and the profile said so
+plainly: 34 ms of host work, then nine seconds of watching Windows boot.
+
+```
+[     0ms] session directory      [    43ms] qemu spawned
+[    20ms] disk overlay           [  9332ms] guest agent ready (windows booted)
+[    36ms] volumes built          [  9517ms] bridge answering
+```
+
+The fix was not a new idea. `winquick run` already freezes a booted guest with
+QEMU migration and restores it per run, which is where its ~288 ms comes from.
+The desktop path simply was not using it.
+
+One design decision mattered more than the rest: **freeze after the bridge is
+answering**, not at the login prompt. A state frozen earlier would still have to
+start the desktop stack and the bridge on every restore, which is most of the
+nine seconds.
+
+| | before | after |
+|---|---|---|
+| session start, p50 | 9,300 ms | **380 ms** |
+| of which: restore RAM and devices | — | 391 ms |
+| of which: refresh the app volume | — | 95 ms |
+| one-off preparation | — | ~17 s |
+
+30 consecutive sessions, each launching a WPF application, reading its UI
+Automation tree and capturing a screenshot before being stopped: 30/30,
+min 373 ms, p50 380 ms, mean 382 ms, p95 399 ms, max 402 ms.
+
+### What it cost to keep it disposable
+
+Freezing a guest that has already mounted its volumes means the next session
+attaches a *different* application volume behind a cached directory. The bridge
+and the application therefore live on separate volumes: the bridge volume is
+frozen and never rewritten, because `wqui.exe` is running from it; the
+application volume is refilled per session and the host asks the bridge to
+dismount and remount it once after restoring. 95 ms.
+
+Disposability is stronger than before, not weaker. Every session restores the
+same frozen RAM and a fresh clone of the same frozen disk, so nothing
+accumulates. Measured: a session that saved records, wrote `C:\dirty.txt`, added
+a registry key and grew its overlay to 40 MB left the prepared state byte for
+byte identical, and the next session came up with an empty form.
+
+### Sizing, measured
+
+| | 1 vCPU | 2 vCPU | 4 vCPU |
+|---|---|---|---|
+| session start | 499 ms | 490 ms | 533 ms |
+| launch + first window | 684 ms | 665 ms | 683 ms |
+| five UIA reads | 223 ms | 269 ms | 272 ms |
+| screenshot | 133 ms | 134 ms | 156 ms |
+| concurrent `winquick run` | — | 341 ms | 312 ms |
+
+| memory | prepared state | start | resident |
+|---|---|---|---|
+| 2048 MiB | 849 MiB | **349 ms** | 2.5 GiB |
+| 3072 MiB | 865 MiB | 427 ms | 3.5 GiB |
+| 4096 MiB | 886 MiB | 507 ms | 4.6 GiB |
+
+Two processors and 2048 MiB became the defaults. Four bought nothing measurable
+and cost the host twice as much.
+
+### The contention problem solved itself
+
+A `winquick run` issued while a four-processor desktop session was up took about
+five minutes instead of 300 ms. With the new defaults it takes 290 ms — the same
+as with no session running at all. That was never a scheduling bug; it was a
+session helping itself to half the machine for no benefit.
+
+### A bug the profiling turned up
+
+Installing the desktop capability invalidated the *command* prepared guest,
+because the internal bridge build ran at 2048 MiB while `winquick run` defaults
+to 1024. The next ordinary command after every desktop install silently paid for
+a 12-second rebuild. Both now use the same shared defaults.

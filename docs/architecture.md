@@ -298,6 +298,15 @@ Capability volumes are cloned per session, exactly as they are per run — Windo
 writes to a volume when it mounts it, and the installed images must not carry a
 session's fingerprints.
 
+A session does not boot. It restores a prepared desktop state, frozen with the
+bridge already answering, in the same way `winquick run` restores its prepared
+guest: about 380 ms instead of the 9.3 seconds booting took. Preparing that
+state costs ~17 s, once, and it is rebuilt whenever anything about the machine
+changes. The bridge and the application sit on separate volumes because the
+application's contents change per session and refreshing the guest's view of a
+volume means dismounting it — which is not an option for the volume the bridge
+is executing from.
+
 ## Concurrency and interruption
 
 Several `winquick run` invocations can proceed at once: each gets its own run

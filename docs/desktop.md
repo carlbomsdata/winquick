@@ -224,9 +224,11 @@ winquick desktop click --automation-id SaveButton
 winquick desktop stop
 ```
 
-The guest boots once (about 10 seconds) and stays up; each verb after that is a
-round trip of a few milliseconds over the control disk. That ratio is what makes
-iterating on a UI bearable.
+A session starts in about **380 ms**, and each verb after that is a round trip of
+a few milliseconds over the control disk.
+
+It is not booting Windows in 380 ms. Nothing could. It is restoring a Windows
+that already booted.
 
 The session is still disposable. It runs on a copy-on-write overlay over the
 desktop image, and `winquick desktop stop` deletes it. `winquick clean` stops a
@@ -239,6 +241,102 @@ A running session is a whole virtual machine with four processors and 4 GiB.
 It costs real capacity: a `winquick run` issued while a desktop session is up
 takes seconds rather than the usual ~300 ms. Stop the session, or expect the
 builds you interleave with it to be slow.
+
+## Why a session starts in 380 ms
+
+The first version booted Windows on every `winquick desktop start` and took
+9.3 seconds. Profiling said what you would expect:
+
+```
+[     0ms] session directory
+[    20ms] disk overlay
+[    36ms] volumes built
+[    43ms] qemu spawned
+[  9332ms] guest agent ready (windows booted)
+[  9517ms] bridge answering
+```
+
+Thirty-four milliseconds of work and nine seconds of watching Windows boot —
+the same nine seconds, doing the same things, every single time.
+
+`winquick run` had already solved this for commands: boot once, freeze the
+guest with QEMU's migration, and restore RAM and devices per run instead of
+booting. A desktop session now does the same, with one difference that matters.
+The command state is frozen with the agent waiting for work. The desktop state
+is frozen **after the bridge is already answering on the control channel** — a
+state frozen at the login prompt would still have to bring up the desktop stack
+and the bridge on every restore, which is most of the cost.
+
+```
+[    17ms] prepared state validated
+[    30ms] volumes cloned
+[    30ms] qemu spawned
+[   421ms] guest restored
+[   516ms] session ready
+```
+
+Preparing it costs about 17 seconds, once, on the first start after the
+capability is installed or anything about the machine changes.
+
+### The application volume
+
+Freezing a guest that has already mounted its volumes creates one problem. The
+snapshot was taken with one application volume attached; the next session has a
+different one. Windows is holding a cached directory for contents that have
+since been replaced.
+
+So the bridge and the application live on **separate volumes**. The bridge
+volume is frozen into the state and never rewritten — `wqui.exe` is executing
+from it, and dismounting it would be dismounting the program. The application
+volume is a fixed size, refilled per session without reformatting so the
+filesystem identity the frozen guest remembers stays valid, and the host asks
+the bridge to dismount and remount it once, immediately after restoring. That
+is the same trick the guest agent uses on the mailbox, and it costs about 95 ms.
+
+### It is still disposable
+
+More so, if anything. Every session restores the *same* frozen RAM and a fresh
+clone of the same frozen disk, so there is no accumulating drift — a session
+cannot inherit anything from the one before it, because it does not start from
+it. Guest writes land in the session's own overlay and go when it stops.
+
+Measured: after a session that saved records, wrote `C:\dirty.txt`, added a
+registry key and grew its overlay to 40 MB, the prepared state was byte for byte
+what it had been, and the next session came up with an empty form.
+
+### Sizing
+
+Four processors turned out to buy nothing. Start, application launch, UI
+automation and capture are all within noise between two and four, while four
+takes twice as much of the host away from whatever else is running — a
+`winquick run` issued alongside a four-processor session used to take minutes.
+At two it takes 290 ms, the same as with no session at all.
+
+Memory costs twice over: it is the session's resident size *and* most of the
+prepared state, which is read back on every start. Halving 4096 MiB to 2048 took
+a start from 507 ms to 349 ms and the resident size from 4.6 GiB to 2.3 GiB,
+with no effect on anything measurable in the guest.
+
+| | 1 vCPU | 2 vCPU | 4 vCPU |
+|---|---|---|---|
+| session start | 499 ms | **490 ms** | 533 ms |
+| launch + first window | 684 ms | 665 ms | 683 ms |
+| five UIA reads | 223 ms | 269 ms | 272 ms |
+| screenshot | 133 ms | 134 ms | 156 ms |
+| concurrent `winquick run` | — | 341 ms | 312 ms |
+
+The defaults are two processors and 2048 MiB. `--cpus` and `--memory` override
+them, and either one changes the machine, so the prepared state is rebuilt.
+
+### Invalidation
+
+A prepared state is a frozen machine, and restoring RAM against a machine it did
+not come from is not slightly wrong, it is undefined. So it records everything
+that can make it incompatible — WinQuick's version, the mailbox and control
+protocols, the desktop image, the guest agent, the guest bridge, the QEMU binary
+and version, the firmware, memory, processors, machine type, every capability
+volume's identity, and the full device topology. Any difference discards it and
+rebuilds. A corrupt or incomplete one is discarded too, rather than run.
 
 ## Scripts
 
