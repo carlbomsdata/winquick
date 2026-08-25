@@ -289,7 +289,58 @@ else
   [ $? -ne 0 ] && ok "desktop status reports no session" || ok "desktop status reports a running session"
 fi
 
+# Regressions for the UX defects the desktop dogfood turned up.
 if [ -f "$DESKBASE" ] && [ -d "$WQ_UIAPP" ]; then
+  "$WQ" desktop stop >/dev/null 2>&1
+  # A desktop session must not write to the installed capability volumes; it
+  # gets clones, exactly as `winquick run` does.
+  capsum_before=$(shasum -a 256 ~/.winquick/capabilities/*.img | shasum -a 256)
+  "$WQ" desktop start --app "$WQ_UIAPP" >/tmp/wq_sess.log 2>&1
+  check "desktop session starts" "$?" "0"
+
+  "$WQ" desktop launch 'app\DeviceConfig.exe' >/dev/null 2>&1 || "$WQ" desktop launch 'app\DemoApp.exe' >/dev/null 2>&1
+  "$WQ" desktop wait-window --title "Device Configuration" --timeout 60000 >/dev/null 2>&1 \
+    || "$WQ" desktop wait-window --title "WinQuick Demo" --timeout 60000 >/dev/null 2>&1
+
+  # An option the verb does not understand must be refused. Silently ignoring
+  # it turned a mistyped selector into a confident answer about the wrong
+  # element.
+  "$WQ" desktop get --automation-id StatusText --class-name Nope >/tmp/wq_e 2>&1
+  grep -q "does not take --class-name" /tmp/wq_e \
+    && ok "unknown options are rejected, not ignored" \
+    || bad "unknown option" "$(head -2 /tmp/wq_e)"
+
+  # `tree` used to ignore an element selector and dump the whole window.
+  "$WQ" desktop tree --automation-id StatusText --depth 1 >/tmp/wq_o 2>&1
+  python3 - /tmp/wq_o <<'PYTREE'
+import json, sys
+d = json.load(open(sys.argv[1]))
+sys.exit(0 if d["tree"].get("automationId") == "StatusText" else 1)
+PYTREE
+  check "tree scopes to an element selector" "$?" "0"
+
+  # A combo box exposes no value pattern; its selection has to come from
+  # somewhere or "which item is chosen" is unanswerable. Whichever demo app is
+  # under test, one of these two combo boxes exists.
+  combo_ok=no
+  for combo in DeptCombo ModeCombo; do
+    # stdout only: the JSON goes there, the human-readable error to stderr, and
+    # merging the two gives something that is not JSON at all.
+    "$WQ" desktop get --automation-id "$combo" >/tmp/wq_o 2>/dev/null || continue
+    if python3 -c "import json,sys;v=json.load(open('/tmp/wq_o'))['element'].get('value');sys.exit(0 if v else 1)"; then
+      combo_ok=yes; break
+    fi
+  done
+  check "combo box reports its selection as a value" "$combo_ok" "yes"
+
+  "$WQ" desktop stop >/dev/null 2>&1
+  capsum_after=$(shasum -a 256 ~/.winquick/capabilities/*.img | shasum -a 256)
+  check "a desktop session leaves capability volumes untouched" "$capsum_before" "$capsum_after"
+fi
+
+# demo.uitest addresses the WpfDemo window by title, so it only means anything
+# against a published WpfDemo.
+if [ -f "$DESKBASE" ] && [ -f "$WQ_UIAPP/DemoApp.exe" ]; then
   echo "  (running the full UI test against $WQ_UIAPP)"
   "$WQ" desktop stop >/dev/null 2>&1
   rm -rf /tmp/wq_uitest
@@ -330,7 +381,7 @@ PYSHOT
   fi
   "$WQ" desktop stop >/dev/null 2>&1
 else
-  echo "  (skipping the live UI test: set WQ_UIAPP to a published WPF app)"
+  echo "  (skipping the live UI test: set WQ_UIAPP to a published examples/WpfDemo)"
 fi
 
 echo

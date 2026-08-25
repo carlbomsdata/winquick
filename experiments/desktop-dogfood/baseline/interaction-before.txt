@@ -1,0 +1,17 @@
+=== LoggingCheck bounds (visible in tree, hidden on screen) ===
+ bounds {'height': 15, 'width': 424, 'x': 488, 'y': 365} offscreen False
+ Save  bounds {'height': 32, 'width': 120, 'x': 488, 'y': 363}
+
+=== interaction: type PLC-01, mode Diagnostic, logging on, Save ===
+  logging toggle -> On
+  save via Invoke
+
+=== resulting state (requirement 10 wants: Saved: PLC-01 (Diagnostic, logging on)) ===
+  status  = 'Saved:  (Diagnostic, logging off)'
+  history = [' — Diagnostic — logging off']
+
+=== second save, same values ===
+  status  = 'Saved: PLC-01 (Diagnostic, logging off)'
+=== requirement 7 (whitespace normalisation) — the NormalizeName helper ===
+  status = 'Saved: PLC 02 (Diagnostic, logging off)'
+  -> '  PLC  02 ' normalises to 'PLC 02': NormalizeName is CORRECT and must be kept

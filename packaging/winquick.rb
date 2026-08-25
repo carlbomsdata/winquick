@@ -26,6 +26,9 @@ class Winquick < Formula
     bin.install "bin/winquick"
     (libexec/"winquick").install Dir["libexec/winquick/*"]
     doc.install Dir["share/doc/winquick/*"]
+    # `winquick capability install desktop` builds its guest bridge from these,
+    # inside Windows, at install time.
+    (pkgshare/"wqui").install Dir["share/winquick/wqui/*"]
   end
 
   def caveats

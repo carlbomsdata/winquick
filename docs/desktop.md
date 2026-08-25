@@ -207,6 +207,14 @@ Elements are addressed by `--automation-id` first, then `--name`, `--class` or
 listing the candidates, rather than a guess — clicking an arbitrary one of two
 buttons is the kind of failure that looks like success in a log.
 
+An option a verb does not understand is also an error. That sounds pedantic
+until you mistype `--class-name` for `--class`: the selector silently loses a
+term, matches something else, and answers confidently about the wrong control.
+
+`get` reports a combo box's selection as its `value`, even though a
+non-editable combo box exposes no value pattern of its own — "which item is
+chosen" is the thing people actually want to read.
+
 ## Sessions
 
 ```
@@ -227,10 +235,31 @@ running session first, so no orphaned QEMU is left behind.
 One session at a time. Starting a second reports the first one's pid rather
 than quietly racing it.
 
+A running session is a whole virtual machine with four processors and 4 GiB.
+It costs real capacity: a `winquick run` issued while a desktop session is up
+takes seconds rather than the usual ~300 ms. Stop the session, or expect the
+builds you interleave with it to be slow.
+
 ## Scripts
 
 `winquick ui-test` runs a file of the same verbs, plus `screenshot`, `sleep`
-and `expect`:
+and `expect`. An `expect` line takes a selector and exactly one assertion:
+
+| Assertion | Checks |
+|---|---|
+| `--expect-name <text>` | the element's name, exactly |
+| `--expect-name-contains <text>` | ...or a substring of it |
+| `--expect-value <text>` | its value, exactly |
+| `--expect-contains <text>` | ...or a substring of it |
+| `--expect-toggle On\|Off` | a check box's state |
+| `--expect-enabled true\|false` | whether the control can be used at all |
+
+Asserting against a property the element does not have says so, and suggests
+the assertion that would work — a list has no value, so `--expect-contains`
+against one reads as an empty string and looks like an application bug rather
+than a misaimed test.
+
+
 
 ```
 launch app\DemoApp.exe
@@ -253,6 +282,32 @@ needed on the Mac. Given a directory, it takes it as already published.
 `examples/WpfDemo` is a real WPF application with a `TextBlock`, `TextBox`,
 `ComboBox`, `CheckBox`, `Button` and `ListBox`, and `demo.uitest` drives all of
 them.
+
+## What the dogfood changed
+
+The capability was finished, tested and documented before anyone tried to *use*
+it. A fresh Claude Code session was then given a small WPF utility with five
+planted defects and told only to make it satisfy its requirements file. It found
+and fixed all five, kept the two constructs that looked wrong and were not, and
+verified the result against the running UI. What it could not do cleanly is what
+this section is about — see
+[experiments/desktop-dogfood](../experiments/desktop-dogfood/) for the whole
+run.
+
+| What went wrong | Fix |
+|---|---|
+| An option a verb did not understand was ignored. `--class-name` (for `--class`) silently dropped from the selector and the answer came back about a different element. | Unknown options are refused, listing what the verb does understand. |
+| `tree --automation-id X` ignored the selector and dumped the whole window. | `tree` scopes to the selected element. |
+| Requirement 8 — "Save is disabled until a name is entered" — could not be asserted in a script at all. | `--expect-enabled`. |
+| A combo box reported no value, so its selection was only reachable by walking children looking for `selected: true`. | `get` reports the selection as the value. |
+| `--expect-contains` on a list compared an empty value and read as an application bug. | Missing properties say so, and suggest the assertion that fits. |
+| The assertion list in `--help` ended in `...`; the session resorted to running `strings` on the binary. | All six are listed. |
+| A desktop session attached the installed capability volumes directly and Windows wrote to them on mount, so `dotnet-sdk.img` changed underneath. | Sessions clone them, as `winquick run` always has. |
+| Roughly one session start in ten never came up, because the bridge scanned for its control disk once, before the disks had all enumerated. | The scan retries, and a failure now reports what the bridge printed instead of only "did not answer". |
+
+The last two are the interesting ones. Neither is a UI problem, and neither
+would have been found by testing the feature against itself: they needed
+somebody using it for an afternoon without knowing how it works.
 
 ## Security
 

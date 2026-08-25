@@ -27,6 +27,7 @@ public static class Program
             if (argv.Length > 0 && argv[0] == "serve") return Serve(new Args(argv));
             var args = new Args(argv);
             JsonObject result = Dispatch(args);
+            args.RejectUnknown();
             result["ok"] = true;
             Print(result);
             return 0;
@@ -63,7 +64,9 @@ public static class Program
             int code;
             try
             {
-                result = Dispatch(new Args(request.Argv));
+                var args = new Args(request.Argv);
+                result = Dispatch(args);
+                args.RejectUnknown();
                 result["ok"] = true;
                 code = 0;
             }
@@ -351,13 +354,27 @@ public static class Program
 
     static JsonObject Tree(Args a)
     {
-        var w = ResolveWindow(a, required: false);
-        var root = Uia.Root(w?.Hwnd ?? IntPtr.Zero);
         int depth = a.Int("depth", 12);
+        var w = ResolveWindow(a, required: false);
+
+        // An element selector scopes the dump to that element's subtree.
+        // Ignoring it and returning the whole window instead is worse than an
+        // error: the answer looks plausible and is about the wrong thing.
+        var sel = SelectorFrom(a);
+        if (!sel.IsEmpty)
+        {
+            var element = Uia.Resolve(sel);
+            return new JsonObject
+            {
+                ["root"] = sel.ToString(),
+                ["tree"] = Uia.Snapshot(element, 0, depth),
+            };
+        }
+
         return new JsonObject
         {
             ["root"] = w == null ? "desktop" : w.Title,
-            ["tree"] = Uia.Snapshot(root, 0, depth),
+            ["tree"] = Uia.Snapshot(Uia.Root(w?.Hwnd ?? IntPtr.Zero), 0, depth),
         };
     }
 
@@ -465,12 +482,20 @@ public static class Program
     }
 }
 
-/// <summary>A tiny `--flag value` parser; the guest side has no dependencies to spare.</summary>
+/// <summary>
+/// A tiny `--flag value` parser; the guest side has no dependencies to spare.
+///
+/// It tracks which options a verb actually read, so an option the verb does not
+/// understand can be reported rather than ignored. That matters more than it
+/// sounds: a mistyped selector like `--class-name` silently widened the query
+/// and returned a confident answer about the wrong element.
+/// </summary>
 sealed class Args
 {
     public string Verb { get; }
     public List<string> Rest { get; } = new();
     readonly Dictionary<string, string> _opts = new(StringComparer.OrdinalIgnoreCase);
+    readonly HashSet<string> _used = new(StringComparer.OrdinalIgnoreCase);
 
     public Args(string[] argv)
     {
@@ -491,8 +516,37 @@ sealed class Args
         }
     }
 
-    public bool Has(string k) => _opts.ContainsKey(k);
-    public string Get(string k) => _opts.TryGetValue(k, out var v) ? v : throw new ArgumentException($"missing --{k}");
-    public bool Flag(string k) => _opts.TryGetValue(k, out var v) && v != "false";
-    public int Int(string k, int dflt) => _opts.TryGetValue(k, out var v) && int.TryParse(v, out int n) ? n : dflt;
+    public bool Has(string k)
+    {
+        _used.Add(k);
+        return _opts.ContainsKey(k);
+    }
+
+    public string Get(string k)
+    {
+        _used.Add(k);
+        return _opts.TryGetValue(k, out var v) ? v : throw new ArgumentException($"missing --{k}");
+    }
+
+    public bool Flag(string k)
+    {
+        _used.Add(k);
+        return _opts.TryGetValue(k, out var v) && v != "false";
+    }
+
+    public int Int(string k, int dflt)
+    {
+        _used.Add(k);
+        return _opts.TryGetValue(k, out var v) && int.TryParse(v, out int n) ? n : dflt;
+    }
+
+    /// <summary>Complain about anything the verb never looked at.</summary>
+    public void RejectUnknown()
+    {
+        var unknown = _opts.Keys.Where(k => !_used.Contains(k)).OrderBy(k => k).ToList();
+        if (unknown.Count == 0) return;
+        var known = _used.OrderBy(k => k).Select(k => "--" + k);
+        throw new ArgumentException(
+            $"`{Verb}` does not take --{string.Join(", --", unknown)}. It understands: {string.Join(", ", known)}");
+    }
 }

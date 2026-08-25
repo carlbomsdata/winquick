@@ -1,0 +1,10 @@
+=== raw input fallback (not the primary path) ===
+  coordinate click at 496,372 (checkbox was On)
+  checkbox now On  -> coordinate click FAILED
+  keyboard: focus the name box, type, then Tab
+  typed into the focused control: 'RAW-9'  -> keyboard WORKS
+  Tab accepted
+=== raw input fallback, window already focused ===
+  checkbox On -> Off at (495,372):  coordinate click WORKS
+  note: the very first click on an unfocused window only activates it.
+  keyboard chords: ctrl+a, literal typing and Tab all accepted (see above)

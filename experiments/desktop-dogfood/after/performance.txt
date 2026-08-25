@@ -1,0 +1,14 @@
+=== desktop performance, idle machine ===
+  session start (boot + bridge)   9257 ms
+  launch                          29 ms
+  first window ready              634 ms
+  get --automation-id StatusText  22 ms
+  tree --title Device Configurat  35 ms
+  type --automation-id DeviceNam  14 ms
+  click --automation-id SaveButt  34 ms
+  select --automation-id ModeCom  22 ms
+  toggle --automation-id Logging  28 ms
+  key Tab                         35 ms
+  screenshot (1280x800 desktop)   140 ms
+  screenshot (600x470 window)     101 ms
+  stop                            118 ms

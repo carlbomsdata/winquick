@@ -143,6 +143,18 @@ public static class Uia
     public static string TryValue(AutomationElement e)
     {
         if (TryPattern<ValuePattern>(e, ValuePattern.Pattern, out var vp)) return vp.Current.Value;
+        // A non-editable combo box or list exposes no value at all, only a
+        // selection. Reporting nothing for "which item is chosen" is unhelpful
+        // for the control people most want to read.
+        if (TryPattern<SelectionPattern>(e, SelectionPattern.Pattern, out var sel))
+        {
+            try
+            {
+                var chosen = sel.Current.GetSelection();
+                if (chosen.Length > 0) return string.Join(", ", chosen.Select(c => c.Current.Name));
+            }
+            catch { }
+        }
         if (TryPattern<TextPattern>(e, TextPattern.Pattern, out var tp))
         {
             try { return tp.DocumentRange.GetText(4096); } catch { }
