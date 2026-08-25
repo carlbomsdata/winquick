@@ -171,16 +171,19 @@ pub fn start(opts: &StartOptions) -> Result<()> {
     let control_disk = control_path()?;
     crate::control::create(&control_disk)?;
 
-    let caps: Vec<PathBuf> = capability::installed()?.into_iter().map(|c| c.image).collect();
-    if !caps.iter().any(|c| {
-        c.file_stem().map(|s| s == "dotnet-sdk").unwrap_or(false)
-    }) {
+    let installed = capability::installed()?;
+    if !installed.iter().any(|c| c.name == "dotnet-sdk") {
         bail!(
             "the desktop bridge needs the .NET SDK capability, which supplies the\n\
              Windows Desktop runtime the bridge and WPF applications run on.\n\n\
              Install it with:\n    winquick capability install dotnet-sdk"
         );
     }
+    // Cloned, never shared. Windows writes to a volume when it mounts one, so
+    // attaching the installed images directly would leave the session's
+    // fingerprints on them — `winquick run` has always cloned for this reason.
+    // On APFS the clone is free regardless of size.
+    let caps = clone_capabilities(&installed, &d)?;
 
     let cfg = qemu::DesktopBoot {
         uefi_code: &uefi_code,
@@ -252,13 +255,28 @@ fn wait_serving(pid: u32, timeout: Duration) -> Result<()> {
             Err(e) => last = Some(format!("{e:#}")),
         }
     }
+    // The agent captured whatever the bridge printed before it gave up. Without
+    // this the only symptom is silence, which says nothing about whether the
+    // bridge crashed, never ran, or ran and could not find its control disk.
+    let mut detail = String::new();
+    if let Ok(mbox) = mailbox_path() {
+        for (label, file) in [("stdout", mailbox::OUT_FILE), ("stderr", mailbox::ERR_FILE)] {
+            if let Some(raw) = mailbox::probe(&mbox, file) {
+                let text = String::from_utf8_lossy(&raw).replace('\r', "");
+                if !text.trim().is_empty() {
+                    detail.push_str(&format!("\n\nBridge {label}:\n{}", text.trim()));
+                }
+            }
+        }
+    }
     bail!(
-        "the desktop bridge did not start within {}s{}",
+        "the desktop bridge did not start within {}s{}{detail}\n\nThe guest's console output is in {}",
         timeout.as_secs(),
         match last {
             Some(m) => format!("\n\nLast error: {m}"),
             None => String::new(),
-        }
+        },
+        log_path()?.display()
     )
 }
 
@@ -478,6 +496,18 @@ fn build_files_volume(image: &Path, app: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
+/// Give the session its own copy of every capability volume.
+fn clone_capabilities(installed: &[capability::Installed], dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    for (i, c) in installed.iter().enumerate() {
+        let dst = dir.join(format!("cap{i}.img"));
+        qemu::clone_file(&c.image, &dst)
+            .with_context(|| format!("cloning the {} volume", c.name))?;
+        out.push(dst);
+    }
+    Ok(out)
+}
+
 /// Where the built bridge lives between installs.
 pub fn bridge_dir() -> Result<PathBuf> {
     Ok(paths::root()?.join("desktop-bridge"))
@@ -597,16 +627,29 @@ pub fn run_script(
                 let what = selector.join(" ");
                 match call(&argv, timeout) {
                     Ok(r) if r.exit_code == 0 => {
-                        let actual = r
+                        let raw = r
                             .json
                             .as_ref()
                             .and_then(|j| j.get("element"))
                             .and_then(|e| e.get(check.field.json_key()))
-                            .map(|v| match v.as_str() {
-                                Some(s) => s.to_string(),
-                                None => v.to_string(),
-                            })
-                            .unwrap_or_default();
+                            .filter(|v| !v.is_null());
+                        // Distinguish "the property says empty" from "the
+                        // element has no such property"; the second reads as an
+                        // application bug when it is a misaimed assertion.
+                        let Some(raw) = raw else {
+                            let msg = format!(
+                                "expect {what}: no {} on this element ({})",
+                                check.field.json_key(),
+                                check.field.hint()
+                            );
+                            println!("{label}{msg}  FAILED");
+                            report.failed.push(msg);
+                            continue;
+                        };
+                        let actual = match raw.as_str() {
+                            Some(s) => s.to_string(),
+                            None => raw.to_string(),
+                        };
                         let ok = if check.contains {
                             actual.contains(&check.expected)
                         } else {

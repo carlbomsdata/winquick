@@ -1,0 +1,59 @@
+# Every requirement in device-config/requirements.md, as one scripted run.
+#
+#   winquick ui-test /tmp/dc-fixed/publish \
+#       --script experiments/desktop-dogfood/requirements.uitest --out shots
+#
+# This is the version written after the dogfood, using the two assertions the
+# fresh session found missing: `--expect-enabled` (requirement 8 and 9 are
+# entirely about a button being unpressable, and no assertion could express
+# that) and `--expect-value` on a combo box (which previously reported nothing
+# for its selection).
+
+launch app\DeviceConfig.exe
+wait-window --title "Device Configuration"
+focus --title "Device Configuration"
+
+# 2, 4, 5, 6, 13 — the starting state.
+expect --automation-id HeaderText --expect-name "Device Configuration"
+expect --automation-id DeviceNameBox --expect-value ""
+expect --automation-id ModeCombo --expect-value "Standard"
+expect --automation-id LoggingCheck --expect-toggle Off
+expect --automation-id StatusText --expect-name "Status: Not saved"
+
+# 8 — Save is dead while there is no name, including a name of only spaces.
+expect --automation-id SaveButton --expect-enabled false
+type --automation-id DeviceNameBox --text "   "
+expect --automation-id SaveButton --expect-enabled false
+
+# 9 — a real name enables it, clearing it puts it back.
+type --automation-id DeviceNameBox --text "PLC-01"
+expect --automation-id SaveButton --expect-enabled true
+type --automation-id DeviceNameBox --text ""
+expect --automation-id SaveButton --expect-enabled false
+
+# 3, 14 — the layout, judged from the pixels.
+screenshot 01-initial.png --title "Device Configuration"
+
+# 7, 10, 11, 12 — whitespace normalised, and the status is this save.
+type --automation-id DeviceNameBox --text "  PLC  01 "
+click --automation-id SaveButton
+expect --automation-id StatusText --expect-name "Saved: PLC 01 (Standard, logging off)"
+expect --name "PLC 01 — Standard — logging off" --control-type ListItem --expect-name "PLC 01 — Standard — logging off"
+
+# 5, 10, 11 — the worked example from the requirements, verbatim.
+type --automation-id DeviceNameBox --text "PLC-01"
+select --automation-id ModeCombo --item Diagnostic
+expect --automation-id ModeCombo --expect-value "Diagnostic"
+toggle --automation-id LoggingCheck --state on
+click --automation-id SaveButton
+expect --automation-id StatusText --expect-name "Saved: PLC-01 (Diagnostic, logging on)"
+expect --name "PLC-01 — Diagnostic — logging on" --control-type ListItem --expect-name "PLC-01 — Diagnostic — logging on"
+
+# 5 — the third mode is offered too.
+select --automation-id ModeCombo --item Advanced
+type --automation-id DeviceNameBox --text "Rig 7"
+toggle --automation-id LoggingCheck --state off
+click --automation-id SaveButton
+expect --automation-id StatusText --expect-name "Saved: Rig 7 (Advanced, logging off)"
+
+screenshot 02-after-saves.png --title "Device Configuration"

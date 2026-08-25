@@ -174,13 +174,24 @@ the screenshots to this Mac.
   winquick ui-test ./publish --script smoke.uitest --out ./shots
 
 Script lines are the `winquick desktop` verbs, plus `screenshot <file>`,
-`sleep <ms>` and `expect <selector> --expect-name|--expect-value|...`:
+`sleep <ms>` and `expect`. An expect line takes a selector and exactly one
+assertion:
+
+  --expect-name <text>            the element's name is exactly this
+  --expect-name-contains <text>   ...or contains this
+  --expect-value <text>           its value is exactly this
+  --expect-contains <text>        ...or contains this
+  --expect-toggle On|Off          a check box's state
+  --expect-enabled true|false     whether the control can be used
+
+For example:
 
   launch app\\DemoApp.exe
   wait-window --title \"WinQuick Demo\"
   screenshot before.png
   type --automation-id NameBox --text \"Tobias\"
   click --automation-id SaveButton
+  expect --automation-id SaveButton --expect-enabled true
   expect --automation-id StatusText --expect-name-contains Saved
   screenshot after.png")]
     UiTest {

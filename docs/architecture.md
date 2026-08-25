@@ -274,6 +274,30 @@ with WinQuick) and `hivexsh` (Homebrew), because macOS cannot write NTFS and has
 no notion of a Windows registry hive. All three are separate processes, which is
 a licensing boundary as much as a design one.
 
+## The desktop path
+
+`winquick desktop` and `winquick ui-test` run against a second image, built by
+`winquick capability install desktop`, that has Windows' optional desktop
+packages applied and a display driver staged into it. The topology differs from
+a `run` guest in three ways:
+
+* a VirtIO GPU instead of `ramfb`, because Validation OS has no inbox driver for
+  a plain framebuffer;
+* USB keyboard and tablet, so synthetic input has real devices to come from;
+* a **partitionless raw disk** carrying the session's control channel.
+
+That last one is the load-bearing difference. A `run` guest gets its command
+through the FAT mailbox, which works because only one side touches the volume at
+a time. A session has the host writing while Windows still has the volume
+mounted, and two FAT implementations sharing allocation tables corrupt them.
+Windows will not mount a partitionless fixed disk, so it never caches one
+either; both sides read and write whole sectors, payload first and header last.
+See [desktop.md](desktop.md).
+
+Capability volumes are cloned per session, exactly as they are per run — Windows
+writes to a volume when it mounts it, and the installed images must not carry a
+session's fingerprints.
+
 ## Concurrency and interruption
 
 Several `winquick run` invocations can proceed at once: each gets its own run

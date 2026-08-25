@@ -47,6 +47,7 @@ pub enum Field {
     Name,
     Value,
     ToggleState,
+    Enabled,
 }
 
 impl Field {
@@ -56,6 +57,21 @@ impl Field {
             Field::Name => "name",
             Field::Value => "value",
             Field::ToggleState => "toggleState",
+            Field::Enabled => "enabled",
+        }
+    }
+
+    /// What to suggest when an element carries no such property.
+    ///
+    /// A list has no value, so `--expect-contains` against one reads as an
+    /// empty string and looks like an application bug rather than a misaimed
+    /// assertion.
+    pub fn hint(self) -> &'static str {
+        match self {
+            Field::Value => "lists and labels expose no value; try --expect-name-contains",
+            Field::ToggleState => "only check boxes and toggle buttons have a toggle state",
+            Field::Name => "the element has no name",
+            Field::Enabled => "the element does not report an enabled state",
         }
     }
 }
@@ -112,6 +128,7 @@ fn build(words: Vec<String>) -> Result<Step> {
                     "--expect-name" => (Field::Name, false),
                     "--expect-value" => (Field::Value, false),
                     "--expect-toggle" => (Field::ToggleState, false),
+                    "--expect-enabled" => (Field::Enabled, false),
                     "--expect-contains" => (Field::Value, true),
                     "--expect-name-contains" => (Field::Name, true),
                     _ => {
@@ -133,7 +150,7 @@ fn build(words: Vec<String>) -> Result<Step> {
             let check = check.ok_or_else(|| {
                 anyhow::anyhow!(
                     "expect needs one of --expect-name, --expect-value, --expect-toggle, \
-                     --expect-contains or --expect-name-contains"
+                     --expect-enabled, --expect-contains or --expect-name-contains"
                 )
             })?;
             if selector.is_empty() {
@@ -315,6 +332,23 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    /// Requirement-shaped assertions about whether a control can be used at all
+    /// are as common as assertions about its text.
+    #[test]
+    fn expect_enabled_is_an_assertion() {
+        let s = steps("expect --automation-id SaveButton --expect-enabled false");
+        match &s[0] {
+            Step::Expect { selector, check } => {
+                assert_eq!(selector, &vec!["--automation-id".to_string(), "SaveButton".to_string()]);
+                assert_eq!(check.field, Field::Enabled);
+                assert_eq!(check.expected, "false");
+                assert!(!check.contains);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(Field::Enabled.json_key(), "enabled");
     }
 
     #[test]

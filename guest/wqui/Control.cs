@@ -48,8 +48,31 @@ public sealed class Control : IDisposable
 
     Control(FileStream disk) => _disk = disk;
 
-    /// <summary>Find the control disk by the magic the host wrote to its first sector.</summary>
-    public static Control Open()
+    /// <summary>
+    /// Find the control disk by the magic the host wrote to its first sector.
+    ///
+    /// Retried rather than attempted once: the bridge starts as soon as the
+    /// shell does, and the disks are not all enumerated by then. A single scan
+    /// succeeds most of the time and fails perhaps one boot in ten, which is the
+    /// worst possible failure rate — often enough to matter, rare enough to look
+    /// like something else. The guest agent retries finding the mailbox volume
+    /// for exactly the same reason.
+    /// </summary>
+    public static Control Open(int timeoutMs = 60000)
+    {
+        var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+        while (true)
+        {
+            var found = TryOpen(out string tried);
+            if (found != null) return found;
+            if (DateTime.UtcNow >= deadline)
+                throw new InvalidOperationException(
+                    $"no WinQuick control disk found after {timeoutMs} ms; tried{tried}");
+            System.Threading.Thread.Sleep(250);
+        }
+    }
+
+    static Control TryOpen(out string report)
     {
         var tried = new StringBuilder();
         for (int i = 0; i < 16; i++)
@@ -68,13 +91,14 @@ public sealed class Control : IDisposable
             try
             {
                 var sector = ReadSector(fs, IdOffset);
-                if (Matches(sector, DiskMagic)) return new Control(fs);
+                if (Matches(sector, DiskMagic)) { report = tried.ToString(); return new Control(fs); }
                 tried.Append($" {i}:nomagic");
             }
             catch (Exception ex) { tried.Append($" {i}:{ex.GetType().Name}"); }
             fs.Dispose();
         }
-        throw new InvalidOperationException("no WinQuick control disk found; tried" + tried);
+        report = tried.ToString();
+        return null;
     }
 
     static bool Matches(byte[] buf, byte[] magic)

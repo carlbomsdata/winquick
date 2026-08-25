@@ -121,6 +121,31 @@ Everything is under `~/.winquick`:
 touches your projects. Files are created with your user's normal permissions;
 WinQuick never needs root and never asks for it.
 
+## Desktop automation
+
+The desktop capability gives the guest synthetic keyboard and mouse input and
+the ability to read any window's pixels and control tree. That is the feature,
+and it is worth being explicit about what it does and does not change.
+
+* **The boundary is unchanged.** Same QEMU isolation as `winquick run`: no
+  network in the guest, a disposable disk, and no host filesystem access beyond
+  the volumes WinQuick attaches. Input injection and screen capture happen
+  *inside* that boundary and do not widen it.
+* **This is not a malware-analysis sandbox.** It was not one before the desktop
+  capability and it is not one now. WinQuick does not attempt to resist a guest
+  that is actively trying to escape.
+* **No ports are opened.** The session's QMP socket is a unix socket under
+  `~/.winquick/desktop/`. There is no VNC or RDP server and nothing listens on
+  TCP.
+* **Screenshots are of the guest's screen**, written where you asked on your
+  Mac. Nothing is uploaded anywhere.
+* **A session is disposable like a run.** It works on a copy-on-write overlay
+  over the desktop image; `winquick desktop stop` deletes it, and `winquick
+  clean` stops a running one first. Capability volumes are cloned, so a session
+  cannot modify what is installed.
+* **The desktop image is derived from your Microsoft media** and, like the base
+  image, must not be redistributed.
+
 ## What is not protected
 
 - **Hypervisor escapes.** WinQuick's isolation is QEMU's and Apple's. A bug in

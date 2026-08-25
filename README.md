@@ -97,32 +97,64 @@ through untouched.
 
 **Windows desktop applications**
 
+WinQuick can build a WPF or WinForms application, run it in a real Windows
+desktop, show you what it looks like, and drive it. Nothing appears on your
+screen: no QEMU window, no RDP, no VNC.
+
 ```console
 winquick capability install desktop      # once, about a minute
-winquick ui-test MyApp.csproj --script my.uitest --out ./shots
 ```
 
-WinQuick builds the project inside Windows, boots a real desktop, launches the
-application, drives it through UI Automation and brings screenshots back to your
-Mac. Nothing appears on your screen: no QEMU window, no RDP, no VNC.
-
-For interactive work the session stays up, so each step is a round trip rather
-than a boot:
+Build it, launch it, look at it, work it:
 
 ```console
-winquick desktop start --app ./publish
+# Build for Windows and bring the output back
+winquick run -w . -a "publish/**" -- dotnet publish -c Release -o publish
+
+# Start a Windows desktop with that build available to it
+winquick desktop start --app ./winquick-artifacts/publish
 winquick desktop launch app\MyApp.exe
-winquick desktop tree --title "My App"
-winquick desktop type --automation-id NameBox --text "Tobias"
-winquick desktop click --automation-id SaveButton
-winquick desktop get --automation-id StatusText
+winquick desktop wait-window --title "Device Configuration"
+
+# See it
+winquick desktop screenshot before.png
+
+# Inspect its controls
+winquick desktop tree --title "Device Configuration"
+
+# Work it
+winquick desktop type   --automation-id DeviceNameBox --text "PLC-01"
+winquick desktop select --automation-id ModeCombo --item Diagnostic
+winquick desktop toggle --automation-id LoggingCheck --state on
+winquick desktop click  --automation-id SaveButton
+winquick desktop get    --automation-id StatusText
+
 winquick desktop screenshot after.png
 winquick desktop stop
 ```
 
-Controls are addressed by `AutomationId`. A selector matching more than one
-element is an error listing the candidates, never a guess. See
-[docs/desktop.md](docs/desktop.md).
+The guest boots once (~9 s) and stays up; each step after that takes tens of
+milliseconds. Controls are addressed by `AutomationId`, and a selector matching
+more than one element is an error listing the candidates rather than a guess.
+
+Or put the whole thing in a script and run it in one command:
+
+```console
+winquick ui-test MyApp.csproj --script my.uitest --out ./shots
+```
+
+```
+launch app\MyApp.exe
+wait-window --title "Device Configuration"
+expect --automation-id SaveButton --expect-enabled false
+type --automation-id DeviceNameBox --text "PLC-01"
+click --automation-id SaveButton
+expect --automation-id StatusText --expect-name "Saved: PLC-01"
+screenshot after.png
+```
+
+`ui-test` builds the project inside Windows first, so no .NET SDK is needed on
+your Mac. See [docs/desktop.md](docs/desktop.md).
 
 **Coding agents**
 

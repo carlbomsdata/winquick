@@ -1,0 +1,28 @@
+=== independent verification of requirements.md ===
+  PASS  req 1: window title
+  PASS  req 2: header text
+  PASS  req 4: device name starts empty
+  FAIL  req 5: mode starts Standard -- got [] want [Standard]
+  PASS  req 6: logging starts unchecked
+  PASS  req 13: status before first save
+  PASS  req 8: Save disabled with empty name
+  PASS  req 8b: Save disabled with whitespace-only name
+  PASS  req 9: typing a name enables Save
+  PASS  req 9b: clearing the name disables Save again
+  -- req 5: all three modes selectable --
+     ok Standard
+     ok Advanced
+     ok Diagnostic
+  PASS  req 7/10/11: whitespace normalised, status current
+  PASS  req 10: worked example from requirement 10
+  PASS  req 12: history rows match their saves
+  -- req 15: every automation id reachable --
+     ok HeaderText
+     ok DeviceNameBox
+     ok ModeCombo
+     ok LoggingCheck
+     ok SaveButton
+     ok HistoryList
+     ok StatusText
+
+  passed=12 failed=1

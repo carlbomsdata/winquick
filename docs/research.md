@@ -1594,3 +1594,70 @@ binary installed per `docs/install.md` and one line in the project README:
 
 Faster and more direct than the pre-productisation run (191 s, 6 invocations),
 which is what the new diagnostic commands were for.
+
+## Desktop dogfood, and what it cost
+
+A fresh Claude Code session, given a small WPF utility with five planted defects
+and told only to make it satisfy its requirements file. It had never seen
+WinQuick. The full write-up is in
+[experiments/desktop-dogfood](../experiments/desktop-dogfood/); what belongs
+here is what it measured.
+
+### It worked
+
+All five defects found and fixed in one session, ~8 minutes, 41 tool calls. Both
+deliberately suspicious-but-correct constructs survived — the `Loaded` handler
+that looks redundant and is not, and the whitespace-normalising regex that looks
+like over-engineering and is required. No speculative edits.
+
+The defect that matters most is the visual one: a Save button with
+`Margin="0,-34,0,0"` sitting exactly on top of the *Enable logging* checkbox.
+UI Automation reports that checkbox as present, enabled, correctly sized and
+`offscreen: false`, because as far as the tree is concerned it is laid out
+normally. It is simply painted underneath. Nothing short of looking at the
+pixels finds it.
+
+### Timings, idle machine
+
+| Operation | Time |
+|---|---|
+| `desktop start` — boot plus bridge | 9.3 s (mean of 12) |
+| `launch` | 29 ms |
+| first window ready (`wait-window`) | 634 ms |
+| `get` one element | 22 ms |
+| `tree`, full window, depth 12 | 35 ms |
+| `type` | 14 ms |
+| `click` (via InvokePattern) | 34 ms |
+| `select` / `toggle` | 22 / 28 ms |
+| `key` | 35 ms |
+| `screenshot`, 1280x800 desktop | 140 ms |
+| `screenshot`, 600x470 window | 101 ms |
+| `stop` | 118 ms |
+
+A whole 33-step scripted requirements run, from a published directory, is about
+16 s including the boot.
+
+### Two defects testing could not have found
+
+Both were invisible until someone used the thing for an afternoon.
+
+**A session mutated the installed capability volumes.** `winquick run` has always
+cloned them, with a comment saying why: Windows writes to a volume when it mounts
+it. The desktop path attached the installed images directly, so `dotnet-sdk.img`
+changed hash after a session. Caught by checksumming the images either side of
+the dogfood, not by any test.
+
+**One session start in ten never came up.** The bridge scanned for its control
+disk once, at the moment the shell started, before the disks had finished
+enumerating. Measured at 1 in 5 and then 0 in 8 — the worst kind of failure
+rate, frequent enough to matter and rare enough to look like something else. The
+guest agent already retries finding the mailbox volume for precisely this
+reason; the bridge now retries too. 0 failures in 12 after the fix, mean start
+9.3 s.
+
+### The thing that is not a bug
+
+A `winquick run` issued while a desktop session is up takes **5 minutes**
+instead of 300 ms. That is not a regression; it is a four-processor, 4 GiB
+virtual machine competing for the same host. Measured, documented, and worth
+knowing before concluding something has broken.

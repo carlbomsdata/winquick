@@ -40,11 +40,25 @@ cp "$ROOT/vendor/ntfsprogs/ntfscp" "$ROOT/vendor/ntfsprogs/ntfscat" "$STAGE/libe
 cp "$ROOT/README.md" "$ROOT/LICENSE" "$ROOT/THIRD_PARTY_NOTICES.md" "$STAGE/share/doc/winquick/"
 cp -R "$ROOT/docs" "$STAGE/share/doc/winquick/docs"
 
+# The desktop capability builds its guest bridge from source, inside Windows, at
+# install time. Without these an installed WinQuick can run `winquick capability
+# install desktop` right up to the last step and then fail with "cannot find the
+# guest bridge sources".
+mkdir -p "$STAGE/share/winquick"
+cp -R "$ROOT/guest/wqui" "$STAGE/share/winquick/wqui"
+rm -rf "$STAGE/share/winquick/wqui/bin" "$STAGE/share/winquick/wqui/obj"
+
 # GPL: the licence text travels with the binaries it covers.
 curl -sSL -o "$STAGE/libexec/winquick/LICENSE.ntfsprogs" \
   https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt
 
 "$ROOT/scripts/sign.sh" "$STAGE" || true
+
+echo "==> checking the staged tree"
+for required in bin/winquick libexec/winquick/ntfscp libexec/winquick/ntfscat \
+                share/winquick/wqui/wqui.csproj share/winquick/wqui/Program.cs; do
+  [ -e "$STAGE/$required" ] || { echo "missing from the archive: $required" >&2; exit 1; }
+done
 
 echo "==> packaging"
 mkdir -p "$DIST"

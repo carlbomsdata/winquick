@@ -1,0 +1,9 @@
+=== disposability: stop, start fresh, check nothing leaked ===
+  session stopped
+  files left in ~/.winquick/desktop: 0
+  fresh session up
+  state in the new session:
+    DeviceNameBox  value= '' name= 'Device name' toggle= None
+    StatusText     value= None name= 'Status: Not saved' toggle= None
+    LoggingCheck   value= None name= 'Enable logging' toggle= Off
+    HistoryList rows: 0  -> previous session's 3 saves did NOT leak
