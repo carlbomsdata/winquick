@@ -168,7 +168,10 @@ than a guess.
 
 Verbs other than start/stop/status/screenshot are passed to the guest bridge
 unchanged: windows, display, launch, wait-window, focus, tree, find, get,
-click, type, key, select, toggle, mouse.")]
+click, type, key, select, toggle, mouse.
+
+`winquick desktop <verb> --help` describes any one of them, and answers
+without a session running.")]
     Desktop {
         #[command(subcommand)]
         action: DesktopCmd,
@@ -664,6 +667,15 @@ fn desktop_cmd(action: DesktopCmd, verbose: bool) -> Result<i32> {
             // "no desktop session is running", which sends the reader looking
             // in the wrong place entirely.
             desktop::check_verb(argv.first().map(String::as_str))?;
+            // `--help` is a question about the CLI, not a request for the
+            // guest. Answering it here means it works before Windows is
+            // running, which is when someone actually asks.
+            if argv[1..].iter().any(|a| a == "--help" || a == "-h") {
+                if let Some(h) = desktop::verb_help(&argv[0]) {
+                    println!("{h}");
+                    return Ok(0);
+                }
+            }
             let r = desktop::call(&argv, CALL_TIMEOUT)?;
             // The bridge already speaks JSON; pretty-print it so a person can
             // read it and a script can still parse it.

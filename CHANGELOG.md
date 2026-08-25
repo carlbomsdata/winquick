@@ -27,6 +27,10 @@ environment, from the published archive.
   reports the unknown option and lists the ones that exist.
 - **An unknown desktop verb is a syntax error**, reported without needing a
   session. It used to surface as "no desktop session is running".
+- **`winquick desktop <verb> --help` answers**, without a session and without
+  the desktop capability installed. It used to be unobtainable either way: with
+  no session it said "no desktop session is running", and with one the bridge
+  rejected `--help` as an unknown option and listed every option of every verb.
 - **`winquick doctor` notices a missing guest bridge**, which previously only
   failed later, at `desktop start`.
 

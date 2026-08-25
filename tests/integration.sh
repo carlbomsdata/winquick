@@ -326,6 +326,18 @@ DESKBASE=~/.winquick/images/desktop-arm64/base.qcow2
 "$WQ" ui-test --help 2>&1 | grep -q "expect" && ok "ui-test help documents the script format" || bad "ui-test help" "no script guidance"
 "$WQ" capability list 2>&1 | grep -q "^desktop" && ok "desktop appears in the capability list" || bad "capability list" "desktop missing"
 
+# A verb's help is a question about the CLI, so it must answer without a
+# session and without the capability installed.
+for v in click toggle key mouse tree; do
+  "$WQ" desktop "$v" --help >/tmp/wq_o 2>&1
+  rc=$?
+  grep -q "Usage: winquick desktop $v" /tmp/wq_o && [ "$rc" = "0" ] \
+    && ok "desktop $v --help works without a session" \
+    || bad "desktop $v --help" "rc=$rc $(head -1 /tmp/wq_o)"
+done
+grep -q -- "--automation-id" /tmp/wq_o && ok "verb help explains the selector" \
+  || bad "verb help" "no selector guidance"
+
 "$WQ" desktop click --automation-id X >/tmp/wq_e 2>&1
 rc=$?
 if [ ! -f "$DESKBASE" ]; then
