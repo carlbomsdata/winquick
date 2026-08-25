@@ -28,10 +28,18 @@ which `winquick capability install desktop` builds inside Windows. `release.sh`
 refuses to package without them, and `winquick doctor` reports whether an
 installed copy can find them.
 
-The archive is byte-reproducible: sorted entries, fixed timestamps, no owner
-names and a gzip header without an mtime. Two builds from the same source
-produce the same SHA-256, so rebuilding after filling in the formula is safe,
-and anyone can check the published artifact against their own build.
+The archive packaging is deterministic: sorted entries, fixed timestamps, no
+owner names, and a gzip header without an mtime. Two builds from the same
+checkout produce the same SHA-256, so rebuilding after filling the checksum
+into the formula is safe.
+
+It is **not** reproducible across different checkout directories. The macOS
+linker stamps an `LC_UUID` that varies with the build path, so the same source
+built at a different path yields a binary differing in 48 bytes. Suppressing it
+with `-Wl,-no_uuid` produces a binary dyld refuses to load, so this is left
+alone. The practical consequence: publish the `dist/` you hashed, and treat the
+checksum as identifying that artifact rather than as something a third party can
+independently regenerate.
 
 ## Sign and notarize (needs an Apple Developer ID)
 
