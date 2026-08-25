@@ -1,0 +1,18 @@
+=== disposability across restored sessions ===
+canonical images before: c1eedc8bf02a0977b6ab991e00d0eab681fcb60a
+-- session 1: dirty it thoroughly --
+   status now: Saved: LEAK-TEST (Diagnostic, logging on)
+-- session 2: fresh --
+   device name : ''
+   status      : 'Status: Not saved'
+   logging     : Off
+   mode        : 'Standard'
+   history rows: 0
+   registry    : checked-below
+canonical images after : c1eedc8bf02a0977b6ab991e00d0eab681fcb60a
+=== the prepared state must be read-only in practice ===
+prepared state before: 2cc88fd66be72dda590da88a2ca91f96a742de4a
+session overlay grew to:  40M
+prepared state after : 2cc88fd66be72dda590da88a2ca91f96a742de4a
+RESULT: the frozen state is byte-identical; writes can only reach the session's own overlay
+session directory after stop: 0 files

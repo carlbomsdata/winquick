@@ -1,0 +1,4 @@
+=== command path, steady state, machine idle ===
+  cmd /c ver                       n=30  min=261 p50=288 mean=288 p95=303 max=306 ms  failures=0
+  pwsh expression                  n=10  min=807 p50=840 mean=836 p95=850 max=850 ms  failures=0
+  dotnet --version                 n=10  min=473 p50=503 mean=497 p95=511 max=511 ms  failures=0
