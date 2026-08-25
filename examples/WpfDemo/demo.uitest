@@ -1,0 +1,27 @@
+# End-to-end UI test for the WinQuick WPF demo.
+#
+# Run it with:
+#     winquick ui-test examples/WpfDemo/DemoApp.csproj \
+#         --script examples/WpfDemo/demo.uitest --out ./shots
+
+launch app\DemoApp.exe
+wait-window --title "WinQuick Demo" --timeout 60000
+focus --title "WinQuick Demo"
+
+# Nothing has been entered yet.
+expect --automation-id StatusText --expect-name "Ready"
+screenshot 01-before.png --title "WinQuick Demo"
+
+# Drive every control type the window has.
+type --automation-id NameBox --text "Tobias Carlbom"
+select --automation-id DeptCombo --item Design
+toggle --automation-id AdvancedCheck --state on
+click --automation-id SaveButton
+
+# The click must have changed what the window says.
+expect --automation-id NameBox --expect-value "Tobias Carlbom"
+expect --automation-id AdvancedCheck --expect-toggle "On"
+expect --automation-id StatusText --expect-name "Saved: Tobias Carlbom / Design / advanced"
+
+screenshot 02-after.png --title "WinQuick Demo"
+screenshot 03-desktop.png

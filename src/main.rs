@@ -2,6 +2,9 @@
 
 mod artifact;
 mod capability;
+mod control;
+mod desktop;
+mod gpt;
 mod helpers;
 mod interrupt;
 mod lock;
@@ -10,10 +13,12 @@ mod paths;
 mod qemu;
 mod qmp;
 mod runner;
+mod servicing;
 mod setup;
 mod state;
+mod uiscript;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -129,6 +134,73 @@ cannot change your source. Ask for output explicitly with --artifact.
         argv: Vec<String>,
     },
 
+    /// Drive a real Windows desktop: launch apps, inspect and click their UI
+    #[command(after_help = "\
+A desktop session boots Windows once and stays up, so each verb is a round
+trip rather than a boot.
+
+  winquick desktop start --app ./publish
+  winquick desktop launch app/MyApp.exe
+  winquick desktop wait-window --title \"My App\"
+  winquick desktop screenshot before.png
+  winquick desktop tree --title \"My App\"
+  winquick desktop type --automation-id NameBox --text Tobias
+  winquick desktop select --automation-id DeptCombo --item Design
+  winquick desktop toggle --automation-id AdvancedCheck --state on
+  winquick desktop click --automation-id SaveButton
+  winquick desktop get --automation-id StatusText
+  winquick desktop screenshot after.png
+  winquick desktop stop
+
+Elements are addressed by AutomationId first, then Name, ClassName or
+ControlType. A selector matching more than one element is an error rather
+than a guess.
+
+Verbs other than start/stop/status/screenshot are passed to the guest bridge
+unchanged: windows, display, launch, wait-window, focus, tree, find, get,
+click, type, key, select, toggle, mouse.")]
+    Desktop {
+        #[command(subcommand)]
+        action: DesktopCmd,
+    },
+
+    /// Build a Windows UI application, drive it, and bring back screenshots
+    #[command(after_help = "\
+Takes a project file or an already-published directory, starts a desktop
+session, runs a script of UI steps against the real application, and writes
+the screenshots to this Mac.
+
+  winquick ui-test examples/WpfDemo/DemoApp.csproj --script examples/WpfDemo/demo.uitest
+  winquick ui-test ./publish --script smoke.uitest --out ./shots
+
+Script lines are the `winquick desktop` verbs, plus `screenshot <file>`,
+`sleep <ms>` and `expect <selector> --expect-name|--expect-value|...`:
+
+  launch app\\DemoApp.exe
+  wait-window --title \"WinQuick Demo\"
+  screenshot before.png
+  type --automation-id NameBox --text \"Tobias\"
+  click --automation-id SaveButton
+  expect --automation-id StatusText --expect-name-contains Saved
+  screenshot after.png")]
+    UiTest {
+        /// A .csproj to build, or a directory that has already been published
+        #[arg(value_name = "PROJECT_OR_DIR")]
+        app: PathBuf,
+        /// Script of UI steps [default: launch and screenshot]
+        #[arg(long, value_name = "FILE")]
+        script: Option<PathBuf>,
+        /// Where screenshots are written
+        #[arg(long, default_value = "winquick-ui", value_name = "DIR")]
+        out: PathBuf,
+        /// Leave the desktop session running afterwards
+        #[arg(long)]
+        keep: bool,
+        /// Guest memory in MiB
+        #[arg(long, default_value_t = 4096, value_name = "MIB")]
+        memory: u32,
+    },
+
     /// Add or remove optional tools inside Windows
     Capability {
         #[command(subcommand)]
@@ -179,6 +251,44 @@ to set up again. Use --all to remove everything WinQuick generated.")]
 }
 
 #[derive(Subcommand)]
+enum DesktopCmd {
+    /// Boot the desktop guest and leave it running
+    Start {
+        /// Publish directory to make available inside Windows as the `app` folder
+        #[arg(long, value_name = "DIR")]
+        app: Option<PathBuf>,
+        /// Guest memory in MiB
+        #[arg(long, default_value_t = 4096, value_name = "MIB")]
+        memory: u32,
+        /// Guest processors
+        #[arg(long, default_value_t = 4)]
+        cpus: u32,
+    },
+    /// Shut the desktop guest down and delete its disposable disk
+    Stop,
+    /// Report whether a desktop session is running
+    Status,
+    /// Capture the screen, or one window, as a PNG on this Mac
+    Screenshot {
+        /// Where to write the PNG
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+        /// Capture only the window whose title contains this
+        #[arg(long, value_name = "TITLE")]
+        title: Option<String>,
+        /// Capture a screen rectangle: x,y,width,height
+        #[arg(long, value_name = "X,Y,W,H")]
+        rect: Option<String>,
+        /// Capture QEMU's framebuffer instead of the guest's desktop
+        #[arg(long)]
+        host: bool,
+    },
+    /// Any other verb, passed to the guest bridge unchanged
+    #[command(external_subcommand)]
+    Bridge(Vec<String>),
+}
+
+#[derive(Subcommand)]
 enum CapabilityCmd {
     /// Show available and installed capabilities
     List,
@@ -189,6 +299,12 @@ enum CapabilityCmd {
         /// Use this archive instead of downloading one
         #[arg(long, value_name = "ZIP")]
         from: Option<PathBuf>,
+        /// Rebuild even if it is already installed (desktop only)
+        #[arg(long)]
+        force: bool,
+        /// Red Hat's virtio-win ISO, for the desktop display driver
+        #[arg(long, value_name = "PATH")]
+        virtio: Option<PathBuf>,
     },
     /// Remove a capability
     Remove { name: String },
@@ -265,6 +381,10 @@ fn dispatch(cli: Cli) -> Result<i32> {
             },
         ),
 
+        Cmd::Desktop { action } => desktop_cmd(action, verbose),
+        Cmd::UiTest { app, script, out, keep, memory } => {
+            ui_test(&app, script.as_deref(), &out, keep, memory, verbose)
+        }
         Cmd::Capability { action } => capability_cmd(action, verbose),
         Cmd::Cache { action } => cache_cmd(action, verbose),
         Cmd::Doctor { smoke } => doctor(smoke),
@@ -292,7 +412,7 @@ fn dispatch(cli: Cli) -> Result<i32> {
 /// special immediately before a quote, so a run of N backslashes before a quote
 /// becomes 2N+1 (the extra one escaping the quote), and a run at the end of a
 /// quoted argument becomes 2N so it does not escape the closing quote.
-fn join_argv(argv: &[String]) -> String {
+pub(crate) fn join_argv(argv: &[String]) -> String {
     argv.iter().map(|a| quote_arg(a)).collect::<Vec<_>>().join(" ")
 }
 
@@ -330,6 +450,234 @@ fn quote_arg(a: &str) -> String {
 
 // ------------------------------------------------------------ subcommands
 
+/// Build or accept an application, drive its UI, and report.
+fn ui_test(
+    app: &std::path::Path,
+    script: Option<&std::path::Path>,
+    out: &std::path::Path,
+    keep: bool,
+    memory: u32,
+    verbose: bool,
+) -> Result<i32> {
+    if desktop::running().is_some() {
+        anyhow::bail!(
+            "a desktop session is already running.\n\n\
+             `ui-test` needs its own, because the application is baked into the\n\
+             session's volume when it starts. Stop the current one with:\n    \
+             winquick desktop stop"
+        );
+    }
+
+    // A project has to be built first; a directory is taken as already published.
+    let published = if app.is_dir() {
+        app.to_path_buf()
+    } else {
+        build_project(app, verbose)?
+    };
+    let exe = sole_executable(&published)?;
+
+    let text = match script {
+        Some(p) => std::fs::read_to_string(p)
+            .with_context(|| format!("reading {}", p.display()))?,
+        // Without a script the useful thing to prove is that it starts and
+        // draws something.
+        None => format!(
+            "launch app\\{exe}\nsleep 4000\nscreenshot launched.png\nwindows\n"
+        ),
+    };
+    let parsed = uiscript::parse(&text)?;
+
+    println!("Starting a desktop session with {}...", published.display());
+    desktop::start(&desktop::StartOptions {
+        app: Some(published),
+        memory_mb: memory,
+        cpus: 4,
+        verbose,
+    })?;
+
+    let report = desktop::run_script(&parsed, out, Duration::from_secs(120));
+    if !keep {
+        let _ = desktop::stop();
+    }
+    let report = report?;
+
+    println!();
+    if report.failed.is_empty() {
+        println!("{} steps passed.", report.passed);
+    } else {
+        println!("{} passed, {} failed:", report.passed, report.failed.len());
+        for f in &report.failed {
+            println!("  - {f}");
+        }
+    }
+    if !report.screenshots.is_empty() {
+        println!("Screenshots in {}:", out.display());
+        for s in &report.screenshots {
+            println!("  {}", s.display());
+        }
+    }
+    if keep {
+        println!("\nThe desktop session is still running; stop it with `winquick desktop stop`.");
+    }
+    Ok(if report.failed.is_empty() { 0 } else { 1 })
+}
+
+/// Publish a project inside Windows and bring the output back.
+fn build_project(project: &std::path::Path, verbose: bool) -> Result<PathBuf> {
+    let dir = project
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(std::path::Path::new("."));
+    let name = project
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| anyhow::anyhow!("{} is not a project file", project.display()))?;
+    let dest = std::env::temp_dir().join(format!("winquick-uitest-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dest);
+
+    println!("Building {} inside Windows...", project.display());
+    let outcome = runner::run_capture(
+        &format!("dotnet publish {name} -c Release -o publish --nologo"),
+        &runner::Options {
+            memory_mb: 2048,
+            cpus: 4,
+            timeout: Duration::from_secs(900),
+            verbose,
+            force_cold: false,
+            workspace: Some(dir.to_path_buf()),
+            artifacts: vec!["publish/**".to_string()],
+            artifacts_dir: dest.clone(),
+            artifact_overwrite: true,
+        },
+    )?;
+    if outcome.exit_code != 0 {
+        anyhow::bail!(
+            "the build failed:\n{}\n{}",
+            String::from_utf8_lossy(&outcome.stdout).replace('\r', ""),
+            String::from_utf8_lossy(&outcome.stderr).replace('\r', "")
+        );
+    }
+    let nested = dest.join("publish");
+    Ok(if nested.is_dir() { nested } else { dest })
+}
+
+/// The application to launch, when the script does not say.
+fn sole_executable(dir: &std::path::Path) -> Result<String> {
+    let mut exes: Vec<String> = std::fs::read_dir(dir)
+        .with_context(|| format!("reading {}", dir.display()))?
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| n.to_ascii_lowercase().ends_with(".exe"))
+        .collect();
+    exes.sort();
+    match exes.len() {
+        0 => anyhow::bail!("no .exe in {}", dir.display()),
+        1 => Ok(exes.remove(0)),
+        _ => anyhow::bail!(
+            "{} has several executables ({}); say which to launch with a --script",
+            dir.display(),
+            exes.join(", ")
+        ),
+    }
+}
+
+/// The desktop verbs.
+///
+/// Only the session's own lifecycle and screen capture are handled here. Every
+/// other verb is forwarded to the guest bridge verbatim, which keeps this
+/// command from drifting out of step with what the bridge actually supports.
+fn desktop_cmd(action: DesktopCmd, verbose: bool) -> Result<i32> {
+    const CALL_TIMEOUT: Duration = Duration::from_secs(120);
+
+    match action {
+        DesktopCmd::Start { app, memory, cpus } => {
+            let _guard = lock::acquire_blocking("desktop start")?;
+            desktop::start(&desktop::StartOptions {
+                app: app.clone(),
+                memory_mb: memory,
+                cpus,
+                verbose,
+            })?;
+            println!("Desktop session ready.");
+            if app.is_some() {
+                println!("Your publish directory is available inside Windows as `app`.");
+            }
+            println!("Launch something with:  winquick desktop launch app\\<YourApp>.exe");
+            Ok(0)
+        }
+
+        DesktopCmd::Stop => {
+            let _guard = lock::acquire_blocking("desktop stop")?;
+            if desktop::stop()? {
+                println!("Desktop session stopped.");
+            } else {
+                println!("No desktop session was running.");
+            }
+            Ok(0)
+        }
+
+        DesktopCmd::Status => match desktop::running() {
+            Some(s) => {
+                println!("Desktop session running (pid {}).", s.pid);
+                if let Some(app) = &s.app {
+                    println!("  app: {app}");
+                }
+                Ok(0)
+            }
+            None => {
+                println!("No desktop session is running.");
+                println!("Start one with:  winquick desktop start");
+                Ok(1)
+            }
+        },
+
+        DesktopCmd::Screenshot { file, title, rect, host } => {
+            if host {
+                let png = desktop::host_screenshot(&file)?;
+                println!("Wrote {} ({} bytes) from QEMU's framebuffer.", file.display(), png);
+                return Ok(0);
+            }
+            let mut extra = Vec::new();
+            if let Some(t) = title {
+                extra.push("--title".into());
+                extra.push(t);
+            }
+            if let Some(r) = rect {
+                extra.push("--rect".into());
+                extra.push(r);
+            }
+            let json = desktop::screenshot(&file, &extra, CALL_TIMEOUT)?;
+            let non_black = json.get("nonBlackFraction").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let colors = json.get("distinctColors").and_then(|v| v.as_i64()).unwrap_or(0);
+            println!(
+                "Wrote {} ({}x{}, {:.1}% non-black, {colors} distinct colours).",
+                file.display(),
+                json.get("width").and_then(|v| v.as_i64()).unwrap_or(0),
+                json.get("height").and_then(|v| v.as_i64()).unwrap_or(0),
+                non_black * 100.0
+            );
+            Ok(0)
+        }
+
+        DesktopCmd::Bridge(argv) => {
+            let r = desktop::call(&argv, CALL_TIMEOUT)?;
+            // The bridge already speaks JSON; pretty-print it so a person can
+            // read it and a script can still parse it.
+            match &r.json {
+                Some(v) => println!("{}", serde_json::to_string_pretty(v)?),
+                None => {
+                    std::io::Write::write_all(&mut std::io::stdout(), &r.stdout)?;
+                    std::io::Write::write_all(&mut std::io::stderr(), &r.stderr)?;
+                }
+            }
+            if r.exit_code != 0 {
+                return Err(anyhow::anyhow!("{}", desktop::describe_failure(&r)));
+            }
+            Ok(0)
+        }
+    }
+}
+
 fn capability_cmd(action: CapabilityCmd, verbose: bool) -> Result<i32> {
     match action {
         CapabilityCmd::List => {
@@ -342,6 +690,22 @@ fn capability_cmd(action: CapabilityCmd, verbose: bool) -> Result<i32> {
                 };
                 println!("{:<16} {:<10} {:<42} {}", sp.name, sp.version, sp.description, status);
             }
+            // Built rather than downloaded, so it is not in SPECS.
+            let desk = desktop::base_image().map(|p| p.exists()).unwrap_or(false);
+            println!(
+                "{:<16} {:<10} {:<42} {}",
+                desktop::CAPABILITY,
+                "built",
+                "Windows desktop: WPF/WinForms, UI automation",
+                if desk {
+                    match desktop::base_image() {
+                        Ok(p) => format!("installed, {}", helpers::human(helpers::allocated(&p))),
+                        Err(_) => "installed".to_string(),
+                    }
+                } else {
+                    "not installed".to_string()
+                }
+            );
             let unknown: Vec<&str> = installed
                 .iter()
                 .filter(|i| capability::spec(&i.name).is_none())
@@ -353,8 +717,14 @@ fn capability_cmd(action: CapabilityCmd, verbose: bool) -> Result<i32> {
             println!("\nInstall with:  winquick capability install <name>");
             Ok(0)
         }
-        CapabilityCmd::Install { name, from } => {
+        CapabilityCmd::Install { name, from, force, virtio } => {
             let _guard = lock::acquire_blocking("capability install")?;
+            // `desktop` is not a downloadable archive like the others: it builds
+            // a second Windows image by servicing a copy of the first.
+            if name == desktop::CAPABILITY {
+                servicing::install(&servicing::Options { verbose, force, virtio })?;
+                return Ok(0);
+            }
             capability::install(&name, from, verbose)?;
             state::discard()?;
             println!("\nWindows will pick this up on the next run.");
@@ -518,6 +888,23 @@ fn doctor(smoke: bool) -> Result<i32> {
         if caps.is_empty() { "none".to_string() } else { caps.iter().map(|c| c.name.clone()).collect::<Vec<_>>().join(", ") }
     );
 
+    println!("\nDesktop");
+    let desk = desktop::base_image()?;
+    println!(
+        "  {} {:<20} {}",
+        tick(desk.exists()),
+        "desktop image",
+        if desk.exists() {
+            helpers::human(helpers::allocated(&desk))
+        } else {
+            "not installed (winquick capability install desktop)".into()
+        }
+    );
+    match desktop::running() {
+        Some(sess) => println!("  {} {:<20} running as pid {}", tick(true), "session", sess.pid),
+        None => println!("  {} {:<20} none running", tick(true), "session"),
+    }
+
     println!("\nDisk");
     let free = free_bytes(&paths::root()?).unwrap_or(0);
     let enough = free > 8 * 1024 * 1024 * 1024;
@@ -592,16 +979,29 @@ fn clean(all: bool, dry_run: bool) -> Result<i32> {
         println!("Nothing to clean.");
         return Ok(0);
     }
+    // A running desktop session holds its disk open; stopping it first keeps
+    // `clean` from leaving an orphaned QEMU behind with no session file.
+    if let Some(session) = desktop::running() {
+        if dry_run {
+            println!("  {:<28} {:>10}  pid {}", "running desktop session", "", session.pid);
+        } else {
+            desktop::stop()?;
+            println!("Stopped the running desktop session.");
+        }
+    }
+
     let mut targets: Vec<(PathBuf, &str)> = vec![
         (state::state_dir()?, "prepared guest"),
         (root.join("run"), "leftover run directories"),
         (root.join("work"), "temporary build files"),
+        (desktop::dir()?, "desktop session"),
         (paths::cache()?, "downloaded installers"),
     ];
     if all {
         targets.push((root.join("images"), "Windows runtime"));
         targets.push((capability::dir()?, "capabilities"));
         targets.push((root.join("caches"), "package cache"));
+        targets.push((desktop::bridge_dir()?, "desktop bridge"));
     }
 
     let mut total = 0u64;

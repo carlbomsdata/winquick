@@ -1,13 +1,16 @@
 #!/bin/bash
 # WinQuick integration tests. Runs the real CLI, not a harness.
 #   ./tests/integration.sh [warm-run-count]
-WQ="$(cd "$(dirname "$0")/.." && pwd)/target/release/winquick"
+SCRIPTDIR="$(cd "$(dirname "$0")" && pwd)"
+WQ="$SCRIPTDIR/../target/release/winquick"
 BASE=~/.winquick/images/validation-arm64/base.qcow2
 N=${1:-100}
 # Optional .NET fixtures, built on the host; tests are skipped when absent.
 FDAPP=${WQ_FDAPP:-/tmp/wqnet/out/fd-arm64}
 SCAPP=${WQ_SCAPP:-/tmp/wqnet/out/sc-arm64}
 TESTPROJ=${WQ_TESTPROJ:-/tmp/wqnet/tproj}
+# Published WPF app for the desktop tests; skipped when unset.
+WQ_UIAPP=${WQ_UIAPP:-}
 pass=0; fail=0
 ok()   { printf "  PASS  %s\n" "$1"; pass=$((pass+1)); }
 bad()  { printf "  FAIL  %s -- %s\n" "$1" "$2"; fail=$((fail+1)); }
@@ -269,6 +272,66 @@ print(f"  min={ts[0]*1000:.0f}ms p50={statistics.median(ts)*1000:.0f}ms mean={st
 sys.exit(1 if failures else 0)
 PY
 [ $? -eq 0 ] && ok "$N consecutive warm runs, zero failures" || bad "warm run reliability" "see above"
+
+echo "== desktop capability =="
+DESKBASE=~/.winquick/images/desktop-arm64/base.qcow2
+# The CLI surface must be right whether or not the capability is installed.
+"$WQ" desktop --help 2>&1 | grep -q "automation-id" && ok "desktop help documents element selectors" || bad "desktop help" "no selector guidance"
+"$WQ" ui-test --help 2>&1 | grep -q "expect" && ok "ui-test help documents the script format" || bad "ui-test help" "no script guidance"
+"$WQ" capability list 2>&1 | grep -q "^desktop" && ok "desktop appears in the capability list" || bad "capability list" "desktop missing"
+
+"$WQ" desktop click --automation-id X >/tmp/wq_e 2>&1
+rc=$?
+if [ ! -f "$DESKBASE" ]; then
+  check "desktop verb without the capability fails" "$rc" "1"
+else
+  "$WQ" desktop status >/dev/null 2>&1
+  [ $? -ne 0 ] && ok "desktop status reports no session" || ok "desktop status reports a running session"
+fi
+
+if [ -f "$DESKBASE" ] && [ -d "$WQ_UIAPP" ]; then
+  echo "  (running the full UI test against $WQ_UIAPP)"
+  "$WQ" desktop stop >/dev/null 2>&1
+  rm -rf /tmp/wq_uitest
+  "$WQ" ui-test "$WQ_UIAPP" --script "$SCRIPTDIR/../examples/WpfDemo/demo.uitest" --out /tmp/wq_uitest >/tmp/wq_ui.log 2>&1
+  check "ui-test drives the demo application" "$?" "0"
+  grep -q "steps passed" /tmp/wq_ui.log && ok "ui-test reports every step" || bad "ui-test output" "$(tail -3 /tmp/wq_ui.log)"
+
+  # A screenshot has to be a real PNG of a rendered desktop, not a blank buffer.
+  shot=/tmp/wq_uitest/02-after.png
+  if [ -f "$shot" ]; then
+    # The signature starts with a high byte, so compare bytes rather than grep.
+    if [ "$(head -c 8 "$shot" | od -An -tx1 | tr -d ' \n')" = "89504e470d0a1a0a" ]; then
+      ok "screenshot is a real PNG"
+    else
+      bad "screenshot format" "not a PNG signature"
+    fi
+    python3 - "$shot" <<'PYSHOT'
+import sys, zlib, struct
+d = open(sys.argv[1], 'rb').read()
+w = h = None; idat = b''
+i = 8
+while i < len(d):
+    ln = struct.unpack('>I', d[i:i+4])[0]; typ = d[i+4:i+8]
+    if typ == b'IHDR': w, h = struct.unpack('>II', d[i+8:i+16])
+    elif typ == b'IDAT': idat += d[i+8:i+8+ln]
+    i += 12 + ln
+raw = zlib.decompress(idat)
+stride = w * 3 + 1
+nonblack = sum(1 for y in range(h) for x in range(w)
+               if any(raw[y*stride + 1 + x*3 + c] > 16 for c in range(3)))
+frac = nonblack / (w * h)
+print(f"  {w}x{h}, {frac*100:.1f}% non-black")
+sys.exit(0 if frac > 0.5 else 1)
+PYSHOT
+    check "screenshot shows a rendered window, not a blank framebuffer" "$?" "0"
+  else
+    bad "screenshot" "no 02-after.png produced"
+  fi
+  "$WQ" desktop stop >/dev/null 2>&1
+else
+  echo "  (skipping the live UI test: set WQ_UIAPP to a published WPF app)"
+fi
 
 echo
 echo "== $pass passed, $fail failed =="

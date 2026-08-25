@@ -20,3 +20,7 @@
 /tmp/
 /scratch/
 winquick-artifacts/
+
+# .NET build output from examples/ and guest/
+bin/
+obj/

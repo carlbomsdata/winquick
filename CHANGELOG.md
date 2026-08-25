@@ -1,5 +1,62 @@
 # Changelog
 
+## Unreleased
+
+### The desktop capability
+
+Windows GUI applications, built and driven from the Mac.
+
+```console
+$ winquick capability install desktop
+$ winquick ui-test MyApp.csproj --script my.uitest --out ./shots
+ 1. launch app\MyApp.exe  OK (pid 760)
+ 2. wait-window --title "My App"  OK (waitedMs 637)
+ 3. screenshot before.png (620x460, 100% non-black)
+ 4. click --automation-id SaveButton  OK (via Invoke)
+ 5. expect --automation-id StatusText name = "Saved"  OK
+```
+
+- `winquick capability install desktop` builds a desktop-capable Windows image
+  by running DISM *inside WinQuick* against a copy of the existing runtime. No
+  Windows machine, no downloads, and nothing Microsoft-licensed is
+  redistributed — the packages come from the ISO you already supplied to
+  `winquick setup`.
+- Real rendering: a VirtIO GPU plus Red Hat's `viogpudo` display driver, staged
+  with `dism /Add-Driver`. Windows reports a primary display adapter at
+  1280x800x32 and DWM composites normally.
+- `winquick desktop start|stop|status` keeps a session up, so each verb after
+  the ~10 s boot is a few milliseconds rather than another boot.
+- UI Automation as the interface: `tree`, `find`, `get`, `click`, `type`,
+  `select`, `toggle`, `key`, `mouse`, `focus`, `windows`, `display`. Elements
+  are addressed by `AutomationId`; a selector matching more than one element is
+  an error listing the candidates, never a guess.
+- `winquick desktop screenshot` returns a real PNG of the composited desktop, or
+  of a single window.
+- `winquick ui-test <project|dir>` builds the project inside Windows, runs a
+  script of UI steps against it, and writes the screenshots to your Mac.
+- `examples/WpfDemo` is a real WPF application covering `TextBlock`, `TextBox`,
+  `ComboBox`, `CheckBox`, `Button` and `ListBox`, with `demo.uitest` driving all
+  of them.
+
+### Fixed
+
+- The mailbox now writes the command and arms the go flag in two separate
+  flushed passes, and the flag carries the run's token. A guest polling the
+  volume could previously see the flag before the command behind it and run the
+  previous command under the new token.
+- The guest agent reads that token with `for /f` rather than `set /p`. On an
+  empty file `set /p` falls back to reading the console, which wedged the agent
+  permanently.
+
+### Known limits
+
+- QEMU's own framebuffer stays blank even with the display driver bound, so
+  screenshots are captured inside the guest. `--host` still exposes the QMP
+  path. [docs/desktop.md](docs/desktop.md) has the measurements.
+- One desktop session at a time.
+- The desktop capability requires the `dotnet-sdk` capability, which supplies
+  the Windows Desktop runtime the bridge and WPF applications run on.
+
 ## v0.1.0 — first release
 
 Run real Windows commands on an Apple Silicon Mac.

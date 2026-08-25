@@ -217,6 +217,20 @@ pub fn build(image: &Path, src_dir: &Path, dest_name: &str) -> Result<u64> {
 /// where the size has to stay constant across runs so the FAT volume identity
 /// the guest remembers keeps resolving.
 pub fn build_sized(image: &Path, src_dir: &Path, dest_name: &str, size: u64) -> Result<u64> {
+    build_inner(image, src_dir, Some(dest_name), size)
+}
+
+/// Build an image whose root *is* `src_dir`, with no wrapping directory.
+///
+/// The desktop session volume carries several top-level directories plus a
+/// marker file, so there is nothing sensible to nest it under.
+pub fn build_flat(image: &Path, src_dir: &Path) -> Result<u64> {
+    let content = dir_size(src_dir)?;
+    let size = (((content * 5) / 4) + 64 * 1024 * 1024).next_multiple_of(SECTOR);
+    build_inner(image, src_dir, None, size)
+}
+
+fn build_inner(image: &Path, src_dir: &Path, dest_name: Option<&str>, size: u64) -> Result<u64> {
     let img = OpenOptions::new()
         .read(true)
         .write(true)
@@ -239,9 +253,11 @@ pub fn build_sized(image: &Path, src_dir: &Path, dest_name: &str, size: u64) -> 
     let fs = FileSystem::new(&mut buf, FsOptions::new())?;
     {
         let root = fs.root_dir();
-        let dest = root.create_dir(dest_name)?;
         if src_dir.exists() {
-            copy_tree(src_dir, &dest)?;
+            match dest_name {
+                Some(name) => copy_tree(src_dir, &root.create_dir(name)?)?,
+                None => copy_tree(src_dir, &root)?,
+            }
         }
     }
     fs.unmount()?;
