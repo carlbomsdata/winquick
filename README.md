@@ -95,6 +95,35 @@ Files land in `./winquick-artifacts/`. They are collected even when the command
 fails — a failed build's logs are usually the point — and the exit code is passed
 through untouched.
 
+**Windows desktop applications**
+
+```console
+winquick capability install desktop      # once, about a minute
+winquick ui-test MyApp.csproj --script my.uitest --out ./shots
+```
+
+WinQuick builds the project inside Windows, boots a real desktop, launches the
+application, drives it through UI Automation and brings screenshots back to your
+Mac. Nothing appears on your screen: no QEMU window, no RDP, no VNC.
+
+For interactive work the session stays up, so each step is a round trip rather
+than a boot:
+
+```console
+winquick desktop start --app ./publish
+winquick desktop launch app\MyApp.exe
+winquick desktop tree --title "My App"
+winquick desktop type --automation-id NameBox --text "Tobias"
+winquick desktop click --automation-id SaveButton
+winquick desktop get --automation-id StatusText
+winquick desktop screenshot after.png
+winquick desktop stop
+```
+
+Controls are addressed by `AutomationId`. A selector matching more than one
+element is an error listing the candidates, never a guess. See
+[docs/desktop.md](docs/desktop.md).
+
 **Coding agents**
 
 WinQuick is a normal CLI, so Claude Code, Codex, Cursor, shell scripts and CI all
@@ -118,6 +147,7 @@ knowing anything about how WinQuick works. See
 | Trivial command | ~270 ms |
 | PowerShell command | ~600 ms |
 | `dotnet test` on a small project | ~10 s |
+| Desktop session start | ~10 s, then ~10 ms per UI step |
 
 Optional capabilities, installed only if you ask:
 
@@ -126,6 +156,7 @@ Optional capabilities, installed only if you ask:
 | `powershell` — PowerShell 7.6.5 | 273 MiB |
 | `dotnet-runtime` — .NET 10 runtime | 90 MiB |
 | `dotnet-sdk` — .NET 10 SDK | 837 MiB |
+| `desktop` — WPF/WinForms, UI automation, screenshots | 2.0 GiB |
 
 ## Every run is clean
 
@@ -139,8 +170,12 @@ hand to an automated agent that might do anything.
 - **Windows has no network access.** This is deliberate — it is what makes runs
   reproducible and safe. `winquick cache sync` restores NuGet packages on your
   Mac and shares them with Windows offline.
-- **No GUI.** Headless only. GUI frameworks compile and their non-visual code
-  runs, but Windows dialogs and windows do not.
+- **GUI needs the desktop capability.** The base runtime has no graphics at all.
+  With `winquick capability install desktop` you get a real composited desktop,
+  WPF and WinForms, UI Automation and screenshots — still headless from the Mac's
+  point of view. QEMU's own framebuffer stays blank even then; screenshots are
+  captured inside the guest, which also lets you frame a single window.
+  [docs/desktop.md](docs/desktop.md) explains why.
 - **One command per run**, and output arrives when the command finishes rather
   than streaming.
 - Artifact patterns are three shapes, not full globbing — see
@@ -153,6 +188,8 @@ winquick setup                          install Windows (once)
 winquick run -- <command>               run something
 winquick capability list|install|remove optional tools inside Windows
 winquick cache sync|info|clear          offline packages for dotnet
+winquick desktop start|stop|status|...  drive a real Windows desktop
+winquick ui-test <project>              build a GUI app and test its UI
 winquick doctor [--smoke]               check the installation
 winquick info                           what is installed
 winquick reset                          rebuild the prepared guest
@@ -165,6 +202,7 @@ winquick clean [--all]                  remove generated data
 
 - [docs/install.md](docs/install.md) — installing and updating
 - [docs/architecture.md](docs/architecture.md) — how it works
+- [docs/desktop.md](docs/desktop.md) — the desktop capability and UI automation
 - [docs/security.md](docs/security.md) — the isolation model, precisely
 - [docs/licensing.md](docs/licensing.md) — what may be redistributed
 - [docs/troubleshooting.md](docs/troubleshooting.md) — when something breaks

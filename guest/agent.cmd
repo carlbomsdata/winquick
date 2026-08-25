@@ -11,14 +11,22 @@ rem guest be captured once and restored for every later run.
 if defined WQ_ACTIVE goto :eof
 set WQ_ACTIVE=1
 
+rem Volumes are not necessarily mounted by the time the shell starts, and how
+rem long that takes depends on how much of Windows is installed. Retry rather
+rem than giving up on the first look: a desktop-capable image enumerates more
+rem devices and is reliably slower than the minimal one.
+set WQTRIES=0
+:wqprobe
 set WQ=
 for %%d in (D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
   if not defined WQ if exist %%d:\WQMARK.TXT set WQ=%%d:
 )
-if not defined WQ (
-  echo [winquick] FATAL: mailbox volume not found
-  goto :eof
-)
+if defined WQ goto wqfound
+set /a WQTRIES+=1
+if %WQTRIES% LSS 20000 goto wqprobe
+echo [winquick] FATAL: mailbox volume not found
+goto :eof
+:wqfound
 
 rem Windows only synchronises a FAT volume with the underlying disk at mount and
 rem dismount. Without this the host would never see our writes and we would never
@@ -77,6 +85,21 @@ mountvol %WQ% /P >nul 2>&1
 goto wait
 
 :exec
+rem The go flag carries this run's token, and reading it is the only thing that
+rem has to be atomic. A desktop session writes into this volume while we are
+rem mounted, so a mount taken mid-write can show a file that exists but has no
+rem contents yet. Seeing that, go back and look again rather than running with
+rem an empty token: the host would reject the answer for a command that had
+rem already taken effect, and a click reported as failed is worse than a slow one.
+rem `for /f` and not `set /p`: on an empty file `set /p` falls back to reading
+rem the console and blocks the agent forever, which is exactly the case this
+rem check exists to handle.
+set WQNONCE=
+for /f "usebackq delims=" %%t in ("%WQ%\WQGO.TXT") do if not defined WQNONCE set WQNONCE=%%t
+if not defined WQNONCE (
+  mountvol %WQ% /P >nul 2>&1
+  goto wait
+)
 del %WQ%\WQGO.TXT >nul 2>&1
 rem Same cache problem as the mailbox: the guest is holding a stale view of the
 rem workspace from before it was frozen. Dismount and remount to see this run's
@@ -89,11 +112,11 @@ if defined WQWSVOL (
     cd /d C:\workspace >nul 2>&1
   )
 )
-rem Echoed back with the exit code so the host can prove this run actually read
-rem this run's command. If the guest is holding a stale view of the mailbox it
-rem would otherwise run an empty batch and report a confident, wrong success.
-set WQNONCE=
-if exist %WQ%\WQNONCE.TXT set /p WQNONCE=<%WQ%\WQNONCE.TXT
+rem The token is echoed back with the exit code so the host can prove this run
+rem actually read this run's command. If the guest were holding a stale view of
+rem the mailbox it would otherwise run an empty batch and report a confident,
+rem wrong success. The host writes the command first and arms the flag second,
+rem so a flag we can read means the command behind it is this run's.
 rem A child cmd.exe, not `call`: the workload must not be able to end the agent
 rem with `exit`, and its errorlevel has to come back cleanly.
 cmd /c %WQ%\WQCMD.CMD > %WQ%\WQOUT.TXT 2> %WQ%\WQERR.TXT

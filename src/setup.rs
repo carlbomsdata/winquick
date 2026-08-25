@@ -342,12 +342,20 @@ fn existing_mount(image: &Path) -> Option<PathBuf> {
 
 /// Release anything setup mounted, so an interrupted run leaves nothing attached.
 pub fn release_mounts() {
-    if let Ok(mnt) = paths::root().map(|r| r.join("mnt")) {
-        if mnt.exists() {
-            let _ = Command::new("/usr/bin/hdiutil").args(["detach"]).arg(&mnt).output();
-            let _ = std::fs::remove_dir(&mnt);
+    let Ok(mnt) = paths::root().map(|r| r.join("mnt")) else { return };
+    if !mnt.exists() {
+        return;
+    }
+    // `setup` mounts directly at mnt/; the generic mounter uses a subdirectory
+    // per image. Detach whichever exist.
+    if let Ok(entries) = std::fs::read_dir(&mnt) {
+        for sub in entries.flatten().map(|e| e.path()).filter(|p| p.is_dir()) {
+            let _ = Command::new("/usr/bin/hdiutil").args(["detach"]).arg(&sub).output();
+            let _ = std::fs::remove_dir(&sub);
         }
     }
+    let _ = Command::new("/usr/bin/hdiutil").args(["detach"]).arg(&mnt).output();
+    let _ = std::fs::remove_dir(&mnt);
 }
 
 fn attach(raw: &Path) -> Result<String> {
@@ -379,4 +387,64 @@ fn run_ok(c: &mut Command, what: &str) -> Result<()> {
         bail!("{what} failed: {}", String::from_utf8_lossy(&out.stderr).trim());
     }
     Ok(())
+}
+
+/// Mount the Microsoft media and return its root, for callers that need the
+/// whole ISO rather than just the disk image inside it.
+///
+/// Building the desktop image needs DISM and the optional package CABs, and
+/// both live beside the VHDX on the ISO — a bare `ValidationOS.vhdx` is not
+/// enough.
+pub fn mount_microsoft_image(from: Option<&Path>) -> Result<PathBuf> {
+    if let Some(p) = from {
+        if p.is_dir() {
+            return Ok(p.to_path_buf());
+        }
+        return mount_iso_at(p);
+    }
+    let cached = paths::cache()?.join("validationos-arm64.iso");
+    if cached.exists() {
+        return mount_iso_at(&cached);
+    }
+    for dir in [dirs_download(), Some(PathBuf::from("."))].into_iter().flatten() {
+        if let Some(iso) = newest_iso(&dir) {
+            return mount_iso_at(&iso);
+        }
+    }
+    bail!(
+        "cannot find the Validation OS ISO.\n\n\
+         The desktop capability needs the full ISO, which carries DISM and the\n\
+         optional packages. Point WinQuick at it with:\n    \
+         winquick capability install desktop --from /path/to/validationos.iso"
+    )
+}
+
+/// Attach any ISO read-only and return its mount point.
+///
+/// Unlike [`mount_iso`], this makes no assumption about what is inside, so it
+/// works for the virtio-win media as well as Microsoft's. An image already
+/// attached — by an earlier WinQuick command, or by the user — is reused rather
+/// than attached a second time, which the kernel refuses as busy.
+pub fn mount_iso_at(iso: &Path) -> Result<PathBuf> {
+    if let Some(existing) = existing_mount(iso) {
+        return Ok(existing);
+    }
+    let stem = iso
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("image")
+        .replace(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '.', "_");
+    let mnt = paths::root()?.join("mnt").join(stem);
+    std::fs::create_dir_all(&mnt)?;
+    if std::fs::read_dir(&mnt).map(|mut d| d.next().is_some()).unwrap_or(false) {
+        return Ok(mnt);
+    }
+    run_ok(
+        Command::new("/usr/bin/hdiutil")
+            .args(["attach", "-readonly", "-nobrowse", "-mountpoint"])
+            .arg(&mnt)
+            .arg(iso),
+        &format!("opening {}", iso.display()),
+    )?;
+    Ok(mnt)
 }

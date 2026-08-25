@@ -11,7 +11,7 @@
 //! | `WQMARK.TXT`  | host → guest | marks this volume as the mailbox |
 //! | `WQREADY.TXT` | guest → host | the agent has booted and is waiting |
 //! | `WQCMD.CMD`   | host → guest | the command, as a batch file |
-//! | `WQGO.TXT`    | host → guest | run `WQCMD.CMD` now |
+//! | `WQGO.TXT`    | host → guest | run `WQCMD.CMD` now; contains this run's token |
 //! | `WQOUT.TXT`   | guest → host | stdout |
 //! | `WQERR.TXT`   | guest → host | stderr |
 //! | `WQCODE.TXT`  | guest → host | exit code, written last |
@@ -37,15 +37,17 @@ use std::path::Path;
 pub const MARKER: &str = "WQMARK.TXT";
 pub const READY: &str = "WQREADY.TXT";
 pub const CMD_FILE: &str = "WQCMD.CMD";
+/// Run the command now. Its contents are this run's token: a live desktop
+/// session writes into the volume while the guest has it mounted, and one file
+/// the guest reads once cannot tear against itself the way two separate files
+/// can.
 pub const GO: &str = "WQGO.TXT";
 pub const OUT_FILE: &str = "WQOUT.TXT";
 pub const ERR_FILE: &str = "WQERR.TXT";
 pub const CODE_FILE: &str = "WQCODE.TXT";
 /// Script the agent runs after the command, to collect artifacts.
 pub const ART_SCRIPT: &str = "WQART.CMD";
-/// Per-run token, echoed back with the exit code to prove the guest read this
-/// run's command rather than a stale cached view of the volume.
-pub const NONCE: &str = "WQNONCE.TXT";
+
 
 const SECTOR: u64 = 512;
 const PART_START_LBA: u64 = 2048;
@@ -121,37 +123,66 @@ fn write_mbr(mut img: &File) -> Result<()> {
     Ok(())
 }
 
+/// Open the volume, do some work, and make sure it reaches the host's disk.
+///
+/// The explicit flush matters: relying on `Drop` left the second of two
+/// consecutive opens reading the first one's stale contents, and the guest then
+/// ran an empty batch and reported a confident success.
+fn write_file<T: fatfs::ReadWriteSeek>(
+    root: &fatfs::Dir<T>,
+    name: &str,
+    data: &[u8],
+) -> Result<()> {
+    let mut f = root.create_file(name)?;
+    f.truncate()?;
+    f.write_all(data)?;
+    Ok(())
+}
+
 /// Place a command into an existing mailbox without touching the filesystem
 /// identity, and clear any stale results.
-/// Everything the host writes into the mailbox happens here, in a single
-/// open/flush cycle. Opening the volume twice in a row left the FAT inconsistent
-/// and the guest then read nothing at all.
+///
+/// This happens in two passes, and the split is load-bearing. A live session's
+/// agent polls the volume continuously, remounting on every iteration, and
+/// starts work the moment it sees `WQGO.TXT`. Writing everything in one pass
+/// lets the guest observe the go flag before the command and nonce behind it —
+/// it then runs the *previous* command and answers with the previous token.
+/// So: write the command, let the volume flush, and only then arm it.
 pub fn inject_command(path: &Path, command: &str, artifact_script: Option<&str>, nonce: &str) -> Result<()> {
+    {
+        let fs = open_fs(path, true)?;
+        {
+            let root = fs.root_dir();
+            // The go flag goes first, so a guest that is mid-poll cannot act on
+            // a half-written command.
+            for stale in [GO, OUT_FILE, ERR_FILE, CODE_FILE] {
+                let _ = root.remove(stale);
+            }
+            if let Some(script) = artifact_script {
+                write_file(&root, ART_SCRIPT, script.as_bytes())?;
+            }
+            // `@echo off` keeps the child cmd.exe from echoing the command line
+            // into captured stdout. CRLF because cmd.exe is unforgiving about
+            // bare LF.
+            let mut body = Vec::from(&b"@echo off\r\n"[..]);
+            body.extend_from_slice(command.as_bytes());
+            body.extend_from_slice(b"\r\n");
+            write_file(&root, CMD_FILE, &body)?;
+        }
+        // Dropping the filesystem flushes it to the image file, so the second
+        // pass — and the guest — see a complete command.
+        fs.unmount()?;
+    }
+
     let fs = open_fs(path, true)?;
     {
         let root = fs.root_dir();
-        for stale in [OUT_FILE, ERR_FILE, CODE_FILE] {
-            let _ = root.remove(stale);
-        }
-        if let Some(script) = artifact_script {
-            let mut a = root.create_file(ART_SCRIPT)?;
-            a.truncate()?;
-            a.write_all(script.as_bytes())?;
-        }
-        // `@echo off` keeps the child cmd.exe from echoing the command line into
-        // captured stdout. CRLF because cmd.exe is unforgiving about bare LF.
-        let mut c = root.create_file(CMD_FILE)?;
-        c.truncate()?;
-        c.write_all(b"@echo off\r\n")?;
-        c.write_all(command.as_bytes())?;
-        c.write_all(b"\r\n")?;
-        let mut n = root.create_file(NONCE)?;
-        n.truncate()?;
-        n.write_all(nonce.as_bytes())?;
-        // written last: this is what the agent waits on
-        let mut g = root.create_file(GO)?;
-        g.truncate()?;
-        g.write_all(b"go\r\n")?;
+        // The token goes in the flag itself. The guest reads this one file and
+        // acts only if it has contents, so a mount taken mid-write costs it
+        // another poll rather than a command run under the wrong token.
+        let mut armed = Vec::from(nonce.as_bytes());
+        armed.extend_from_slice(b"\r\n");
+        write_file(&root, GO, &armed)?;
     }
     fs.unmount()?;
     Ok(())
@@ -222,6 +253,32 @@ mod tests {
             String::from_utf8(probe(&img, CMD_FILE).expect("command file")).unwrap(),
             "@echo off\r\ncmd /c echo second\r\n"
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The agent starts work the instant it sees the go flag, so the flag must
+    /// never be visible before the command it refers to. This asserts the
+    /// intermediate state: after the first pass there is a command but no flag.
+    #[test]
+    fn the_go_flag_is_never_armed_before_the_command() {
+        let dir = std::env::temp_dir().join(format!("wq-order-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let img = dir.join("mailbox.img");
+        create_template(&img).unwrap();
+
+        // A previous run's flag and results must be gone before the new command
+        // is staged, or a polling guest could act on the old pairing.
+        inject_command(&img, "cmd /c echo first", None, "tok1").unwrap();
+        assert!(probe(&img, GO).is_some());
+
+        inject_command(&img, "cmd /c echo second", None, "tok2").unwrap();
+        assert_eq!(
+            String::from_utf8(probe(&img, CMD_FILE).unwrap()).unwrap(),
+            "@echo off\r\ncmd /c echo second\r\n"
+        );
+        let armed = String::from_utf8(probe(&img, GO).unwrap()).unwrap();
+        assert_eq!(armed.trim(), "tok2", "the flag must carry this run's token");
+        assert!(probe(&img, GO).is_some(), "the flag must be armed once staging is done");
         std::fs::remove_dir_all(&dir).ok();
     }
 
