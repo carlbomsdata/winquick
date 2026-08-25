@@ -58,6 +58,9 @@ echo "== ready-state invalidation and fallback =="
 "$WQ" run -- cmd /c ver >/dev/null 2>&1   # ensure a state exists
 v=$("$WQ" run --verbose --memory 1536 -- cmd /c ver 2>&1 >/dev/null)
 case "$v" in *"guest memory changed"*) ok "changed RAM invalidates the ready state";; *) bad "invalidation on RAM" "$v";; esac
+# The RAM check above leaves no state for the default topology, so re-establish
+# one or this measures "no ready state yet" instead of vcpu invalidation.
+"$WQ" run -- cmd /c ver >/dev/null 2>&1
 v=$("$WQ" run --verbose --cpus 2 -- cmd /c ver 2>&1 >/dev/null)
 case "$v" in *"vcpu count changed"*|*"device configuration changed"*) ok "changed vCPU count invalidates the ready state";; *) bad "invalidation on vCPU" "$v";; esac
 
