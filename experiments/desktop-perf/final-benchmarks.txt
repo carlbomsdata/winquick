@@ -1,0 +1,4 @@
+=== release gate: command path ===
+  cmd /c ver                 n=30  min=276 p50=333 mean=332 p95=350 max=354 ms  failures=0
+  pwsh                       n=10  min=847 p50=873 mean=873 p95=888 max=888 ms  failures=0
+  dotnet --version           n=10  min=526 p50=547 mean=546 p95=569 max=569 ms  failures=0

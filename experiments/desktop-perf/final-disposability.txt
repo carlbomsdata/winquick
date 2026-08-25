@@ -1,0 +1,13 @@
+=== release gate: disposability and immutability ===
+canonical images before : c1eedc8bf02a0977b6ab991e00d0eab681fcb60a
+prepared state before   : 4d90c3a9c3854015bcdedac75ef19a69f811af28
+session 1 status        : Saved: GATE-STATE (Standard, logging on)
+session 1 history rows  : 1
+session overlay         :  40M
+session 2 device name   : ''
+session 2 status        : 'Status: Not saved'
+session 2 logging       : Off
+session 2 history rows  : 0
+canonical images after  : c1eedc8bf02a0977b6ab991e00d0eab681fcb60a
+prepared state after    : 4d90c3a9c3854015bcdedac75ef19a69f811af28
+session dir after stop  : 0 files

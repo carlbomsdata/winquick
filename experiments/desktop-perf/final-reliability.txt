@@ -1,0 +1,34 @@
+=== release gate: 30 consecutive desktop sessions ===
+   1: 391ms ok
+   2: 395ms ok
+   3: 387ms ok
+   4: 377ms ok
+   5: 388ms ok
+   6: 398ms ok
+   7: 397ms ok
+   8: 388ms ok
+   9: 400ms ok
+  10: 385ms ok
+  11: 388ms ok
+  12: 385ms ok
+  13: 388ms ok
+  14: 395ms ok
+  15: 394ms ok
+  16: 398ms ok
+  17: 391ms ok
+  18: 386ms ok
+  19: 388ms ok
+  20: 390ms ok
+  21: 393ms ok
+  22: 395ms ok
+  23: 396ms ok
+  24: 398ms ok
+  25: 388ms ok
+  26: 384ms ok
+  27: 381ms ok
+  28: 405ms ok
+  29: 389ms ok
+  30: 384ms ok
+
+  successes 30/30  failures 0 
+  min=377 p50=389 mean=391 p95=400 max=405 ms

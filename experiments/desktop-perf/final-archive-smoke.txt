@@ -1,0 +1,12 @@
+=== release archive smoke test, run from the extracted archive ===
+  executable bit preserved
+winquick 0.2.0
+  --help ok
+    ok   ntfscp               /private/tmp/wq-rel/winquick-0.2.0-darwin-arm64/libexec/winquick/ntfscp
+    ok   ntfscat              /private/tmp/wq-rel/winquick-0.2.0-darwin-arm64/libexec/winquick/ntfscat
+    ok   desktop image        2 GiB
+    ok   session state        prepared (914 MiB)
+    ok   bridge sources       /private/tmp/wq-rel/winquick-0.2.0-darwin-arm64/share/winquick/wqui
+  Everything looks good.
+
+Microsoft Windows [Version 10.0.26100.8972]
