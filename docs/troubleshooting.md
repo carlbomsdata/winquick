@@ -147,6 +147,38 @@ If a pattern matched nothing the run says so on stdout (`winquick: no match for
 WinQuick will not write into a non-empty artifacts directory without being told.
 Pass `--artifact-overwrite`, or `--artifacts-dir <somewhere-else>`.
 
+## Desktop
+
+**What options does a verb take?**
+
+```console
+winquick desktop click --help
+winquick desktop toggle --help
+```
+
+Both answer without a session running. Most desktop verbs are forwarded to the
+guest bridge, so the bridge's own error message for a bad option lists the
+options of every verb at once; `--help` is handled on the Mac and describes the
+one verb you asked about.
+
+**`no element matches ...`**
+
+Read the tree and use what is actually there:
+
+```console
+winquick desktop tree --title "My App"
+```
+
+WPF derives an AutomationId from `x:Name`; WinForms needs `Control.Name` set.
+If a selector matches several elements WinQuick says so and lists the
+candidates rather than picking one, so add `--control-type` or `--title` to
+narrow it.
+
+**Clicking at coordinates**
+
+`click` addresses an element. Raw coordinates are `winquick desktop mouse --x
+<n> --y <n>`, which clamps to the screen and reports where it actually went.
+
 ## Disk and cleanup
 
 **Running out of space**

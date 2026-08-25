@@ -636,6 +636,65 @@ pub const VERBS: &[&str] = &[
     "click", "type", "key", "select", "toggle", "mouse", "remount",
 ];
 
+/// What each forwarded verb does, and the options it takes.
+///
+/// The bridge validates options against one shared table, so its error message
+/// for a bad option lists every option of every verb. That is no use to someone
+/// trying to find out what `toggle` accepts, and `--help` reached the bridge as
+/// just another unknown option — so a verb's help was unobtainable without a
+/// booted Windows, which is exactly backwards for the thing you read *before*
+/// starting one.
+///
+/// Kept next to `VERBS` and pinned to it by a test, so a new verb cannot ship
+/// undocumented.
+pub const VERB_HELP: &[(&str, &str, &str)] = &[
+    ("windows", "List the visible top-level windows", ""),
+    ("display", "Report the screen size and colour depth", ""),
+    ("launch", "Start a program inside the session", "<program> [args...] [--cwd <dir>]"),
+    ("wait-window", "Wait until a window appears", "--title <text> [--timeout <ms>] [--poll <ms>]"),
+    ("focus", "Bring a window to the front", "--title <text> | --hwnd <n>"),
+    ("tree", "Print the UI Automation tree", "[<selector>] [--depth <n>]"),
+    ("find", "List every element matching a selector", "<selector> [--all]"),
+    ("screenshot", "Capture the screen, or one window, as a PNG", "<file> [--title <text>] [--hwnd <n>] [--rect x,y,w,h]"),
+    ("get", "Read one element", "<selector>"),
+    ("click", "Click one element", "<selector> [--right] [--settle <ms>]"),
+    ("type", "Type text into one element", "<selector> --text <text>"),
+    ("key", "Send keystrokes to whatever has focus", "--key <combo>  (e.g. ctrl+a, enter, tab)"),
+    ("select", "Choose an item in a list or combo box", "<selector> --item <text>"),
+    ("toggle", "Set or flip a check box", "<selector> [--state on|off]"),
+    ("mouse", "Move or click at raw screen coordinates", "--x <n> --y <n> [--move] [--right]"),
+    ("remount", "Re-read the app volume after it changed", ""),
+];
+
+/// The selector vocabulary, shared by every verb that addresses an element.
+const SELECTOR_HELP: &str = "\
+A <selector> is one or more of:
+    --automation-id <id>     the AutomationId, and the one to prefer
+    --name <text>            the accessible name
+    --class <name>           the class name
+    --control-type <type>    Button, Edit, Text, CheckBox, ComboBox, List ...
+    --title <text>           limit the search to one window
+    --hwnd <n>               ...or to one window by handle
+
+Combine them to narrow a match. A selector matching more than one element is
+an error rather than a guess.";
+
+/// Help for one forwarded verb, or `None` if it is not one.
+pub fn verb_help(verb: &str) -> Option<String> {
+    let (_, what, opts) = VERB_HELP.iter().find(|(v, _, _)| *v == verb)?;
+    let mut s = format!("{what}\n\nUsage: winquick desktop {verb}");
+    if !opts.is_empty() {
+        s.push(' ');
+        s.push_str(opts);
+    }
+    if opts.contains("<selector>") {
+        s.push_str("\n\n");
+        s.push_str(SELECTOR_HELP);
+    }
+    s.push_str("\n\nRuns against the session started by `winquick desktop start`.");
+    Some(s)
+}
+
 /// Reject an unknown verb before anything looks at session state.
 pub fn check_verb(verb: Option<&str>) -> Result<()> {
     let Some(v) = verb else {
@@ -1007,4 +1066,28 @@ fn summarise(r: &CallResult) -> String {
         }
     }
     String::new()
+}
+
+#[cfg(test)]
+mod tests {
+    /// Every forwarded verb must be documented, or `--help` falls through to
+    /// the guest again and becomes unanswerable without a booted Windows.
+    #[test]
+    fn every_verb_has_help() {
+        for v in super::VERBS {
+            assert!(super::verb_help(v).is_some(), "verb `{v}` has no help");
+        }
+        for (v, _, _) in super::VERB_HELP {
+            assert!(super::VERBS.contains(v), "`{v}` has help but is not a verb");
+        }
+    }
+
+    /// A verb that takes a selector explains what a selector is.
+    #[test]
+    fn selector_verbs_explain_the_selector() {
+        let h = super::verb_help("click").unwrap();
+        assert!(h.contains("--automation-id"), "click help omits the selector: {h}");
+        assert!(super::verb_help("display").unwrap().contains("winquick desktop display"));
+        assert!(super::verb_help("nonsense").is_none());
+    }
 }
