@@ -28,10 +28,10 @@ which `winquick capability install desktop` builds inside Windows. `release.sh`
 refuses to package without them, and `winquick doctor` reports whether an
 installed copy can find them.
 
-The tarball records file mtimes, so **rebuilding produces a different checksum
-even when nothing changed**. Publish the `dist/` you hashed; do not re-run
-`release.sh` after filling the formula in, or the formula will point at a
-checksum no published file has.
+The archive is byte-reproducible: sorted entries, fixed timestamps, no owner
+names and a gzip header without an mtime. Two builds from the same source
+produce the same SHA-256, so rebuilding after filling in the formula is safe,
+and anyone can check the published artifact against their own build.
 
 ## Sign and notarize (needs an Apple Developer ID)
 
