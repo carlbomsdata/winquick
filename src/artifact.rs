@@ -22,72 +22,10 @@ const PART_START_LBA: u64 = 2048;
 
 /// Marker the guest agent looks for when hunting for the artifact volume.
 pub const MARKER: &str = "WQARTS.TXT";
-/// Directory on the volume the guest copies into.
-pub const DIR: &str = "artifacts";
 /// Whatever the guest's copy commands printed, kept for diagnostics.
 pub const LOG: &str = "WQARTLOG.TXT";
 
-/// Turn `--artifact` patterns into the batch script the agent runs.
-///
-/// # Pattern semantics
-///
-/// Patterns are **relative to the workspace root** (`C:\workspace`) and are
-/// resolved **in the guest**, by Windows, because that is where the files are.
-/// Forward and backward slashes are both accepted and normalised, so the same
-/// pattern works whether it was typed on macOS or copied from a Windows script.
-///
-/// Three forms, deliberately not a glob engine:
-///
-/// | Pattern | Meaning |
-/// |---|---|
-/// | `bin/Release/**` | that directory, recursively, hierarchy preserved |
-/// | `*.log`, `logs/*.txt` | wildcard match within one directory |
-/// | `logs/build.log` | one named file or directory |
-pub fn script(patterns: &[String]) -> String {
-    let mut s = String::from("@echo off\r\n");
-    s.push_str("set WQ_ART_FAIL=0\r\n");
-    s.push_str(&format!("if not exist %WQART%\\{DIR} mkdir %WQART%\\{DIR}\r\n"));
-    for p in patterns {
-        let norm = p.replace('/', "\\");
-        let norm = norm.trim_start_matches('\\').to_string();
-        if let Some(dir) = norm.strip_suffix("\\**").or_else(|| norm.strip_suffix("\\*")) {
-            // A whole directory tree, keeping its position under the workspace.
-            s.push_str(&format!(
-                "if exist \"C:\\workspace\\{dir}\" (\r\n  \
-                   xcopy \"C:\\workspace\\{dir}\" \"%WQART%\\{DIR}\\{dir}\\\" /E /I /Y /Q\r\n  \
-                   if errorlevel 1 set WQ_ART_FAIL=1\r\n\
-                 ) else (\r\n  echo winquick: no match for {dir}\\**\r\n)\r\n"
-            ));
-        } else if norm == "**" {
-            s.push_str(&format!(
-                "xcopy \"C:\\workspace\" \"%WQART%\\{DIR}\\\" /E /I /Y /Q\r\n\
-                 if errorlevel 1 set WQ_ART_FAIL=1\r\n"
-            ));
-        } else {
-            let parent = match norm.rfind('\\') {
-                Some(i) => &norm[..i],
-                None => "",
-            };
-            let dest = if parent.is_empty() {
-                format!("%WQART%\\{DIR}\\")
-            } else {
-                format!("%WQART%\\{DIR}\\{parent}\\")
-            };
-            if !parent.is_empty() {
-                s.push_str(&format!("if not exist \"{dest}\" mkdir \"{dest}\"\r\n"));
-            }
-            // /I keeps xcopy from asking whether the destination is a directory.
-            s.push_str(&format!(
-                "if exist \"C:\\workspace\\{norm}\" (\r\n  \
-                   xcopy \"C:\\workspace\\{norm}\" \"{dest}\" /E /I /Y /Q\r\n  \
-                   if errorlevel 1 set WQ_ART_FAIL=1\r\n\
-                 ) else (\r\n  echo winquick: no match for {norm}\r\n)\r\n"
-            ));
-        }
-    }
-    s.push_str("echo winquick-artifact-status=%WQ_ART_FAIL%\r\n");
-    s
-}
+pub use crate::artifact_patterns::{script, validate, DIR};
 
 fn open_fs(path: &Path) -> Result<FileSystem<BufStream<StreamSlice<File>>>> {
     let img = OpenOptions::new()

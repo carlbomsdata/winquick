@@ -273,6 +273,52 @@ sys.exit(1 if failures else 0)
 PY
 [ $? -eq 0 ] && ok "$N consecutive warm runs, zero failures" || bad "warm run reliability" "see above"
 
+echo "== v0.2.1 command quoting (WQ-EXT-01) =="
+q(){ out=$("$WQ" run -- "${@:2}" 2>/dev/null | tr -d '\r' | tail -1); check "$1" "$out" "$2"; }
+out=$("$WQ" run -- cmd /c 'echo say "hi"' 2>/dev/null | tr -d '\r' | tail -1)
+check "cmd keeps the user's quotes" "$out" 'say "hi"'
+"$WQ" run -- cmd /c 'type "C:\Windows\System32\drivers\etc\hosts"' >/dev/null 2>&1
+check "cmd accepts a quoted path" "$?" "0"
+out=$("$WQ" run -- cmd /c 'echo A & echo B' 2>/dev/null | tr -d '\r' | tail -1)
+check "cmd operators still work" "$out" "B"
+out=$("$WQ" run -- cmd /c 'echo åäö-日本語' 2>/dev/null | tr -d '\r' | tail -1)
+check "unicode through cmd" "$out" "åäö-日本語"
+if [ -f ~/.winquick/capabilities/powershell.img ]; then
+  out=$("$WQ" run -- pwsh -NoProfile -Command 'Write-Output "quoted string"' 2>/dev/null | tr -d '\r' | tail -1)
+  check "pwsh quoting is not broken by the cmd fix" "$out" "quoted string"
+fi
+
+echo "== v0.2.1 non-BMP filenames (WQ-EXT-02) =="
+NB=/tmp/wq_nonbmp; rm -rf $NB; mkdir -p "$NB/deep"; echo x > "$NB/ok-åäö.txt"; echo x > "$NB/deep/bad-🙂.txt"
+"$WQ" run -w "$NB" -- cmd /c "echo ." >/tmp/wq_e 2>&1 || true
+grep -q "deep/bad-" /tmp/wq_e \
+  && ok "an unrepresentable filename is named in the error" \
+  || bad "non-BMP diagnostic" "$(head -2 /tmp/wq_e)"
+rm -f "$NB/deep/bad-🙂.txt"
+"$WQ" run -w "$NB" -- cmd /c "dir /b C:\\workspace" >/dev/null 2>&1
+check "a tree of representable names still works" "$?" "0"
+
+echo "== v0.2.1 artifact globs (WQ-EXT / limit 7) =="
+GW=/tmp/wq_glob; rm -rf $GW; mkdir -p "$GW/bin/Release/net10.0" "$GW/logs"
+echo a > "$GW/root.dll"; echo a > "$GW/bin/one.dll"; echo a > "$GW/bin/Release/net10.0/deep.dll"
+echo a > "$GW/bin/Release/app.exe"; echo a > "$GW/logs/a.txt"; echo a > "$GW/foo1.txt"
+gl(){ rm -rf /tmp/wq_glob_out
+  "$WQ" run -w "$GW" -a "$1" --artifacts-dir /tmp/wq_glob_out -- cmd /c "echo ." >/dev/null 2>&1
+  n=$(find /tmp/wq_glob_out -type f 2>/dev/null | wc -l | tr -d ' '); check "glob $1" "$n" "$2"; }
+gl "**/*.dll" 3
+gl "*.dll" 1
+gl "bin/**/*.exe" 1
+gl "logs/*.txt" 1
+gl "foo?.txt" 1
+gl "bin/Release/**" 2
+for bad in "../escape" "bin/../../etc"; do
+  "$WQ" run -w "$GW" -a "$bad" --artifacts-dir /tmp/wq_glob_out2 -- cmd /c "echo ." >/tmp/wq_e 2>&1
+  rc=$?
+  grep -q "must not contain" /tmp/wq_e && [ "$rc" != "0" ] \
+    && ok "artifact traversal refused: $bad" \
+    || bad "traversal" "$bad was not refused"
+done
+
 echo "== desktop capability =="
 DESKBASE=~/.winquick/images/desktop-arm64/base.qcow2
 # The CLI surface must be right whether or not the capability is installed.
@@ -285,6 +331,11 @@ rc=$?
 if [ ! -f "$DESKBASE" ]; then
   check "desktop verb without the capability fails" "$rc" "1"
 else
+  "$WQ" desktop frobnicate >/tmp/wq_e 2>&1
+  rc=$?
+  grep -q "unknown desktop command" /tmp/wq_e && [ "$rc" != "0" ] \
+    && ok "an unknown verb is a syntax error, not a session error" \
+    || bad "unknown verb" "$(head -1 /tmp/wq_e)"
   "$WQ" desktop status >/dev/null 2>&1
   [ $? -ne 0 ] && ok "desktop status reports no session" || ok "desktop status reports a running session"
 fi
@@ -306,7 +357,7 @@ if [ -f "$DESKBASE" ] && [ -d "$WQ_UIAPP" ]; then
   # it turned a mistyped selector into a confident answer about the wrong
   # element.
   "$WQ" desktop get --automation-id StatusText --class-name Nope >/tmp/wq_e 2>&1
-  grep -q "does not take --class-name" /tmp/wq_e \
+  grep -q "unknown option --class-name" /tmp/wq_e \
     && ok "unknown options are rejected, not ignored" \
     || bad "unknown option" "$(head -2 /tmp/wq_e)"
 
@@ -332,6 +383,14 @@ PYTREE
     fi
   done
   check "combo box reports its selection as a value" "$combo_ok" "yes"
+
+  # WQ-EXT-05/06/07: syntax errors before state, and a usable disabled-element message.
+  "$WQ" desktop get --id SampleBox >/tmp/wq_o 2>&1
+  grep -q "unknown option --id" /tmp/wq_o \
+    && ok "an unknown option names itself" || bad "unknown option" "$(head -2 /tmp/wq_o)"
+  "$WQ" desktop screenshot /tmp/wq_hw.png --hwnd 999999 >/tmp/wq_o 2>&1
+  grep -qv "unexpected argument" /tmp/wq_o \
+    && ok "screenshot accepts --hwnd" || bad "screenshot --hwnd" "not accepted"
 
   "$WQ" desktop stop >/dev/null 2>&1
   capsum_after=$(shasum -a 256 ~/.winquick/capabilities/*.img | shasum -a 256)

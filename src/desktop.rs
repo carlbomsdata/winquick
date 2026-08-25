@@ -174,12 +174,22 @@ pub fn start(opts: &StartOptions) -> Result<()> {
         );
     }
 
+    // Say everything that is still missing at once, in the order it has to be
+    // done. Discovering prerequisites one failed command at a time is the kind
+    // of ceremony that makes a capability feel harder than it is.
     let installed = capability::installed()?;
+    let mut missing: Vec<&str> = Vec::new();
     if !installed.iter().any(|c| c.name == "dotnet-sdk") {
+        missing.push("    winquick capability install dotnet-sdk    # supplies the Windows Desktop runtime");
+    }
+    if !bridge_dir()?.join("wqui.exe").exists() {
+        missing.push("    winquick capability install desktop --force   # rebuilds the guest bridge");
+    }
+    if !missing.is_empty() {
         bail!(
-            "the desktop bridge needs the .NET SDK capability, which supplies the\n\
-             Windows Desktop runtime the bridge and WPF applications run on.\n\n\
-             Install it with:\n    winquick capability install dotnet-sdk"
+            "a desktop session needs a little more set up first:\n\n{}\n\n\
+             Then run `winquick desktop start` again.",
+            missing.join("\n")
         );
     }
 
@@ -283,6 +293,18 @@ pub fn start(opts: &StartOptions) -> Result<()> {
     bring_up().inspect_err(|_| {
         let _ = stop();
     })?;
+
+    // Ctrl-C during startup used to exit 0 and leave a session running, which
+    // reads as "nothing happened" when a virtual machine is in fact up. The
+    // session itself is fine, so it is kept — but say so, and exit as an
+    // interrupted command should.
+    if crate::interrupt::interrupted() {
+        eprintln!(
+            "winquick: interrupted during startup; the desktop session is running.\n\
+             Stop it with:  winquick desktop stop"
+        );
+        std::process::exit(130);
+    }
 
     if opts.verbose {
         eprintln!("winquick: desktop ready in {:.0}ms", t0.elapsed().as_secs_f64() * 1000.0);
@@ -605,6 +627,39 @@ pub struct CallResult {
     pub exit_code: i32,
 }
 
+/// Verbs the guest bridge understands.
+///
+/// Kept here so an unrecognised verb is a syntax error the CLI can report
+/// immediately, without first requiring a session to exist.
+pub const VERBS: &[&str] = &[
+    "windows", "display", "launch", "wait-window", "focus", "screenshot", "tree", "find", "get",
+    "click", "type", "key", "select", "toggle", "mouse", "remount",
+];
+
+/// Reject an unknown verb before anything looks at session state.
+pub fn check_verb(verb: Option<&str>) -> Result<()> {
+    let Some(v) = verb else {
+        bail!("no desktop command given. Try:  winquick desktop --help");
+    };
+    if VERBS.contains(&v) {
+        return Ok(());
+    }
+    let near: Vec<&str> = VERBS
+        .iter()
+        .copied()
+        .filter(|k| k.starts_with(v.chars().next().unwrap_or('\0')))
+        .collect();
+    let hint = if near.is_empty() {
+        String::new()
+    } else {
+        format!("\n\nDid you mean: {}?", near.join(", "))
+    };
+    bail!(
+        "unknown desktop command `{v}`.\n\nAvailable: start, stop, status, {}{hint}",
+        VERBS.join(", ")
+    )
+}
+
 /// Run one bridge verb in the live session and return its JSON.
 pub fn call(argv: &[String], timeout: Duration) -> Result<CallResult> {
     let session = running().ok_or_else(|| {
@@ -630,7 +685,7 @@ pub fn call(argv: &[String], timeout: Duration) -> Result<CallResult> {
 /// rather than assuming one, and then makes that volume the working directory
 /// so `launch app\\MyApp.exe` means what it looks like it means.
 fn bridge_command(argv: &[String]) -> String {
-    let quoted = crate::join_argv(argv);
+    let quoted = crate::argv::join(argv);
     format!(
         "set WQX=\r\n\
          for %%d in (D E F G H I J K L M N O P) do if not defined WQX \
