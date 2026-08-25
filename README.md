@@ -120,6 +120,20 @@ Files land in `./winquick-artifacts/`. They are collected even when the command
 fails — a failed build's logs are usually the point — and the exit code is passed
 through untouched.
 
+Patterns are relative to the workspace and matched inside Windows:
+
+| Pattern | Matches |
+|---|---|
+| `bin/Release/**` | that directory, recursively, hierarchy preserved |
+| `**/*.dll` | every `.dll` anywhere under the workspace |
+| `bin/**/*.exe` | every `.exe` anywhere under `bin` |
+| `logs/*.txt` | one directory only — a single `*` does not recurse |
+| `foo?.txt` | `?` matches one character |
+| `out/report.txt` | one named file or directory |
+
+Slashes may lean either way. A pattern that tries to leave the workspace is
+refused before the run starts.
+
 **Windows desktop applications**
 
 WinQuick can build a WPF or WinForms application, run it in a real Windows
@@ -158,9 +172,10 @@ winquick desktop screenshot after.png
 winquick desktop stop
 ```
 
-A session starts in about 380 ms and stays up; each step after that takes tens
+A session starts in about 390 ms and stays up; each step after that takes tens
 of milliseconds. It is not booting Windows that fast — it restores a Windows
-that already booted. Controls are addressed by `AutomationId`, and a selector matching
+that already booted. Preparing that saved state happens once, and takes about
+20 seconds. Controls are addressed by `AutomationId`, and a selector matching
 more than one element is an error listing the candidates rather than a guess.
 
 Or put the whole thing in a script and run it in one command:
@@ -202,11 +217,11 @@ knowing anything about how WinQuick works. See
 |---|---|
 | Windows | Microsoft Validation OS, build 10.0.26100 ARM64 |
 | Runtime size | 763 MiB |
-| Trivial command | ~288 ms |
-| PowerShell command | ~840 ms |
-| `dotnet --version` | ~500 ms |
+| Trivial command | ~300 ms |
+| PowerShell command | ~870 ms |
+| `dotnet --version` | ~550 ms |
 | `dotnet test` on a small project | ~10 s |
-| Desktop session start | ~380 ms, then ~20 ms per UI step |
+| Desktop session start | ~390 ms, then ~20 ms per UI step |
 
 Optional capabilities, installed only if you ask:
 
@@ -225,20 +240,33 @@ hand to an automated agent that might do anything.
 
 ## Known limits
 
-- **Apple Silicon only.** No Intel Macs, no Linux, no Windows hosts.
-- **Windows has no network access.** This is deliberate — it is what makes runs
-  reproducible and safe. `winquick cache sync` restores NuGet packages on your
-  Mac and shares them with Windows offline.
-- **GUI needs the desktop capability.** The base runtime has no graphics at all.
-  With `winquick capability install desktop` you get a real composited desktop,
-  WPF and WinForms, UI Automation and screenshots — still headless from the Mac's
-  point of view. QEMU's own framebuffer stays blank even then; screenshots are
-  captured inside the guest, which also lets you frame a single window.
-  [docs/desktop.md](docs/desktop.md) explains why.
-- **One command per run**, and output arrives when the command finishes rather
-  than streaming.
-- Artifact patterns are three shapes, not full globbing — see
-  [docs/troubleshooting.md](docs/troubleshooting.md).
+Measured on the development host: Apple Silicon, macOS 26, QEMU 11.1. Your
+numbers will differ; the shape of them should not.
+
+- **Current host support is Apple Silicon macOS.** Linux and Windows hosts are
+  planned — the design is a QEMU backend behind a host-acceleration layer, and
+  nothing in the product is deliberately Mac-only — but neither is implemented
+  or tested, so neither is claimed. Intel Macs are not planned.
+- **The guest has no network by default, and that is the point.** A run that
+  cannot reach the internet is a run that behaves the same tomorrow.
+  `winquick cache sync` restores NuGet packages on your Mac and shares them with
+  Windows offline. Opt-in networking is not available yet: the guest has no
+  network driver, so enabling it means servicing the base image the way the
+  desktop capability is serviced. Planned, not present.
+- **GUI needs the desktop capability**, which is a separate install because the
+  base runtime deliberately carries no graphics stack at all — that is what
+  keeps it at 763 MiB and a command at ~300 ms. `winquick desktop start` tells
+  you exactly what to run if anything is missing.
+- **One process per run.** A run starts one Windows process and throws the
+  environment away afterwards; `cmd /c`, a PowerShell script or a build tool can
+  do as much work inside that as you like. What does not exist is an interactive
+  session you type into over time. The desktop capability is the closest thing:
+  it stays up between commands.
+- **Output arrives when the command finishes**, rather than streaming as it is
+  produced. The guest has no live channel back to the Mac that does not need a
+  driver or a compiled helper in the guest; see docs/architecture.md.
+
+## Commands
 
 ## Commands
 

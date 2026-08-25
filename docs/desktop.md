@@ -215,6 +215,41 @@ term, matches something else, and answers confidently about the wrong control.
 non-editable combo box exposes no value pattern of its own — "which item is
 chosen" is the thing people actually want to read.
 
+## Addressing controls in WinForms
+
+WPF gives every named control an AutomationId for free: `x:Name="SaveButton"`
+becomes `--automation-id SaveButton`. **WinForms does not.** A WinForms control
+exposes an AutomationId only if its `Name` property is set:
+
+```csharp
+var save = new Button { Text = "Save", Name = "SaveButton" };   // --automation-id SaveButton
+```
+
+Without it, `--automation-id` finds nothing. Two things still work:
+
+* `AccessibleName` surfaces as the UI Automation **Name**, so
+  `--name SaveButton --control-type Button` addresses it.
+* `--control-type` narrows a name that matches more than one element — a
+  WinForms combo box reports both the box and its inner text with the same name,
+  so the type is what separates them.
+
+Setting `Name` is the better habit: it is what an automated test will look for,
+and it costs one property.
+
+## Capturing one of several identical windows
+
+`--title` matches on substring, so two windows of the same application are
+ambiguous and WinQuick refuses to guess. `winquick desktop windows` reports each
+window's handle, and `--hwnd` takes it:
+
+```console
+$ winquick desktop windows | grep hwnd
+$ winquick desktop screenshot one.png --hwnd 131146
+$ winquick desktop get --hwnd 131146 --automation-id StatusText
+```
+
+`screenshot`, `get`, `tree`, `find` and the interaction verbs all accept it.
+
 ## Sessions
 
 ```
