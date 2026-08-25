@@ -24,3 +24,6 @@ winquick-artifacts/
 # .NET build output from examples/ and guest/
 bin/
 obj/
+
+# Local working instructions, not published
+CLAUDE.md
