@@ -60,7 +60,9 @@ is installed or anything about the machine changes.
 
 Measured over 30 consecutive sessions, each verified by launching a WPF
 application, reading its UI Automation tree and taking a screenshot before being
-stopped: 30/30, min 373 ms, p50 380 ms, p95 399 ms, max 402 ms.
+stopped: 30/30, min 373 ms, p50 380 ms, mean 382 ms, p95 399 ms, max 402 ms.
+
+`winquick run` is unchanged: 30 runs, p50 308 ms, max 323 ms, no failures.
 
 Two other things came out of that work:
 
