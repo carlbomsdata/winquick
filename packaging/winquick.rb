@@ -11,7 +11,7 @@ class Winquick < Formula
   license "Apache-2.0"
 
   url "https://github.com/Carlboms-Data-AB/winquick/releases/download/v0.2.0/winquick-0.2.0-darwin-arm64.tar.gz"
-  sha256 "1117b01fcb4a6960d1156fec7e56fbf27b8776bebcde0fd90e3a5249e9e512e0"
+  sha256 "59ea8e5dc92a2c213924161bc12b2e6234705418d2dbaee666fff82d111040bb"
 
   # Apple Silicon only: the guest is ARM64 Windows and acceleration comes from
   # Apple's Hypervisor Framework.
