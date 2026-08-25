@@ -31,6 +31,23 @@ The same applies to PowerShell and .NET: WinQuick downloads them from Microsoft
 to your machine and builds local volumes from them. It does not redistribute
 them.
 
+## VirtIO drivers: obtained by you, staged locally
+
+The desktop capability needs a display driver, because Validation OS has none —
+it registers the `BasicDisplay` service but ships no `BasicDisplay.sys`. WinQuick
+uses Red Hat's `viogpudo` from the `virtio-win` ISO.
+
+WinQuick does not redistribute it. You download the ISO from Red Hat and point
+`winquick capability install desktop --virtio` at it. The driver is staged into
+the desktop image built on your machine, under `~/.winquick/`, and stays there.
+
+The drivers are three-clause BSD, which permits redistribution with the notice
+attached; WinQuick simply has no reason to redistribute them, and does not. See
+[THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
+
+The images WinQuick generates are subject to the same rule as the base image:
+they contain Microsoft software and must not be redistributed.
+
 ## GPL components: separate programs, not linked
 
 WinQuick uses three external programs. None of them is linked into the WinQuick
