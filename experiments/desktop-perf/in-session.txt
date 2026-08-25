@@ -1,0 +1,13 @@
+=== in-session operation timings at the release defaults (2 vCPU / 2048 MiB) ===
+  launch                 27 ms
+  first window ready     661 ms
+  get                    21 ms (mean of 5)
+  tree                   20 ms (mean of 5)
+  type                   17 ms (mean of 5)
+  click                  19 ms (mean of 5)
+  select                 17 ms (mean of 5)
+  toggle                 18 ms (mean of 5)
+  key                    17 ms (mean of 5)
+  screenshot desktop     127 ms
+  screenshot window      59 ms
+  stop                   111 ms
