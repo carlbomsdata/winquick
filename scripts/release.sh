@@ -68,7 +68,9 @@ mkdir -p "$DIST"
 # the mtime it would otherwise stamp in.
 ( cd "$DIST" && find "$NAME" -exec touch -h -t 200001010000.00 {} + ) 2>/dev/null || true
 ( cd "$DIST" && find "$NAME" | LC_ALL=C sort > "$DIST/.filelist" )
-( cd "$DIST" && tar -cf "$DIST/.$NAME.tar" --format ustar \
+# -n: the file list already names every directory, so letting tar recurse into
+# them as well would archive each file once per ancestor directory.
+( cd "$DIST" && tar -cf "$DIST/.$NAME.tar" --format ustar -n \
     --uid 0 --gid 0 --uname root --gname root -T "$DIST/.filelist" )
 gzip -n -9 -c "$DIST/.$NAME.tar" > "$DIST/$NAME.tar.gz"
 rm -f "$DIST/.$NAME.tar" "$DIST/.filelist"
