@@ -62,7 +62,16 @@ done
 
 echo "==> packaging"
 mkdir -p "$DIST"
-tar -C "$DIST" -czf "$DIST/$NAME.tar.gz" "$NAME"
+# Deterministic: the same source has to produce the same bytes, or the checksum
+# in the Homebrew formula stops meaning anything the moment anyone rebuilds.
+# Sorted entries, fixed timestamps, no owner names, and a gzip header without
+# the mtime it would otherwise stamp in.
+( cd "$DIST" && find "$NAME" -exec touch -h -t 200001010000.00 {} + ) 2>/dev/null || true
+( cd "$DIST" && find "$NAME" | LC_ALL=C sort > "$DIST/.filelist" )
+( cd "$DIST" && tar -cf "$DIST/.$NAME.tar" --format ustar \
+    --uid 0 --gid 0 --uname root --gname root -T "$DIST/.filelist" )
+gzip -n -9 -c "$DIST/.$NAME.tar" > "$DIST/$NAME.tar.gz"
+rm -f "$DIST/.$NAME.tar" "$DIST/.filelist"
 shasum -a 256 "$DIST/$NAME.tar.gz" | sed "s|$DIST/||" > "$DIST/$NAME.tar.gz.sha256"
 
 echo "==> GPL corresponding source"
