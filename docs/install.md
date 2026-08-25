@@ -37,6 +37,13 @@ Then `winquick doctor` to check, and `winquick setup`.
 
 ## Gatekeeper
 
+The v0.2.0 release is **not signed and not notarized** — no Apple Developer ID
+was available when it was built. macOS therefore quarantines the download.
+
+Clear the attribute on the file you installed, and nothing broader. Do not
+disable Gatekeeper system-wide.
+
+
 Release binaries are signed and notarized where credentials allow. If macOS
 refuses to run a downloaded binary, either the archive was not notarized or the
 quarantine attribute needs clearing:
