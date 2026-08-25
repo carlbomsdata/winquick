@@ -47,12 +47,30 @@ pub const IMAGE_NAME: &str = "desktop-arm64";
 /// The capability name users type. Unlike the others it is built, not downloaded.
 pub const CAPABILITY: &str = "desktop";
 
-/// Marker identifying the volume carrying the bridge and the application.
+/// Marker identifying the volume carrying the bridge.
 const DESK_MARKER: &str = "WQDESK.TXT";
+/// Marker identifying the volume carrying the application under test.
+const APP_MARKER: &str = "WQAPP.TXT";
+/// The application volume is a fixed size so its filesystem identity survives
+/// being refilled between sessions — the guest remembers that identity across
+/// the freeze.
+const APP_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
-/// Windows boots to a usable desktop in about seven seconds, but a cold host
-/// cache or a busy machine can stretch that.
+/// Windows boots to a usable desktop in about ten seconds, but a cold host
+/// cache or a busy machine can stretch that. Only the one-off preparation pays
+/// this; a session restores in well under a second.
 const READY_TIMEOUT: Duration = Duration::from_secs(240);
+
+/// Defaults for a desktop session.
+///
+/// Measured rather than guessed. Four processors is no faster than two for
+/// anything a desktop session does — start, launch, UI automation, capture are
+/// all within noise of each other — while taking twice as much of the host away
+/// from whatever else is running. And RAM costs twice: it is the session's
+/// resident size *and* most of the prepared state, which has to be read back on
+/// every start. Halving 4096 to 2048 took a start from 507ms to 349ms.
+pub const DEFAULT_MEMORY_MB: u32 = 2048;
+pub const DEFAULT_CPUS: u32 = 2;
 
 pub fn base_image() -> Result<PathBuf> {
     Ok(paths::root()?.join("images").join(IMAGE_NAME).join("base.qcow2"))
@@ -75,8 +93,11 @@ fn mailbox_path() -> Result<PathBuf> {
 fn vars_path() -> Result<PathBuf> {
     Ok(dir()?.join("vars.fd"))
 }
-fn files_path() -> Result<PathBuf> {
-    Ok(dir()?.join("files.img"))
+fn bridge_img_path() -> Result<PathBuf> {
+    Ok(dir()?.join("bridge.img"))
+}
+fn app_img_path() -> Result<PathBuf> {
+    Ok(dir()?.join("app.img"))
 }
 fn control_path() -> Result<PathBuf> {
     Ok(dir()?.join("control.img"))
@@ -129,6 +150,13 @@ pub struct StartOptions {
 }
 
 pub fn start(opts: &StartOptions) -> Result<()> {
+    let t0 = Instant::now();
+    let phase = |what: &str| {
+        if opts.verbose {
+            eprintln!("winquick: [{:>7.0}ms] {what}", t0.elapsed().as_secs_f64() * 1000.0);
+        }
+    };
+
     let base = base_image()?;
     if !base.exists() {
         bail!(
@@ -146,31 +174,6 @@ pub fn start(opts: &StartOptions) -> Result<()> {
         );
     }
 
-    let d = dir()?;
-    // A dead session's leftovers would otherwise be reused as if they were live.
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d)?;
-
-    let q = qemu::Qemu::locate()?;
-    let overlay = overlay_path()?;
-    q.create_overlay(&base, &overlay)
-        .context("creating the session's disposable disk")?;
-
-    let mbox = mailbox_path()?;
-    mailbox::create_template(&mbox)?;
-
-    let uefi_code = paths::uefi_code()
-        .ok_or_else(|| anyhow!("QEMU's UEFI firmware is missing; reinstall QEMU"))?;
-    let vars = vars_path()?;
-    // The variable store must be writable or Windows will not boot at all.
-    std::fs::File::create(&vars)?.set_len(64 * 1024 * 1024)?;
-
-    let files = files_path()?;
-    build_files_volume(&files, opts.app.as_deref())?;
-
-    let control_disk = control_path()?;
-    crate::control::create(&control_disk)?;
-
     let installed = capability::installed()?;
     if !installed.iter().any(|c| c.name == "dotnet-sdk") {
         bail!(
@@ -179,29 +182,80 @@ pub fn start(opts: &StartOptions) -> Result<()> {
              Install it with:\n    winquick capability install dotnet-sdk"
         );
     }
-    // Cloned, never shared. Windows writes to a volume when it mounts one, so
-    // attaching the installed images directly would leave the session's
-    // fingerprints on them — `winquick run` has always cloned for this reason.
-    // On APFS the clone is free regardless of size.
-    let caps = clone_capabilities(&installed, &d)?;
 
-    let cfg = qemu::DesktopBoot {
-        uefi_code: &uefi_code,
+    let ctx = Ctx::new(opts, &base, &installed)?;
+    let want = ctx.fingerprint()?;
+
+    // A prepared state that no longer matches the world is discarded and
+    // rebuilt rather than run: restoring RAM against a different disk is not a
+    // slightly-wrong virtual machine, it is an undefined one.
+    let ready = match crate::state::load_desktop_valid(&want) {
+        Ok(Some(r)) => Some(r),
+        Ok(None) => None,
+        Err(e) => {
+            if opts.verbose {
+                eprintln!("winquick: {e:#}");
+            }
+            let _ = crate::state::discard_desktop();
+            None
+        }
+    };
+
+    let ready = match ready {
+        Some(r) => r,
+        None => {
+            println!("Preparing the desktop environment. This happens once, and takes about half a minute.");
+            build_prepared_state(&ctx, &want)?
+        }
+    };
+    phase("prepared state ready");
+
+    let d = dir()?;
+    // A dead session's leftovers would otherwise be reused as if they were live.
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d)?;
+
+    // Clones, not copies: on APFS these cost nothing whatever the size.
+    let overlay = overlay_path()?;
+    let vars = vars_path()?;
+    let mbox = mailbox_path()?;
+    let bridge_img = bridge_img_path()?;
+    let app_img = app_img_path()?;
+    let control_disk = control_path()?;
+    qemu::clone_file(&ready.disk(), &overlay)?;
+    qemu::clone_file(&ready.vars(), &vars)?;
+    qemu::clone_file(&ready.mailbox(), &mbox)?;
+    qemu::clone_file(&ready.bridge(), &bridge_img)?;
+    qemu::clone_file(&ready.app(), &app_img)?;
+    qemu::clone_file(&ready.control(), &control_disk)?;
+    // This session's application goes into the volume the frozen guest already
+    // knows the identity of; only the contents differ.
+    if let Some(app) = opts.app.as_deref() {
+        if !app.is_dir() {
+            bail!("{} is not a directory", app.display());
+        }
+        capability::refill(&app_img, app, "app")?;
+    }
+    let caps = clone_capabilities(&ctx.capabilities, &d)?;
+    phase("volumes cloned");
+
+    let child = ctx.q.boot_desktop(&qemu::DesktopBoot {
+        uefi_code: &ctx.uefi_code,
         uefi_vars: &vars,
         root_disk: &overlay,
         mailbox: &mbox,
-        files: &files,
+        bridge: &bridge_img,
+        app: &app_img,
         control: &control_disk,
         capabilities: &caps,
         memory_mb: opts.memory_mb,
         cpus: opts.cpus,
         serial_log: &log_path()?,
         qmp_socket: &qmp_path()?,
-    };
-    // Deliberately not registered with the interrupt handler: this process is
-    // meant to outlive the CLI invocation that started it.
-    let child = q.boot_desktop(&cfg)?;
+        incoming: Some(&ready.state_file()),
+    })?;
     let pid = child.id();
+    phase("qemu spawned");
 
     let session = Session {
         pid,
@@ -210,74 +264,232 @@ pub fn start(opts: &StartOptions) -> Result<()> {
     };
     std::fs::write(session_file()?, serde_json::to_vec_pretty(&session)?)?;
 
-    if opts.verbose {
-        eprintln!("winquick: desktop guest started as pid {pid}; waiting for the agent");
-    }
-    let started = Instant::now();
     let bring_up = || -> Result<()> {
-        wait_ready(&mbox, pid, READY_TIMEOUT)?;
-        if opts.verbose {
-            eprintln!("winquick: guest booted in {:.1}s; starting the bridge",
-                started.elapsed().as_secs_f64());
+        let mut q = crate::qmp::Qmp::connect(&qmp_path()?, Duration::from_secs(20))?;
+        q.wait_incoming(Duration::from_secs(60))?;
+        q.cont()?;
+        phase("guest restored");
+
+        // The guest was frozen with a different application volume attached, so
+        // it is holding a cached directory for contents that have since been
+        // replaced. This is what makes it look again.
+        let r = call(&["remount".to_string()], Duration::from_secs(60))?;
+        if r.exit_code != 0 {
+            bail!("{}", describe_failure(&r));
         }
-        // One command through the mailbox, before anything else touches it: run
-        // the bridge as a server on the control disk. The agent blocks inside it
-        // and never polls the mailbox again, which is what keeps the host and
-        // the guest from writing to that filesystem at the same time.
-        mailbox::inject_command(&mbox, &bridge_command(&["serve".to_string()]), None, "serve")?;
-        wait_serving(pid, READY_TIMEOUT)?;
+        phase("session ready");
         Ok(())
     };
     bring_up().inspect_err(|_| {
         let _ = stop();
     })?;
+
     if opts.verbose {
-        eprintln!("winquick: desktop ready in {:.1}s", started.elapsed().as_secs_f64());
+        eprintln!("winquick: desktop ready in {:.0}ms", t0.elapsed().as_secs_f64() * 1000.0);
     }
     Ok(())
 }
 
-/// Wait until the bridge answers on the control channel.
-fn wait_serving(pid: u32, timeout: Duration) -> Result<()> {
-    let deadline = Instant::now() + timeout;
-    let mut last: Option<String> = None;
-    while Instant::now() < deadline {
-        if !alive(pid) {
-            bail!(
-                "the desktop guest exited while the bridge was starting.\n\n\
-                 Its console output is in {}",
-                log_path()?.display()
+/// Everything the desktop path needs to describe the machine it runs on.
+struct Ctx {
+    q: qemu::Qemu,
+    base: PathBuf,
+    uefi_code: PathBuf,
+    capabilities: Vec<capability::Installed>,
+    memory_mb: u32,
+    cpus: u32,
+    verbose: bool,
+}
+
+impl Ctx {
+    fn new(opts: &StartOptions, base: &Path, installed: &[capability::Installed]) -> Result<Self> {
+        Ok(Self {
+            q: qemu::Qemu::locate()?,
+            base: base.to_path_buf(),
+            uefi_code: paths::uefi_code()
+                .ok_or_else(|| anyhow!("QEMU's UEFI firmware is missing; reinstall QEMU"))?,
+            capabilities: installed.to_vec(),
+            memory_mb: opts.memory_mb,
+            cpus: opts.cpus,
+            verbose: opts.verbose,
+        })
+    }
+
+    fn fingerprint(&self) -> Result<crate::state::DesktopFingerprint> {
+        use crate::state::{fnv1a, FileId};
+        let mut caps = Vec::new();
+        for c in &self.capabilities {
+            caps.push((c.name.clone(), FileId::of(&c.image)?));
+        }
+        Ok(crate::state::DesktopFingerprint {
+            winquick_version: env!("CARGO_PKG_VERSION").to_string(),
+            protocol_version: crate::state::PROTOCOL_VERSION,
+            control_protocol_version: crate::control::PROTOCOL_VERSION,
+            desktop_image: FileId::of(&self.base)?,
+            agent_hash: fnv1a(crate::setup::AGENT.as_bytes()),
+            bridge_hash: bridge_identity()?,
+            qemu_binary: FileId::of(&self.q.system)?,
+            qemu_version: self.q.version()?,
+            firmware: FileId::of(&self.uefi_code)?,
+            memory_mb: self.memory_mb,
+            cpus: self.cpus,
+            machine: qemu::MACHINE.to_string(),
+            capabilities: caps,
+            devices: qemu::desktop_device_signature(
+                self.memory_mb,
+                self.cpus,
+                self.capabilities.len(),
+            ),
+        })
+    }
+}
+
+/// Identity of the built guest bridge: every file's name and size.
+///
+/// A rebuilt bridge is a different program, and a prepared state is a frozen
+/// guest already running the old one.
+fn bridge_identity() -> Result<String> {
+    let dir = bridge_dir()?;
+    let mut entries: Vec<(String, u64)> = std::fs::read_dir(&dir)
+        .with_context(|| format!("reading {}", dir.display()))?
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().into_string().ok()?;
+            let len = e.metadata().ok()?.len();
+            Some((name, len))
+        })
+        .collect();
+    entries.sort();
+    let joined: String = entries.iter().map(|(n, l)| format!("{n}:{l};")).collect();
+    Ok(crate::state::fnv1a(joined.as_bytes()))
+}
+
+/// Boot a desktop guest once, wait until the bridge answers, and freeze it.
+fn build_prepared_state(
+    ctx: &Ctx,
+    want: &crate::state::DesktopFingerprint,
+) -> Result<crate::state::DesktopReady> {
+    let t0 = Instant::now();
+    let work = paths::root()?.join("work").join("desktop-state");
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work)?;
+
+    let overlay = work.join("root.qcow2");
+    let vars = work.join("uefi-vars.fd");
+    let mbox = work.join("mailbox.img");
+    let bridge_img = work.join("bridge.img");
+    let app_img = work.join("app.img");
+    let control_disk = work.join("control.img");
+    let qmp_sock = work.join("qmp.sock");
+    let serial = work.join("serial.log");
+
+    ctx.q.create_overlay(&ctx.base, &overlay)?;
+    std::fs::File::create(&vars)?.set_len(64 * 1024 * 1024)?;
+    mailbox::create_template(&mbox)?;
+    build_bridge_volume(&bridge_img)?;
+    // Empty, but the right size: sessions refill it without reformatting, so
+    // the filesystem identity the frozen guest remembers stays valid.
+    capability::build_sized(&app_img, Path::new("/nonexistent"), "app", APP_BYTES)?;
+    capability::mark(&app_img, APP_MARKER, "app")?;
+    crate::control::create(&control_disk)?;
+    let caps = clone_capabilities(&ctx.capabilities, &work)?;
+
+    let mut child = ctx.q.boot_desktop(&qemu::DesktopBoot {
+        uefi_code: &ctx.uefi_code,
+        uefi_vars: &vars,
+        root_disk: &overlay,
+        mailbox: &mbox,
+        bridge: &bridge_img,
+        app: &app_img,
+        control: &control_disk,
+        capabilities: &caps,
+        memory_mb: ctx.memory_mb,
+        cpus: ctx.cpus,
+        serial_log: &serial,
+        qmp_socket: &qmp_sock,
+        incoming: None,
+    })?;
+    crate::interrupt::watch_child(child.id());
+    let pid = child.id();
+
+    let sdir = crate::state::desktop_state_dir()?;
+    let build = (|| -> Result<crate::state::DesktopMeta> {
+        let mut q = crate::qmp::Qmp::connect(&qmp_sock, Duration::from_secs(30))?;
+        wait_ready(&mbox, pid, READY_TIMEOUT)?;
+        if ctx.verbose {
+            eprintln!("winquick: guest booted in {:.1}s", t0.elapsed().as_secs_f64());
+        }
+        mailbox::inject_command(&mbox, &bridge_command(&["serve".to_string()]), None, "serve")?;
+        wait_serving_on(&control_disk, pid, READY_TIMEOUT)?;
+        if ctx.verbose {
+            eprintln!("winquick: bridge answering after {:.1}s", t0.elapsed().as_secs_f64());
+        }
+
+        q.stop()?;
+        std::fs::create_dir_all(&sdir)?;
+        let state_file = sdir.join("ready.state");
+        let _ = std::fs::remove_file(&state_file);
+        q.migrate_to_file(&state_file, Duration::from_secs(180))?;
+        // Quit cleanly rather than killing: the block layer has to flush before
+        // the disks we are about to clone are trustworthy.
+        let _ = q.command("quit", serde_json::json!({}));
+        let _ = child.wait();
+
+        qemu::clone_file(&overlay, &sdir.join("ready-disk.qcow2"))?;
+        qemu::clone_file(&vars, &sdir.join("ready-vars.fd"))?;
+        qemu::clone_file(&mbox, &sdir.join("ready-mailbox.img"))?;
+        qemu::clone_file(&bridge_img, &sdir.join("ready-bridge.img"))?;
+        qemu::clone_file(&app_img, &sdir.join("ready-app.img"))?;
+        qemu::clone_file(&control_disk, &sdir.join("ready-control.img"))?;
+
+        let meta = crate::state::DesktopMeta {
+            fingerprint: want.clone(),
+            created_unix: now_unix(),
+            state_bytes: std::fs::metadata(&state_file)?.len(),
+        };
+        crate::state::save_desktop(&meta)?;
+        if ctx.verbose {
+            eprintln!(
+                "winquick: prepared desktop state built in {:.1}s ({:.0} MiB)",
+                t0.elapsed().as_secs_f64(),
+                meta.state_bytes as f64 / (1024.0 * 1024.0)
             );
         }
-        match call(&["windows".to_string()], Duration::from_secs(5)) {
-            Ok(r) if r.exit_code == 0 => return Ok(()),
-            Ok(r) => last = Some(describe_failure(&r)),
-            Err(e) => last = Some(format!("{e:#}")),
+        Ok(meta)
+    })();
+
+    let _ = child.kill();
+    let _ = child.wait();
+    crate::interrupt::clear_child();
+    let _ = std::fs::remove_dir_all(&work);
+
+    match build {
+        Ok(meta) => Ok(crate::state::DesktopReady { dir: sdir, meta }),
+        Err(e) => {
+            let _ = crate::state::discard_desktop();
+            Err(e)
         }
     }
-    // The agent captured whatever the bridge printed before it gave up. Without
-    // this the only symptom is silence, which says nothing about whether the
-    // bridge crashed, never ran, or ran and could not find its control disk.
-    let mut detail = String::new();
-    if let Ok(mbox) = mailbox_path() {
-        for (label, file) in [("stdout", mailbox::OUT_FILE), ("stderr", mailbox::ERR_FILE)] {
-            if let Some(raw) = mailbox::probe(&mbox, file) {
-                let text = String::from_utf8_lossy(&raw).replace('\r', "");
-                if !text.trim().is_empty() {
-                    detail.push_str(&format!("\n\nBridge {label}:\n{}", text.trim()));
-                }
-            }
-        }
+}
+
+/// Build the volume the bridge runs from.
+fn build_bridge_volume(image: &Path) -> Result<()> {
+    let src = bridge_dir()?;
+    if !src.join("wqui.exe").exists() {
+        bail!(
+            "the desktop bridge is missing from {}.\n\n\
+             Rebuild it with:\n    winquick capability install desktop --force",
+            src.display()
+        );
     }
-    bail!(
-        "the desktop bridge did not start within {}s{}{detail}\n\nThe guest's console output is in {}",
-        timeout.as_secs(),
-        match last {
-            Some(m) => format!("\n\nLast error: {m}"),
-            None => String::new(),
-        },
-        log_path()?.display()
-    )
+    let staging = paths::root()?.join("work").join("bridge-volume");
+    let _ = std::fs::remove_dir_all(&staging);
+    std::fs::create_dir_all(&staging)?;
+    copy_tree(&src, &staging.join("bridge"))?;
+    std::fs::write(staging.join(DESK_MARKER), b"winquick-desktop\r\n")?;
+    capability::build_flat(image, &staging)?;
+    let _ = std::fs::remove_dir_all(&staging);
+    Ok(())
 }
 
 fn wait_ready(mbox: &Path, pid: u32, timeout: Duration) -> Result<()> {
@@ -299,6 +511,56 @@ fn wait_ready(mbox: &Path, pid: u32, timeout: Duration) -> Result<()> {
         "the desktop guest did not become ready within {}s.\n\n\
          Its console output is in {}",
         timeout.as_secs(),
+        log_path()?.display()
+    )
+}
+
+/// Wait until the bridge answers on a control disk.
+///
+/// Takes the disk rather than assuming the running session's, because it is
+/// used both while preparing a state and while bringing a session up.
+fn wait_serving_on(disk: &Path, pid: u32, timeout: Duration) -> Result<()> {
+    let deadline = Instant::now() + timeout;
+    let mut last: Option<String> = None;
+    while Instant::now() < deadline {
+        if !alive(pid) {
+            bail!(
+                "the desktop guest exited while the bridge was starting.\n\n\
+                 Its console output is in {}",
+                log_path()?.display()
+            );
+        }
+        let attempt = crate::control::Channel::open(disk).and_then(|mut c| {
+            c.call(&["windows".to_string()], Duration::from_secs(5), || alive(pid))
+        });
+        match attempt {
+            Ok(r) if r.exit_code == 0 => return Ok(()),
+            Ok(r) => last = Some(String::from_utf8_lossy(&r.body).trim().to_string()),
+            Err(e) => last = Some(format!("{e:#}")),
+        }
+    }
+
+    // The agent captured whatever the bridge printed before it gave up. Without
+    // this the only symptom is silence, which says nothing about whether the
+    // bridge crashed, never ran, or ran and could not find its control disk.
+    let mut detail = String::new();
+    if let Ok(mbox) = mailbox_path() {
+        for (label, file) in [("stdout", mailbox::OUT_FILE), ("stderr", mailbox::ERR_FILE)] {
+            if let Some(raw) = mailbox::probe(&mbox, file) {
+                let text = String::from_utf8_lossy(&raw).replace('\r', "");
+                if !text.trim().is_empty() {
+                    detail.push_str(&format!("\n\nBridge {label}:\n{}", text.trim()));
+                }
+            }
+        }
+    }
+    bail!(
+        "the desktop bridge did not start within {}s{}{detail}\n\nThe guest's console output is in {}",
+        timeout.as_secs(),
+        match last {
+            Some(m) => format!("\n\nLast error: {m}"),
+            None => String::new(),
+        },
         log_path()?.display()
     )
 }
@@ -464,39 +726,11 @@ pub fn describe_failure(r: &CallResult) -> String {
 
 // ------------------------------------------------------- the files volume
 
-/// Build the volume carrying the bridge and, optionally, an application.
-///
-/// The bridge is copied out of the installed desktop capability so a session
-/// never depends on anything outside `~/.winquick`.
-fn build_files_volume(image: &Path, app: Option<&Path>) -> Result<()> {
-    let staging = dir()?.join("files");
-    let _ = std::fs::remove_dir_all(&staging);
-    std::fs::create_dir_all(&staging)?;
-
-    let bridge_src = bridge_dir()?;
-    if !bridge_src.join("wqui.exe").exists() {
-        bail!(
-            "the desktop bridge is missing from {}.\n\n\
-             Rebuild it with:\n    winquick capability install desktop --force",
-            bridge_src.display()
-        );
-    }
-    copy_tree(&bridge_src, &staging.join("bridge"))?;
-
-    if let Some(app) = app {
-        if !app.is_dir() {
-            bail!("{} is not a directory", app.display());
-        }
-        copy_tree(app, &staging.join("app"))?;
-    }
-    std::fs::write(staging.join(DESK_MARKER), b"winquick-desktop\r\n")?;
-
-    capability::build_flat(image, &staging)?;
-    let _ = std::fs::remove_dir_all(&staging);
-    Ok(())
-}
-
 /// Give the session its own copy of every capability volume.
+///
+/// Cloned, never shared. Windows writes to a volume when it mounts one, so
+/// attaching the installed images directly would leave the session's
+/// fingerprints on them. On APFS the clone is free regardless of size.
 fn clone_capabilities(installed: &[capability::Installed], dir: &Path) -> Result<Vec<PathBuf>> {
     let mut out = Vec::new();
     for (i, c) in installed.iter().enumerate() {

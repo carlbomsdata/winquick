@@ -338,6 +338,72 @@ PYTREE
   check "a desktop session leaves capability volumes untouched" "$capsum_before" "$capsum_after"
 fi
 
+# The prepared desktop state is what makes a session start in under half a
+# second instead of ten. It has to be created, reused, and thrown away the
+# moment it stops describing the machine.
+if [ -f "$DESKBASE" ] && [ -d "$WQ_UIAPP" ]; then
+  DSTATE=~/.winquick/states/desktop-arm64
+  "$WQ" desktop stop >/dev/null 2>&1
+
+  "$WQ" desktop start --app "$WQ_UIAPP" >/dev/null 2>&1
+  check "a desktop session prepares its state" "$([ -f $DSTATE/ready.json ] && echo yes)" "yes"
+  "$WQ" desktop stop >/dev/null 2>&1
+
+  # Reuse: the second start must not rebuild, which is visible as the absence
+  # of the one-off preparation notice.
+  "$WQ" desktop start --app "$WQ_UIAPP" >/tmp/wq_o 2>&1
+  grep -q "Preparing the desktop" /tmp/wq_o \
+    && bad "prepared state reuse" "rebuilt when it should have been reused" \
+    || ok "a prepared state is reused rather than rebuilt"
+  "$WQ" desktop stop >/dev/null 2>&1
+
+  # Corruption must be survivable: a truncated fingerprint is discarded and
+  # rebuilt, not run.
+  echo "not json" > $DSTATE/ready.json
+  "$WQ" desktop start --app "$WQ_UIAPP" >/tmp/wq_o 2>&1
+  check "a corrupt prepared state is rebuilt, not run" "$?" "0"
+  "$WQ" desktop stop >/dev/null 2>&1
+
+  # A missing piece is the same story: all of it restores together or none.
+  rm -f $DSTATE/ready-app.img
+  "$WQ" desktop start --app "$WQ_UIAPP" >/tmp/wq_o 2>&1
+  check "an incomplete prepared state is rebuilt" "$?" "0"
+  "$WQ" desktop stop >/dev/null 2>&1
+
+  # Changing the machine has to invalidate it. A different vCPU count is a
+  # different machine, and migration state is only valid against its own.
+  "$WQ" desktop start --app "$WQ_UIAPP" --cpus 1 >/tmp/wq_o 2>&1
+  grep -q "Preparing the desktop" /tmp/wq_o \
+    && ok "a changed vcpu count invalidates the prepared state" \
+    || bad "topology invalidation" "reused a state built for another machine"
+  "$WQ" desktop stop >/dev/null 2>&1
+  # Put the default-shaped state back so later checks are not slowed down.
+  "$WQ" desktop start --app "$WQ_UIAPP" >/dev/null 2>&1
+  "$WQ" desktop stop >/dev/null 2>&1
+
+  # Two sessions in a row must not share anything the guest wrote.
+  "$WQ" desktop start --app "$WQ_UIAPP" >/dev/null 2>&1
+  "$WQ" desktop launch 'app\DeviceConfig.exe' >/dev/null 2>&1 || "$WQ" desktop launch 'app\DemoApp.exe' >/dev/null 2>&1
+  "$WQ" desktop wait-window --title "Device Configuration" --timeout 60000 >/dev/null 2>&1 \
+    || "$WQ" desktop wait-window --title "WinQuick Demo" --timeout 60000 >/dev/null 2>&1
+  "$WQ" desktop type --automation-id DeviceNameBox --text "LEAKED" >/dev/null 2>&1 \
+    || "$WQ" desktop type --automation-id NameBox --text "LEAKED" >/dev/null 2>&1
+  statesum_before=$(shasum -a 256 $DSTATE/ready-disk.qcow2 $DSTATE/ready.state | shasum -a 256)
+  "$WQ" desktop stop >/dev/null 2>&1
+
+  "$WQ" desktop start --app "$WQ_UIAPP" >/dev/null 2>&1
+  "$WQ" desktop launch 'app\DeviceConfig.exe' >/dev/null 2>&1 || "$WQ" desktop launch 'app\DemoApp.exe' >/dev/null 2>&1
+  "$WQ" desktop wait-window --title "Device Configuration" --timeout 60000 >/dev/null 2>&1 \
+    || "$WQ" desktop wait-window --title "WinQuick Demo" --timeout 60000 >/dev/null 2>&1
+  fresh=$("$WQ" desktop get --automation-id DeviceNameBox 2>/dev/null || "$WQ" desktop get --automation-id NameBox 2>/dev/null)
+  echo "$fresh" | grep -q LEAKED \
+    && bad "session disposability" "the previous session's typing survived" \
+    || ok "a restored session starts clean"
+  "$WQ" desktop stop >/dev/null 2>&1
+  statesum_after=$(shasum -a 256 $DSTATE/ready-disk.qcow2 $DSTATE/ready.state | shasum -a 256)
+  check "sessions never write to the prepared state" "$statesum_before" "$statesum_after"
+fi
+
 # demo.uitest addresses the WpfDemo window by title, so it only means anything
 # against a published WpfDemo.
 if [ -f "$DESKBASE" ] && [ -f "$WQ_UIAPP/DemoApp.exe" ]; then

@@ -29,6 +29,12 @@ const WORKSPACE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// Artifact volume. Sparse, so an unused one costs nothing.
 const ARTIFACT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
+/// Defaults shared by the CLI and by everything that runs a command on its
+/// behalf. They are part of the prepared guest's fingerprint, so a caller that
+/// picks different ones silently forces a rebuild for everyone else.
+pub const DEFAULT_MEMORY_MB: u32 = 1024;
+pub const DEFAULT_CPUS: u32 = 4;
+
 pub struct Options {
     pub memory_mb: u32,
     pub cpus: u32,
