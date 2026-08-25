@@ -915,6 +915,17 @@ fn doctor(smoke: bool) -> Result<i32> {
         Some(sess) => println!("  {} {:<20} running as pid {}", tick(true), "session", sess.pid),
         None => println!("  {} {:<20} none running", tick(true), "session"),
     }
+    // The bridge is built from source inside Windows at install time, so an
+    // installation that lost these files fails at the very last step of
+    // `capability install desktop`.
+    match servicing::bridge_source() {
+        Ok(p) => println!("  {} {:<20} {}", tick(true), "bridge sources", p.display()),
+        Err(_) => println!(
+            "  {} {:<20} missing (the installation is incomplete)",
+            tick(false),
+            "bridge sources"
+        ),
+    }
 
     println!("\nDisk");
     let free = free_bytes(&paths::root()?).unwrap_or(0);

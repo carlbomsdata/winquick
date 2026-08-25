@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## v0.2.0 — the desktop capability
 
-### The desktop capability
+### Windows GUI applications, built and driven from the Mac
 
 Windows GUI applications, built and driven from the Mac.
 

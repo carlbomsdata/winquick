@@ -436,7 +436,7 @@ fn build_bridge(verbose: bool) -> Result<()> {
 }
 
 /// The bridge sources, either from an installed copy or a source checkout.
-fn bridge_source() -> Result<PathBuf> {
+pub fn bridge_source() -> Result<PathBuf> {
     let mut candidates = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
         let exe = exe.canonicalize().unwrap_or(exe);
