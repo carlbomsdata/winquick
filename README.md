@@ -17,11 +17,17 @@ image and leaves nothing behind.
 
 | | |
 |---|---|
-| Windows command | **~288 ms** |
-| PowerShell command | ~840 ms |
-| Desktop session start | **~380 ms** |
+| Windows command | **~300 ms** |
+| PowerShell command | ~870 ms |
+| Desktop session start | **~390 ms** |
 | UI automation step in a session | ~20 ms |
 | Host | Apple Silicon macOS (Linux and Windows hosts planned) |
+
+```console
+# Install: download the release archive for Apple Silicon, then
+tar -xzf winquick-0.2.0-darwin-arm64.tar.gz
+./winquick-0.2.0-darwin-arm64/bin/winquick setup
+```
 
 ## Why
 
@@ -39,9 +45,20 @@ end.
 
 ## Install
 
+Download `winquick-0.2.0-darwin-arm64.tar.gz` from the
+[releases page](https://github.com/Carlboms-Data-AB/winquick/releases), then:
+
 ```console
-brew install Carlboms-Data-AB/tap/winquick
+tar -xzf winquick-0.2.0-darwin-arm64.tar.gz
+sudo cp -R winquick-0.2.0-darwin-arm64/* /usr/local/
 winquick setup
+```
+
+The release is not signed or notarized, so macOS quarantines it after download.
+Clear the attribute on the binary you installed — and nothing wider than that:
+
+```console
+xattr -d com.apple.quarantine /usr/local/bin/winquick
 ```
 
 Setup needs Microsoft's Windows validation runtime, which Microsoft distributes
@@ -58,8 +75,7 @@ Setup finishes by booting Windows and running a real command, so it only says
 
 Requirements: an Apple Silicon Mac (M1 or newer) and macOS 13 or later.
 
-Not on Homebrew yet? See [docs/install.md](docs/install.md) for the release
-archive.
+A Homebrew tap will follow. See [docs/install.md](docs/install.md) for details.
 
 ## Use it
 
