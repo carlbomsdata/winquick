@@ -36,7 +36,7 @@ Desktop
   ok   bridge sources       /private/tmp/wq-archive-test/winquick-0.2.0-darwin-arm64/share/winquick/wqui
 
 Disk
-  ok   166 GiB free in /Users/tobiascarlbom/.winquick
+  ok   166 GiB free in ~/.winquick
 --- a real command, from the archive ---
 
 Microsoft Windows [Version 10.0.26100.8972]

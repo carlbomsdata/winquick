@@ -85,7 +85,7 @@ Requirement 10 wants `Saved: PLC-01 (Diagnostic, logging on)`.
 Prompt, in full:
 
 > You are working on a Mac, in the repository at
-> /Users/tobiascarlbom/source/repos/device-config
+> ~/source/repos/device-config
 >
 > Task: Fix this Windows application so it satisfies requirements.md. Build it
 > and verify the actual Windows UI and behaviour before you finish.
