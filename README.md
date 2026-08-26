@@ -115,6 +115,13 @@ winquick run -w . -- dotnet test
 become the working directory. It is copied in and never copied back, so a build
 cannot change your source.
 
+WinQuick builds far more than the SDK's own version: .NET Framework 2.0 through
+4.8.1, netstandard, and net6.0 through net10.0 — including a classic non-SDK
+project. It will build an **x86 WinForms application targeting .NET Framework
+4.0**, a Windows XP-era target, with no Visual Studio anywhere. Which of those
+it can also *run* is a separate question, answered in
+[docs/dotnet.md](docs/dotnet.md).
+
 **Get files back out**
 
 ```console
@@ -328,6 +335,7 @@ winquick clean [--all]                  remove generated data
 - [docs/architecture.md](docs/architecture.md) — how it works
 - [docs/desktop.md](docs/desktop.md) — the desktop capability and UI automation
 - [docs/mcp.md](docs/mcp.md) — the MCP server for AI agents
+- [docs/dotnet.md](docs/dotnet.md) — which .NET targets WinQuick can build
 - [docs/security.md](docs/security.md) — the isolation model, precisely
 - [docs/licensing.md](docs/licensing.md) — what may be redistributed
 - [docs/troubleshooting.md](docs/troubleshooting.md) — when something breaks
