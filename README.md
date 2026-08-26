@@ -27,9 +27,8 @@ Times are medians observed on the development host (Apple Silicon, macOS 26,
 QEMU 11.1), not guaranteed latencies.
 
 ```console
-# Install: download the release archive for Apple Silicon, then
-tar -xzf winquick-0.2.1-darwin-arm64.tar.gz
-./winquick-0.2.1-darwin-arm64/bin/winquick setup
+brew install Carlboms-Data-AB/tap/winquick
+winquick setup
 ```
 
 ## Why
@@ -48,20 +47,23 @@ end.
 
 ## Install
 
-Download `winquick-0.2.1-darwin-arm64.tar.gz` from the
-[releases page](https://github.com/Carlboms-Data-AB/winquick/releases), then:
+```console
+brew install Carlboms-Data-AB/tap/winquick
+winquick setup
+```
+
+Homebrew installs the binary, the `ntfscat`/`ntfscp` helpers and the guest
+bridge sources, and pulls in QEMU and hivex. Nothing is quarantined, so there is
+no `xattr` step.
+
+Or install the release archive by hand — see
+[docs/install.md](docs/install.md), which also covers the Gatekeeper step a
+browser download needs:
 
 ```console
 tar -xzf winquick-0.2.1-darwin-arm64.tar.gz
 sudo cp -R winquick-0.2.1-darwin-arm64/* /usr/local/
 winquick setup
-```
-
-The release is not signed or notarized, so macOS quarantines it after download.
-Clear the attribute on the binary you installed — and nothing wider than that:
-
-```console
-xattr -d com.apple.quarantine /usr/local/bin/winquick
 ```
 
 Setup needs Microsoft's Windows validation runtime, which Microsoft distributes
@@ -78,7 +80,7 @@ Setup finishes by booting Windows and running a real command, so it only says
 
 Requirements: an Apple Silicon Mac (M1 or newer) and macOS 13 or later.
 
-A Homebrew tap will follow. See [docs/install.md](docs/install.md) for details.
+See [docs/install.md](docs/install.md) for details.
 
 ## Use it
 
