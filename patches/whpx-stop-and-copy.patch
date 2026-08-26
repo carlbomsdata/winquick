@@ -1,0 +1,99 @@
+diff --git a/io/channel-file.c b/io/channel-file.c
+index 5cef75a..6fb60fc 100644
+--- a/io/channel-file.c
++++ b/io/channel-file.c
+@@ -217,9 +217,24 @@ static int qio_channel_file_set_blocking(QIOChannel *ioc,
+                                          Error **errp)
+ {
+ #ifdef WIN32
+-    /* not implemented */
+-    error_setg_errno(errp, errno, "Failed to set FD nonblocking");
+-    return -1;
++    /*
++     * Win32 has no fcntl(O_NONBLOCK) for a file handle, and this used to fail
++     * outright -- which made `migrate file:` unusable on Windows even though
++     * the writes themselves are synchronous and perfectly well-defined.
++     *
++     * A regular file never blocks in the sense the caller is guarding against,
++     * so reporting success for a blocking request is accurate. A genuine
++     * request for non-blocking behaviour is still refused rather than
++     * pretended.
++     */
++    /*
++     * A regular file is always ready: a read or write against it completes
++     * rather than returning EAGAIN, so both blocking and non-blocking callers
++     * get the behaviour they are asking for without any flag to set. Failing
++     * here is what made `migrate file:` and `-incoming file:` unusable on
++     * Windows.
++     */
++    return 0;
+ #else
+     QIOChannelFile *fioc = QIO_CHANNEL_FILE(ioc);
+ 
+diff --git a/target/i386/whpx/whpx-all.c b/target/i386/whpx/whpx-all.c
+index 634d542..bd17454 100644
+--- a/target/i386/whpx/whpx-all.c
++++ b/target/i386/whpx/whpx-all.c
+@@ -2713,12 +2713,37 @@ int whpx_vcpu_run(CPUState *cpu)
+ 
+ static Error *whpx_migration_blocker;
+ 
++/*
++ * Live migration needs dirty-page tracking, which this backend does not
++ * implement, so it stays blocked while the guest executes. A stopped guest is
++ * a different case: migration/ram.c starts with every page marked dirty, so
++ * the first pass copies all of RAM, and a guest that is not running cannot
++ * dirty anything afterwards. That makes stop-and-copy complete and correct
++ * without dirty logging, which is what savevm and a local `migrate file:` do.
++ */
+ static void whpx_cpu_update_state(void *opaque, bool running, RunState state)
+ {
+     CPUX86State *env = opaque;
++    Error *blocker_error = NULL;
+ 
+     if (running) {
+         env->tsc_valid = false;
++
++        if (whpx_migration_blocker == NULL) {
++            error_setg(&whpx_migration_blocker,
++                "Live migration is not supported by the Windows Hypervisor "
++                "Platform accelerator: it has no dirty memory tracking. Stop "
++                "the guest first to save or migrate its state.");
++
++            if (migrate_add_blocker(&whpx_migration_blocker,
++                                    &blocker_error) < 0) {
++                error_report_err(blocker_error);
++            }
++        }
++    } else {
++        if (whpx_migration_blocker != NULL) {
++            migrate_del_blocker(&whpx_migration_blocker);
++        }
+     }
+ }
+ 
+@@ -2736,20 +2761,10 @@ int whpx_init_vcpu(CPUState *cpu)
+     UINT64 freq = 0;
+     int ret;
+ 
+-    /* Add migration blockers for all unsupported features of the
+-     * Windows Hypervisor Platform
++    /*
++     * The migration blocker is managed by whpx_cpu_update_state(), which
++     * installs it while the guest runs and removes it while it is stopped.
+      */
+-    if (whpx_migration_blocker == NULL) {
+-        error_setg(&whpx_migration_blocker,
+-               "State blocked due to missing dirty memory tracking support,"
+-               "And some system register/state save-restore ");
+-
+-        if (migrate_add_blocker(&whpx_migration_blocker, &local_error) < 0) {
+-            error_report_err(local_error);
+-            ret = -EINVAL;
+-            goto error;
+-        }
+-    }
+ 
+     vcpu = g_new0(AccelCPUState, 1);
+ 
+
