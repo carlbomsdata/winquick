@@ -22,6 +22,12 @@ deferred** below and the README's *Current scope*.
   gets arguments its own runtime will split correctly. Removing the escaping
   outright was tried first and broke PowerShell, so both rules are kept and the
   first argument chooses.
+- **A cmd metacharacter after a quote split the command line.** `winquick run
+  -- pwsh -Command 'Write-Output "a&b"'` failed with `'b\""' is not
+  recognized`. The C runtime's `\"` is invisible to `cmd`, which counts plain
+  quotes, so after an escaped quote cmd believed it was outside quotes and read
+  `&` as an operator. Metacharacters cmd would see as unquoted are now
+  `^`-escaped; the program's own argv is unchanged.
 - **A filename outside the basic multilingual plane** — an emoji, usually —
   aborted the whole workspace transfer with a message that named no file. The
   tree is now checked before anything is copied, and every offending path is

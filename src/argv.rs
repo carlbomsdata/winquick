@@ -42,7 +42,8 @@
 /// Build the command line for one run.
 pub fn join(argv: &[String]) -> String {
     if !is_cmd(argv.first().map(String::as_str)) {
-        return argv.iter().map(|a| crt_arg(a)).collect::<Vec<_>>().join(" ");
+        let line = argv.iter().map(|a| crt_arg(a)).collect::<Vec<_>>().join(" ");
+        return shield_from_cmd(&line);
     }
 
     // cmd's own switches (/c, /k, /q ...) come first; what follows is the
@@ -97,6 +98,45 @@ fn cmd_arg(a: &str) -> String {
         return format!("\"{a}\"");
     }
     a.to_string()
+}
+
+/// Hide cmd's metacharacters from cmd, without disturbing what the program sees.
+///
+/// The command line is delivered inside a batch file, so `cmd` parses it before
+/// the program ever runs — and cmd tracks quoting by counting `"`, knowing
+/// nothing of the C runtime's `\"`. So in
+///
+/// ```text
+///     pwsh -Command "Write-Output \"a&b\""
+/// ```
+///
+/// cmd reads the `\"` as the *closing* quote, decides `&` is unquoted, and
+/// splits the line into two commands. The program then never runs, and the user
+/// sees `'b\""' is not recognized`.
+///
+/// So walk the finished line the way cmd will, and `^`-escape any metacharacter
+/// that cmd would consider unquoted. cmd strips the carets before the program
+/// is started, so its argv is unchanged.
+///
+/// `%` is deliberately left alone: batch expansion is documented behaviour, not
+/// something this layer gets to redefine.
+fn shield_from_cmd(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut in_quotes = false;
+    for ch in line.chars() {
+        match ch {
+            '"' => {
+                in_quotes = !in_quotes;
+                out.push(ch);
+            }
+            '&' | '|' | '<' | '>' | '^' | '(' | ')' if !in_quotes => {
+                out.push('^');
+                out.push(ch);
+            }
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 /// An argument being handed to a real executable, quoted by the rules its C
@@ -242,19 +282,59 @@ mod tests {
         assert_eq!(j(&["app.exe", "two 日本語 words"]), r#"app.exe "two 日本語 words""#);
     }
 
-    /// A native program's arguments must not be re-interpreted by cmd, and the
-    /// quoting happens to guarantee it: metacharacters end up inside quotes.
+    /// A native program's argument must not be re-interpreted by cmd.
+    ///
+    /// Quoting alone does not achieve this, which is what the first version of
+    /// this module got wrong: cmd counts `"` and does not understand `\"`, so
+    /// after an escaped quote it believes it is *outside* quotes and treats the
+    /// next `&` as an operator. Every metacharacter cmd would read as unquoted
+    /// has to be `^`-escaped.
     #[test]
     fn metacharacters_reaching_a_native_program_are_protected() {
         for meta in ["a&b", "a|b", "a>b", "a<b", "a^b", "a(b)c"] {
             let line = j(&["app.exe", meta]);
             assert!(
-                line.contains('"') || !meta.contains([' ', '"']),
-                "{meta} was passed to cmd unprotected as {line}"
+                !cmd_would_split(&line),
+                "{meta} reached cmd unprotected as {line}"
             );
         }
-        // Anything with a space is definitely quoted.
+        assert_eq!(j(&["app.exe", "a&b"]), r"app.exe a^&b");
         assert_eq!(j(&["app.exe", "a & b"]), r#"app.exe "a & b""#);
+    }
+
+    /// The exact failure found by the v0.2.1 release gate: an argument holding
+    /// both a quote and a metacharacter. cmd used to split this into two
+    /// commands and report `'b\""' is not recognized`.
+    #[test]
+    fn a_quote_and_a_metacharacter_together_still_reach_the_program() {
+        let line = j(&["pwsh", "-NoProfile", "-Command", r#"Write-Output "a&b""#]);
+        assert!(!cmd_would_split(&line), "cmd would still split: {line}");
+        assert_eq!(line, r#"pwsh -NoProfile -Command "Write-Output \"a^&b\"""#);
+        for meta in ['&', '|', '<', '>'] {
+            let arg = format!("Write-Output \"x{meta}y\"");
+            let l = j(&["pwsh", "-Command", &arg]);
+            assert!(!cmd_would_split(&l), "{meta}: {l}");
+        }
+    }
+
+    /// cmd's own view of the line: quoting toggles on every `"`, and any
+    /// metacharacter seen outside quotes and not preceded by `^` splits it.
+    fn cmd_would_split(line: &str) -> bool {
+        let mut in_quotes = false;
+        let mut escaped = false;
+        for ch in line.chars() {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match ch {
+                '^' if !in_quotes => escaped = true,
+                '"' => in_quotes = !in_quotes,
+                '&' | '|' | '<' | '>' if !in_quotes => return true,
+                _ => {}
+            }
+        }
+        false
     }
 
     /// Percent is not this module's to solve: the command is delivered as a
