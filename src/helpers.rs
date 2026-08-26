@@ -139,8 +139,8 @@ pub struct ToolStatus {
 pub fn survey() -> Vec<ToolStatus> {
     vec![
         ToolStatus {
-            name: "qemu-system-aarch64",
-            path: which("qemu-system-aarch64"),
+            name: crate::platform::QEMU_SYSTEM,
+            path: which(crate::platform::QEMU_SYSTEM),
             needed_for: "running Windows",
             install_hint: "brew install qemu",
         },
@@ -181,17 +181,20 @@ pub fn survey() -> Vec<ToolStatus> {
 /// working under any Homebrew prefix.
 pub fn uefi_firmware() -> Option<PathBuf> {
     let mut roots: Vec<PathBuf> = Vec::new();
-    if let Some(q) = which("qemu-system-aarch64") {
+    if let Some(q) = which(crate::platform::QEMU_SYSTEM) {
         let q = q.canonicalize().unwrap_or(q);
         if let Some(prefix) = q.parent().and_then(|b| b.parent()) {
             roots.push(prefix.join("share").join("qemu"));
         }
     }
+    // Homebrew's prefixes on macOS; the Windows QEMU keeps its firmware beside
+    // the executable, which the discovery above already covers.
     roots.push(PathBuf::from("/opt/homebrew/share/qemu"));
     roots.push(PathBuf::from("/usr/local/share/qemu"));
+    roots.push(PathBuf::from("C:\\Program Files\\qemu\\share"));
     roots
         .into_iter()
-        .map(|r| r.join("edk2-aarch64-code.fd"))
+        .map(|r| r.join(crate::platform::UEFI_CODE))
         .find(|p| p.is_file())
 }
 

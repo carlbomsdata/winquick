@@ -15,6 +15,7 @@ mod lock;
 mod mailbox;
 mod mcp;
 mod paths;
+mod platform;
 mod qemu;
 mod qmp;
 mod runner;

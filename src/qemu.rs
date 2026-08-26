@@ -7,7 +7,7 @@ use anyhow::{anyhow, Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
-pub const MACHINE: &str = "virt";
+pub use crate::platform::MACHINE;
 
 pub struct Qemu {
     pub system: PathBuf,
@@ -17,7 +17,7 @@ pub struct Qemu {
 impl Qemu {
     pub fn locate() -> Result<Self> {
         Ok(Self {
-            system: which("qemu-system-aarch64")?,
+            system: which(crate::platform::QEMU_SYSTEM)?,
             img: which("qemu-img")?,
         })
     }
@@ -90,8 +90,9 @@ pub fn device_signature(memory_mb: u32, cpus: u32, capability_count: usize) -> S
         .map(|i| format!(";nvme:cap{i}=wqcap{i}"))
         .collect();
     format!(
-        "machine={MACHINE};accel=hvf;cpu=host;smp={cpus};mem={memory_mb};\
-         nvme:root=wqroot;nvme:mbox=wqmbox;nvme:work=wqwork;nvme:arts=wqarts{caps};pflash:code,vars(rw);ramfb;display=none;rtc=localtime"
+        "{backend};smp={cpus};mem={memory_mb};\
+         nvme:root=wqroot;nvme:mbox=wqmbox;nvme:work=wqwork;nvme:arts=wqarts{caps};pflash:code,vars(rw);ramfb;display=none;rtc=localtime",
+        backend = crate::platform::backend_signature()
     )
 }
 
@@ -100,7 +101,7 @@ impl Qemu {
     /// `ramfb` is still present because Windows expects a display device.
     pub fn boot(&self, cfg: &BootConfig) -> Result<Child> {
         let mut c = Command::new(&self.system);
-        c.args(["-M", MACHINE, "-accel", "hvf", "-cpu", "host"])
+        c.args(["-M", MACHINE, "-accel", crate::platform::ACCEL, "-cpu", crate::platform::CPU_MODEL])
             .args(["-smp", &cfg.cpus.to_string()])
             .args(["-m", &cfg.memory_mb.to_string()])
             .arg("-drive")
@@ -162,7 +163,7 @@ impl Qemu {
         c.stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
-        c.spawn().context("spawning qemu-system-aarch64")
+        c.spawn().context("spawning QEMU")
     }
 }
 
@@ -236,10 +237,11 @@ pub fn desktop_device_signature(memory_mb: u32, cpus: u32, capability_count: usi
         .map(|i| format!(";nvme:cap{i}=wqcap{i}"))
         .collect();
     format!(
-        "machine={MACHINE};accel=hvf;cpu=host;smp={cpus};mem={memory_mb};\
+        "{backend};smp={cpus};mem={memory_mb};\
          nvme:root=wqroot;nvme:mbox=wqmbox;nvme:bridge=wqbridge;nvme:app=wqapp;\
          nvme:ctl=wqctl{caps};pflash:code,vars(rw);xhci+kbd+tablet;virtio-gpu-pci;\
-         display=none;rtc=localtime"
+         display=none;rtc=localtime",
+        backend = crate::platform::backend_signature()
     )
 }
 
@@ -250,7 +252,7 @@ impl Qemu {
     /// soon as the guest is ready, and every later verb finds it by pid.
     pub fn boot_desktop(&self, cfg: &DesktopBoot) -> Result<Child> {
         let mut c = Command::new(&self.system);
-        c.args(["-M", MACHINE, "-accel", "hvf", "-cpu", "host"])
+        c.args(["-M", MACHINE, "-accel", crate::platform::ACCEL, "-cpu", crate::platform::CPU_MODEL])
             .args(["-smp", &cfg.cpus.to_string()])
             .args(["-m", &cfg.memory_mb.to_string()])
             .arg("-drive")
@@ -343,7 +345,7 @@ pub struct ServicingBoot<'a> {
 impl Qemu {
     pub fn boot_servicing(&self, cfg: &ServicingBoot) -> Result<Child> {
         let mut c = Command::new(&self.system);
-        c.args(["-M", MACHINE, "-accel", "hvf", "-cpu", "host"])
+        c.args(["-M", MACHINE, "-accel", crate::platform::ACCEL, "-cpu", crate::platform::CPU_MODEL])
             .args(["-smp", "4", "-m", "3072"])
             .arg("-drive")
             .arg(format!(
