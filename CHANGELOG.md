@@ -20,15 +20,18 @@
   locking and the QEMU monitor transport — and the MCP stdout guarantee is
   ported to the Windows CRT. Nothing about the guest, workspace, artifact,
   capability, desktop or MCP layers needed to change.
-- **The Windows backend question is answered, and the answer is yes.**
-  [docs/windows-host.md](docs/windows-host.md) records the experiments on real
-  hardware. QEMU's WHPX accelerator refuses every state save behind an
-  unconditional migration blocker, but the platform underneath it does not:
-  Windows booted under WHPX, was stopped, migrated to a 153 MB file, and the
-  **same immutable file restored into 20 fresh QEMU processes** — 20/20, p50
-  1.99 s, hash unchanged, zero orphans. Two small QEMU patches are in
-  [`patches/`](patches/). Apple Silicon macOS remains the only supported host
-  until the port itself is done.
+- **Windows x86_64: the backend works and a real command ran.** With three
+  small QEMU patches ([`patches/`](patches/)), a stopped guest can be saved and
+  restored under WHPX: 20 fresh QEMU processes restored the same immutable
+  147 MB state over the native `file:` transport, 20/20, p50 962 ms, hash
+  unchanged. A prepared x64 Validation OS then executed `cmd /c ver` through
+  WinQuick's existing mailbox protocol and returned
+  `Microsoft Windows [Version 10.0.26100.8972]` with exit code 0.
+  `src/platform.rs` now carries the host differences — QEMU binary,
+  accelerator, machine, CPU model, firmware — and they are part of the
+  prepared-state fingerprint. The port is not finished: `setup` and `run` do
+  not yet drive the Windows backend, so Apple Silicon macOS remains the only
+  supported host. See [docs/windows-host.md](docs/windows-host.md).
 - **[docs/dotnet.md](docs/dotnet.md) — an empirical .NET build matrix.** Which
   target frameworks WinQuick can build, which the standard guest can also run,
   and what the produced binaries actually are. .NET Framework 2.0 through
