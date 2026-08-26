@@ -25,7 +25,7 @@ pub const MARKER: &str = "WQARTS.TXT";
 /// Whatever the guest's copy commands printed, kept for diagnostics.
 pub const LOG: &str = "WQARTLOG.TXT";
 
-pub use crate::artifact_patterns::{script, validate, DIR};
+pub use crate::artifact_patterns::{script, DIR};
 
 fn open_fs(path: &Path) -> Result<FileSystem<BufStream<StreamSlice<File>>>> {
     let img = OpenOptions::new()

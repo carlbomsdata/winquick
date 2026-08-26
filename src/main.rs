@@ -6,6 +6,7 @@ mod artifact_patterns;
 mod capability;
 mod control;
 mod desktop;
+mod facts;
 mod gpt;
 mod helpers;
 mod interrupt;
@@ -255,6 +256,7 @@ Windows sees a throwaway copy of the cache, so a build cannot change it.")]
 
     /// Show what is installed
     Info,
+
 
     /// Discard the prepared guest; the next run rebuilds it
     Reset,
@@ -803,195 +805,82 @@ fn cache_cmd(action: CacheCmd, verbose: bool) -> Result<i32> {
     }
 }
 
+/// Render the same facts the MCP server serialises.
 fn info() -> Result<i32> {
-    println!("winquick {}", env!("CARGO_PKG_VERSION"));
-    let base = paths::base_image()?;
-    if base.exists() {
-        println!("runtime      Windows, {}", helpers::human(helpers::allocated(&base)));
+    let i = facts::info()?;
+    println!("winquick {}", i.version);
+    if i.runtime_installed {
+        println!("runtime      Windows, {}", helpers::human(i.runtime_bytes));
     } else {
         println!("runtime      not installed — run `winquick setup`");
     }
-    match state::state_dir() {
-        Ok(d) if d.join("ready.json").exists() => {
-            let sz = helpers::allocated(&d.join("ready.state"));
-            println!("prepared     yes, {} (makes runs fast)", helpers::human(sz));
-        }
-        _ => println!("prepared     no — the first run will take longer"),
+    if i.prepared {
+        println!("prepared     yes, {} (makes runs fast)", helpers::human(i.prepared_bytes));
+    } else {
+        println!("prepared     no — the first run will take longer");
     }
-    let caps = capability::installed()?;
-    let named: Vec<_> = caps.iter().filter(|c| capability::spec(&c.name).is_some()).collect();
-    if named.is_empty() {
+    if i.capabilities.is_empty() {
         println!("capabilities none — see `winquick capability list`");
     } else {
-        for c in &named {
-            let v = capability::spec(&c.name).map(|s| s.version).unwrap_or("");
-            println!("capability   {} {} ({})", c.name, v, helpers::human(helpers::allocated(&c.image)));
+        for c in &i.capabilities {
+            println!(
+                "capability   {} {} ({})",
+                c.name,
+                c.version.as_deref().unwrap_or(""),
+                helpers::human(c.bytes)
+            );
         }
     }
-    // The package cache is an internal volume, not something you install.
-    if let Some(nc) = caps.iter().find(|c| c.name == "nuget-cache") {
-        println!("packages     cached, {}", helpers::human(helpers::allocated(&nc.image)));
+    if let Some(b) = i.package_cache_bytes {
+        println!("packages     cached, {}", helpers::human(b));
     }
-    let desk = desktop::base_image()?;
-    if desk.exists() {
+    if i.desktop.installed {
         println!(
             "capability   desktop ({}), WPF/WinForms and UI automation",
-            helpers::human(helpers::allocated(&desk))
+            helpers::human(i.desktop.bytes)
         );
-        let dstate = state::desktop_state_dir()?;
-        if dstate.join("ready.json").exists() {
-            println!("desktop      prepared, {} (sessions start in ~0.4 s)", helpers::human(dir_size(&dstate)));
+        if i.desktop.prepared {
+            println!(
+                "desktop      prepared, {} (sessions start in ~0.4 s)",
+                helpers::human(i.desktop.prepared_bytes)
+            );
         } else {
             println!("desktop      not prepared yet (the first session takes ~20 s)");
         }
-        match desktop::running() {
-            Some(sess) => println!("session      running, pid {}", sess.pid),
+        match i.desktop.session_pid {
+            Some(pid) => println!("session      running, pid {pid}"),
             None => println!("session      none running"),
         }
     } else {
         println!("capability   desktop not installed (winquick capability install desktop)");
     }
-    println!("data         {}", paths::root()?.display());
+    println!("data         {}", i.data_dir);
     Ok(0)
 }
 
 fn doctor(smoke: bool) -> Result<i32> {
-    let mut problems: Vec<String> = Vec::new();
-    println!("Host");
-    let arch = std::env::consts::ARCH;
-    let ok_arch = arch == "aarch64";
-    println!("  {} Apple Silicon ({arch})", tick(ok_arch));
-    if !ok_arch {
-        problems.push("WinQuick only supports Apple Silicon Macs.".into());
-    }
-    let sw = std::process::Command::new("/usr/bin/sw_vers")
-        .arg("-productVersion")
-        .output()
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default();
-    println!("  {} macOS {sw}", tick(!sw.is_empty()));
+    let report = facts::doctor()?;
+    let mut problems = report.problems.clone();
 
-    println!("\nTools");
-    let have_runtime = paths::base_image()?.exists();
-    for t in helpers::survey() {
-        match &t.path {
-            Some(p) => println!("  {} {:<20} {}", tick(true), t.name, p.display()),
-            None if t.needed_for == "setup only" && have_runtime => {
-                // Only needed to build a runtime, and one is already built.
-                println!("  {} {:<20} not installed (only needed by `winquick setup`)", tick(true), t.name);
+    let mut section = "";
+    for c in &report.checks {
+        if c.section != section {
+            if !section.is_empty() {
+                println!();
             }
-            None => {
-                println!("  {} {:<20} missing ({})", tick(false), t.name, t.needed_for);
-                problems.push(format!("{} is missing. {}", t.name, t.install_hint));
-            }
+            println!("{}", c.section);
+            section = c.section;
         }
-    }
-    match helpers::uefi_firmware() {
-        Some(p) => println!("  {} {:<20} {}", tick(true), "uefi firmware", p.display()),
-        None => {
-            println!("  {} {:<20} missing", tick(false), "uefi firmware");
-            problems.push("QEMU's UEFI firmware is missing. brew reinstall qemu".into());
-        }
-    }
-
-    println!("\nRuntime");
-    let base = paths::base_image()?;
-    let have_base = base.exists();
-    println!(
-        "  {} Windows runtime {}",
-        tick(have_base),
-        if have_base { helpers::human(helpers::allocated(&base)) } else { "not installed".into() }
-    );
-    if !have_base {
-        problems.push("No Windows runtime. Run `winquick setup`.".into());
-    } else if let Err(e) = state::check_base_meta(&base, setup::AGENT) {
-        println!("  {} runtime is from a different WinQuick version", tick(false));
-        problems.push(format!("{e:#}"));
-    }
-    let prepared = state::state_dir().map(|d| d.join("ready.json").exists()).unwrap_or(false);
-    // Not having one is normal, not a fault: the first run builds it.
-    println!(
-        "  {} prepared guest {}",
-        if prepared { tick(true) } else { "·   " },
-        if prepared { "ready (runs are fast)" } else { "not built yet; the first run will build it" }
-    );
-
-    let caps = capability::installed()?;
-    println!(
-        "  · capabilities: {}",
-        if caps.is_empty() { "none".to_string() } else { caps.iter().map(|c| c.name.clone()).collect::<Vec<_>>().join(", ") }
-    );
-
-    println!("\nDesktop");
-    let desk = desktop::base_image()?;
-    println!(
-        "  {} {:<20} {}",
-        tick(desk.exists()),
-        "desktop image",
-        if desk.exists() {
-            helpers::human(helpers::allocated(&desk))
-        } else {
-            "not installed (winquick capability install desktop)".into()
-        }
-    );
-    match desktop::running() {
-        Some(sess) => println!("  {} {:<20} running as pid {}", tick(true), "session", sess.pid),
-        None => println!("  {} {:<20} none running", tick(true), "session"),
-    }
-    // The bridge is built from source inside Windows at install time, so an
-    // installation that lost these files fails at the very last step of
-    // `capability install desktop`.
-    let dstate = state::desktop_state_dir()?;
-    if dstate.join("ready.json").exists() {
-        println!(
-            "  {} {:<20} prepared ({})",
-            tick(true),
-            "session state",
-            helpers::human(dir_size(&dstate))
-        );
-    } else if desk.exists() {
-        println!(
-            "  {} {:<20} not prepared yet (the first start takes ~20s)",
-            tick(true),
-            "session state"
-        );
-    }
-    if desk.exists() {
-        let built = desktop::bridge_dir()?;
-        if built.join("wqui.exe").exists() {
-            println!("  {} {:<20} built", tick(true), "guest bridge");
-        } else {
-            println!(
-                "  {} {:<20} missing from {} (winquick capability install desktop --force)",
-                tick(false),
-                "guest bridge",
-                built.display()
-            );
-            problems.push(
-                "The desktop capability is installed but its guest bridge is missing. \
-                 Rebuild it with `winquick capability install desktop --force`."
-                    .to_string(),
-            );
-        }
-    }
-    match servicing::bridge_source() {
-        Ok(p) => println!("  {} {:<20} {}", tick(true), "bridge sources", p.display()),
-        Err(_) => println!(
-            "  {} {:<20} missing (the installation is incomplete)",
-            tick(false),
-            "bridge sources"
-        ),
+        let mark = match c.status {
+            facts::Status::Ok => tick(true).to_string(),
+            facts::Status::Fail => tick(false).to_string(),
+            // A note is neither a pass nor a fault; it is context.
+            facts::Status::Note => "·   ".to_string(),
+        };
+        println!("  {mark} {:<20} {}", c.name, c.message);
     }
 
-    println!("\nDisk");
-    let free = free_bytes(&paths::root()?).unwrap_or(0);
-    let enough = free > 8 * 1024 * 1024 * 1024;
-    println!("  {} {} free in {}", tick(enough), helpers::human(free), paths::root()?.display());
-    if !enough {
-        problems.push("Less than 8 GiB free. Setup and capabilities need room.".into());
-    }
-
+    let have_base = paths::base_image()?.exists();
     if smoke && have_base && problems.is_empty() {
         println!("\nSmoke test");
         match runner::run_capture("cmd /c ver", &smoke_opts()) {
@@ -1040,17 +929,6 @@ fn tick(ok: bool) -> &'static str {
     if ok { "ok  " } else { "FAIL" }
 }
 
-fn free_bytes(p: &std::path::Path) -> Option<u64> {
-    let mut dir = p.to_path_buf();
-    while !dir.exists() {
-        dir = dir.parent()?.to_path_buf();
-    }
-    let out = std::process::Command::new("/bin/df").args(["-k"]).arg(&dir).output().ok()?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    let line = text.lines().nth(1)?;
-    let avail: u64 = line.split_whitespace().nth(3)?.parse().ok()?;
-    Some(avail * 1024)
-}
 
 fn clean(all: bool, dry_run: bool) -> Result<i32> {
     let root = paths::root()?;
@@ -1088,7 +966,7 @@ fn clean(all: bool, dry_run: bool) -> Result<i32> {
     let mut found = false;
     for (p, what) in &targets {
         if p.exists() {
-            let sz = dir_size(p);
+            let sz = facts::dir_size(p);
             total += sz;
             found = true;
             println!("  {:<28} {:>10}  {}", what, helpers::human(sz), p.display());
@@ -1117,17 +995,3 @@ fn clean(all: bool, dry_run: bool) -> Result<i32> {
     Ok(0)
 }
 
-fn dir_size(p: &std::path::Path) -> u64 {
-    let mut total = 0;
-    if let Ok(rd) = std::fs::read_dir(p) {
-        for e in rd.flatten() {
-            let path = e.path();
-            if path.is_dir() && !path.is_symlink() {
-                total += dir_size(&path);
-            } else {
-                total += helpers::allocated(&path);
-            }
-        }
-    }
-    total
-}
