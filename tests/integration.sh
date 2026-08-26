@@ -289,6 +289,17 @@ check "unicode through cmd" "$out" "åäö-日本語"
 if [ -f ~/.winquick/capabilities/powershell.img ]; then
   out=$("$WQ" run -- pwsh -NoProfile -Command 'Write-Output "quoted string"' 2>/dev/null | tr -d '\r' | tail -1)
   check "pwsh quoting is not broken by the cmd fix" "$out" "quoted string"
+
+  # An argument holding a quote *and* a cmd metacharacter. cmd counts quotes and
+  # does not understand the C runtime's \", so after the escaped quote it
+  # believed it was outside quotes and treated & as an operator, splitting the
+  # line: the program never ran and the user saw `'b\""' is not recognized`.
+  out=$("$WQ" run -- pwsh -NoProfile -Command 'Write-Output "a&b"' 2>/dev/null | tr -d '\r' | tail -1)
+  check "a metacharacter after a quote survives cmd" "$out" "a&b"
+  for m in '|' '<' '>'; do
+    out=$("$WQ" run -- pwsh -NoProfile -Command "Write-Output \"x${m}y\"" 2>/dev/null | tr -d '\r' | tail -1)
+    check "metacharacter $m after a quote survives cmd" "$out" "x${m}y"
+  done
 fi
 
 echo "== v0.2.1 non-BMP filenames (WQ-EXT-02) =="
