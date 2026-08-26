@@ -6,7 +6,7 @@ A hardening release. Everything here came from using v0.2.0 as an outside user
 would: an isolated environment, a fresh HOME, and the published archive rather
 than a development build.
 
-Validated with 66 unit tests and 118 integration checks (0 failures), a
+Validated with 67 unit tests and 122 integration checks (0 failures), a
 100-command soak, a 50-cycle desktop soak, and a 50-repetition stress of the
 live desktop sequence.
 
