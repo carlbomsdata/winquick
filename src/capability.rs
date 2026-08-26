@@ -601,3 +601,50 @@ pub fn rebuild_nuget_image(verbose: bool) -> Result<(u64, usize)> {
     let allocated = std::fs::metadata(&image)?.blocks() * 512;
     Ok((allocated, packages))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn touch_dir(p: &Path) {
+        std::fs::create_dir_all(p).unwrap();
+    }
+
+    /// A NuGet cache nests as `<id>/<version>/`, and the version is the unit
+    /// that matters. Counting only ids missed a second version of a package
+    /// already present, so `cache sync` reported "already up to date" while the
+    /// guest never received the new one.
+    #[test]
+    fn packages_are_counted_per_version_not_per_id() {
+        let root = std::env::temp_dir().join(format!("wq-count-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        touch_dir(&root.join("microsoft.netcore.app.ref/8.0.25"));
+        assert_eq!(count_packages(&root), 1);
+
+        // The same id, a second version: the id count does not move, but the
+        // cache genuinely changed and the volume must be rebuilt.
+        touch_dir(&root.join("microsoft.netcore.app.ref/9.0.14"));
+        assert_eq!(count_packages(&root), 2, "a new version must change the count");
+
+        touch_dir(&root.join("newtonsoft.json/13.0.3"));
+        assert_eq!(count_packages(&root), 3);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn counting_an_absent_cache_is_zero() {
+        assert_eq!(count_packages(Path::new("/nonexistent/winquick/cache")), 0);
+    }
+
+    /// A volume built by an older WinQuick has no recorded count, and must be
+    /// treated as stale so the first sync after upgrading rebuilds it once.
+    #[test]
+    fn a_volume_without_a_stamp_is_stale() {
+        let img = std::env::temp_dir().join(format!("wq-stamp-{}.img", std::process::id()));
+        let _ = std::fs::remove_file(image_stamp(&img));
+        assert_eq!(image_package_count(&img), None);
+        std::fs::write(image_stamp(&img), "42").unwrap();
+        assert_eq!(image_package_count(&img), Some(42));
+        let _ = std::fs::remove_file(image_stamp(&img));
+    }
+}

@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **`winquick cache sync` could report "already up to date" while the guest saw
+  none of the new packages.** Freshness was judged by what that particular
+  restore added, so packages arriving any other way — an earlier sync whose
+  rebuild failed, or a `dotnet restore --packages` run by hand — never reached
+  the volume. It now compares the cache against what the volume was built from.
+  Packages are also counted per *version* rather than per id, so a second
+  version of a package already present is noticed.
+
+### Added
+
+- **[docs/dotnet.md](docs/dotnet.md) — an empirical .NET build matrix.** Which
+  target frameworks WinQuick can build, which the standard guest can also run,
+  and what the produced binaries actually are. .NET Framework 2.0 through
+  4.8.1, netstandard 2.0/2.1 and net6.0 through net10.0 all build; the guest
+  carries no .NET Framework runtime, so those build but do not run there.
+  Includes an **x86 WinForms application targeting .NET Framework 4.0** — a
+  Windows XP-era target — built from a classic non-SDK project with no Visual
+  Studio anywhere, and verified by reading the output's PE and CLR metadata.
+- **`tests/peinfo.py`** — reads an assembly's real machine type, CLR flags,
+  metadata version and stamped `TargetFrameworkAttribute`, so a claim about a
+  build rests on the binary rather than on the project file.
+- Fixtures for the whole matrix under `experiments/dotnet-matrix/`.
+
+### Changed
+
+- Public URLs and the Homebrew command use the canonical `carlbomsdata`
+  namespace rather than depending on redirects from the old organisation name.
+  The install command is now `brew install carlbomsdata/tap/winquick`.
+
 ## v0.3.0 — native MCP
 
 WinQuick is now a Model Context Protocol server, so an AI agent can build, run
