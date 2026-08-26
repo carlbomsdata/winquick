@@ -10,7 +10,7 @@
 ## Homebrew
 
 ```console
-brew install Carlboms-Data-AB/tap/winquick
+brew install carlbomsdata/tap/winquick
 winquick setup
 ```
 
@@ -25,18 +25,18 @@ Homebrew downloads and unpacks the archive itself, so nothing is marked with
 If you would rather not use Homebrew:
 
 ```console
-curl -LO https://github.com/Carlboms-Data-AB/winquick/releases/download/v0.2.1/winquick-0.2.1-darwin-arm64.tar.gz
-curl -LO https://github.com/Carlboms-Data-AB/winquick/releases/download/v0.2.1/winquick-0.2.1-darwin-arm64.tar.gz.sha256
-shasum -a 256 -c winquick-0.2.1-darwin-arm64.tar.gz.sha256
-tar xzf winquick-0.2.1-darwin-arm64.tar.gz
-sudo cp -R winquick-0.2.1-darwin-arm64/* /usr/local/
+curl -LO https://github.com/carlbomsdata/winquick/releases/download/v0.3.0/winquick-0.3.0-darwin-arm64.tar.gz
+curl -LO https://github.com/carlbomsdata/winquick/releases/download/v0.3.0/winquick-0.3.0-darwin-arm64.tar.gz.sha256
+shasum -a 256 -c winquick-0.3.0-darwin-arm64.tar.gz.sha256
+tar xzf winquick-0.3.0-darwin-arm64.tar.gz
+sudo cp -R winquick-0.3.0-darwin-arm64/* /usr/local/
 brew install qemu hivex
 ```
 
 The archive's SHA-256 is
 
 ```
-d7d94ff6e0909819d446cb639a9c35146ba22d77a343267a4a6efc3b97964cd1
+ab8914eff97e0c58f78b50a1f6f49e5f3b357ea8849e83fa9fe32f69aaf3e963
 ```
 
 WinQuick looks for its helpers next to the binary, in `../libexec/winquick`, or
@@ -46,7 +46,7 @@ Then `winquick doctor` to check, and `winquick setup`.
 
 ## Gatekeeper
 
-The v0.2.1 release is **not signed and not notarized** — no Apple Developer ID
+The v0.3.0 release is **not signed and not notarized** — no Apple Developer ID
 was available when it was built.
 
 This only matters for a **browser download**. Safari and other browsers mark

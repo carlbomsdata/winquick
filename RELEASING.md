@@ -83,10 +83,10 @@ corresponding source has to be available alongside them. See
 ## Homebrew tap
 
 `packaging/winquick.rb` is ready, with the archive's SHA-256 already filled in.
-Publish it to a tap repository named `Carlboms-Data-AB/homebrew-tap`:
+Publish it to a tap repository named `carlbomsdata/homebrew-tap`:
 
 ```console
-gh repo create Carlboms-Data-AB/homebrew-tap --public --clone
+gh repo create carlbomsdata/homebrew-tap --public --clone
 mkdir -p homebrew-tap/Formula
 cp packaging/winquick.rb homebrew-tap/Formula/
 cd homebrew-tap && git add . && git commit -m "winquick 0.1.0" && git push
@@ -95,7 +95,7 @@ cd homebrew-tap && git add . && git commit -m "winquick 0.1.0" && git push
 Then verify end to end on a machine that has never seen WinQuick:
 
 ```console
-brew install Carlboms-Data-AB/tap/winquick
+brew install carlbomsdata/tap/winquick
 winquick doctor
 winquick setup
 winquick run -- cmd /c ver
