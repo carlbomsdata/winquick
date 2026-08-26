@@ -4,9 +4,9 @@ WinQuick's guest has always been Windows. This is about the other half: making
 Windows a **host**, so a developer on Windows x86_64 gets the same product a
 developer on an Apple Silicon Mac gets.
 
-**Status: not implemented.** This document records what was measured, what the
-work actually is, and the one question that has to be answered before any of it
-is worth writing.
+**Status: blocked, with a measured reason.** The prepared-state experiment was
+run on real Windows hardware and failed for a reason that configuration cannot
+fix. This document records what was measured and what it costs to go further.
 
 ## The rule that must not be broken
 
@@ -101,30 +101,32 @@ elevation and a reboot.
 That is a product decision with real cost, not an implementation detail, so it
 is written down here rather than started.
 
-## What the code audit found
+## What the code audit found, and what was fixed
 
-Measured against the current tree with
-`cargo check --target x86_64-pc-windows-msvc`:
+The audit found **16 compile errors across 6 files** for
+`x86_64-pc-windows-msvc`, every one in the host seam rather than the product
+logic. Since that work stands whichever backend a Windows port eventually uses,
+it was done: **`cargo check --target x86_64-pc-windows-msvc` now passes with no
+errors**, and macOS is unaffected.
 
-**16 compile errors, in 6 files.** Every one is in the host seam, not in the
-product logic:
+| Was | Now |
+|---|---|
+| `std::os::unix` imports in 6 files | `src/hostfs.rs` |
+| `MetadataExt::blocks` for allocated size | `hostfs::allocated` — block count on Unix, length on Windows |
+| `MetadataExt::mtime`/`ino` for image identity | `hostfs::identity` — length plus mtime, portable; the inode is gone |
+| `flock` via a raw fd | `hostfs::try_lock` / `open_lock_file` — flock on Unix, exclusive share mode on Windows |
+| `dup`/`dup2` for the MCP stdout guarantee | the same technique through the Windows CRT's `_dup`/`_dup2` |
+| `UnixStream` for QMP | `hostfs::ControlStream` — Unix socket on macOS, TCP on Windows |
 
-| Kind | Where | Count |
-|---|---|---|
-| `std::os::unix` imports | helpers, state, qmp, lock, capability, mcp | 7 |
-| `MetadataExt::blocks` (allocated size) | capability, facts, state | 3 |
-| `MetadataExt::mtime`/`ino` (image identity) | state | 3 |
-| `as_raw_fd` / `from_raw_fd` (MCP stdout capture) | mcp | 2 |
-| accelerator, binary name, firmware discovery | qemu, helpers, runner | conditional |
+What is *not* done, because it depends on a backend that has not been chosen:
+the accelerator and machine selection, QEMU executable and firmware discovery,
+Windows process containment, and architecture-aware capability payloads. Those
+are listed below.
 
-That is a small, well-localised surface — the guest protocol, workspace,
-artifact, capability, desktop and MCP layers are already platform-neutral. The
-port is not blocked by the language. It is blocked by the backend decision.
-
-Other host assumptions the audit catalogued: `hvf` as the accelerator (5
-references), `qemu-system-aarch64` as the binary name (3 files), Homebrew paths
-for dependency discovery (12), `hdiutil` for mounting Microsoft media (9), Unix
-signals for process cleanup (6), and `win-arm64` as the capability RID (4).
+Other host assumptions the audit catalogued and which remain macOS-shaped:
+`hvf` as the accelerator, `qemu-system-aarch64` as the binary name, Homebrew
+paths for dependency discovery, `hdiutil` for mounting Microsoft media, Unix
+signals for process cleanup, and `win-arm64` as the capability RID.
 
 ## What the work would be
 
