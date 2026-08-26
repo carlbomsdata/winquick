@@ -214,6 +214,5 @@ pub fn human(bytes: u64) -> String {
 /// Bytes actually occupied on disk, which for our sparse images is the number
 /// that matters.
 pub fn allocated(p: &Path) -> u64 {
-    use std::os::unix::fs::MetadataExt;
-    std::fs::metadata(p).map(|m| m.blocks() * 512).unwrap_or(0)
+    crate::hostfs::allocated(p)
 }

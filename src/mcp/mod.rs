@@ -33,17 +33,21 @@ use protocol::{
     PARSE_ERROR, PROTOCOL_VERSION, SUPPORTED_VERSIONS,
 };
 
-extern "C" {
-    fn dup(fd: i32) -> i32;
-    fn dup2(src: i32, dst: i32) -> i32;
-}
-
 /// Take exclusive ownership of stdout, and redirect everyone else's to stderr.
 ///
 /// Returns the private handle the protocol is written through. After this, a
 /// `println!` from any module lands on stderr, which is harmless.
+///
+/// Both platforms do the same thing — duplicate descriptor 1, then point 1 at
+/// 2 — because both C runtimes provide it. Only the symbol names differ, and
+/// the Windows CRT prefixes them with an underscore.
+#[cfg(unix)]
 fn capture_stdout() -> Result<std::fs::File> {
     use std::os::unix::io::FromRawFd;
+    extern "C" {
+        fn dup(fd: i32) -> i32;
+        fn dup2(src: i32, dst: i32) -> i32;
+    }
     // SAFETY: fd 1 and 2 are open in any process started by an MCP client, and
     // the duplicate is handed straight to a File that owns it from here on.
     unsafe {
@@ -55,6 +59,33 @@ fn capture_stdout() -> Result<std::fs::File> {
             anyhow::bail!("could not redirect stdout to stderr for the MCP protocol");
         }
         Ok(std::fs::File::from_raw_fd(saved))
+    }
+}
+
+#[cfg(windows)]
+fn capture_stdout() -> Result<std::fs::File> {
+    use std::os::windows::io::{FromRawHandle, RawHandle};
+    extern "C" {
+        fn _dup(fd: i32) -> i32;
+        fn _dup2(src: i32, dst: i32) -> i32;
+        fn _get_osfhandle(fd: i32) -> isize;
+    }
+    // SAFETY: the CRT descriptors 1 and 2 exist in any console or redirected
+    // process, and the duplicated descriptor's OS handle is handed straight to
+    // a File that owns it from here on.
+    unsafe {
+        let saved = _dup(1);
+        if saved < 0 {
+            anyhow::bail!("could not duplicate stdout for the MCP protocol");
+        }
+        if _dup2(2, 1) < 0 {
+            anyhow::bail!("could not redirect stdout to stderr for the MCP protocol");
+        }
+        let handle = _get_osfhandle(saved);
+        if handle == -1 {
+            anyhow::bail!("could not resolve the duplicated stdout handle");
+        }
+        Ok(std::fs::File::from_raw_handle(handle as RawHandle))
     }
 }
 

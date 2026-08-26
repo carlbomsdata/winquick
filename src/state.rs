@@ -27,26 +27,22 @@ pub const PROTOCOL_VERSION: u32 = 1;
 /// Cheap identity for a file we do not want to hash on every invocation.
 ///
 /// Hashing `base.qcow2` costs about a second; the whole warm run is supposed to
-/// take a fifth of that. Length plus mtime plus inode changes whenever `setup`
-/// rewrites the image, which is the case that actually matters.
+/// take a fifth of that. Length plus modification time changes whenever `setup`
+/// rewrites the image, which is the case that actually matters. The inode used
+/// to be part of this and was dropped: it has no portable counterpart on
+/// Windows and caught nothing the other two miss.
 #[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Clone)]
 pub struct FileId {
     pub path: String,
     pub len: u64,
-    pub mtime_ns: i64,
-    pub inode: u64,
+    pub mtime_ns: i128,
 }
 
 impl FileId {
     pub fn of(p: &Path) -> Result<Self> {
-        use std::os::unix::fs::MetadataExt;
-        let m = std::fs::metadata(p).with_context(|| format!("stat {}", p.display()))?;
-        Ok(FileId {
-            path: p.display().to_string(),
-            len: m.len(),
-            mtime_ns: m.mtime() * 1_000_000_000 + m.mtime_nsec(),
-            inode: m.ino(),
-        })
+        let (len, mtime_ns) =
+            crate::hostfs::identity(p).with_context(|| format!("stat {}", p.display()))?;
+        Ok(FileId { path: p.display().to_string(), len, mtime_ns })
     }
 }
 
@@ -394,7 +390,7 @@ mod desktop_tests {
     use super::*;
 
     fn id(name: &str, len: u64) -> FileId {
-        FileId { path: name.into(), len, mtime_ns: 1, inode: 1 }
+        FileId { path: name.into(), len, mtime_ns: 1 }
     }
 
     fn base() -> DesktopFingerprint {
@@ -460,7 +456,7 @@ mod desktop_tests {
         let mut want = base();
         want.capabilities = vec![(
             "dotnet-sdk".into(),
-            FileId { path: "dotnet-sdk.img".into(), len: 30, mtime_ns: 999, inode: 7 },
+            FileId { path: "dotnet-sdk.img".into(), len: 30, mtime_ns: 999 },
         )];
         assert_ne!(have, want);
         assert!(describe_desktop_mismatch(&have, &want).contains("installed capabilities"));

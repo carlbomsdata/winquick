@@ -8,31 +8,34 @@
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use crate::hostfs::ControlStream;
+
 pub struct Qmp {
-    reader: BufReader<UnixStream>,
-    writer: UnixStream,
+    reader: BufReader<ControlStream>,
+    writer: ControlStream,
 }
 
 impl Qmp {
-    /// Connect once the socket shows up. QEMU creates it a moment after exec.
-    pub fn connect(socket: &Path, timeout: Duration) -> Result<Self> {
+    /// Connect once QEMU's monitor endpoint is answering.
+    ///
+    /// The endpoint is a Unix socket on macOS and a TCP port on Windows, which
+    /// has none; `ControlStream` hides that, and `endpoint` is whichever one
+    /// this platform asked QEMU for.
+    pub fn connect(endpoint: &Path, timeout: Duration) -> Result<Self> {
         let deadline = Instant::now() + timeout;
         loop {
-            if socket.exists() {
-                if let Ok(s) = UnixStream::connect(socket) {
-                    let writer = s.try_clone()?;
-                    let mut q = Qmp { reader: BufReader::new(s), writer };
-                    q.read_greeting()?;
-                    q.command("qmp_capabilities", json!({}))?;
-                    return Ok(q);
-                }
+            if let Ok(s) = ControlStream::connect(endpoint) {
+                let writer = s.try_clone()?;
+                let mut q = Qmp { reader: BufReader::new(s), writer };
+                q.read_greeting()?;
+                q.command("qmp_capabilities", json!({}))?;
+                return Ok(q);
             }
             if Instant::now() > deadline {
-                bail!("timed out waiting for the QMP socket at {}", socket.display());
+                bail!("timed out waiting for QEMU's monitor at {}", endpoint.display());
             }
             std::thread::sleep(Duration::from_millis(1));
         }

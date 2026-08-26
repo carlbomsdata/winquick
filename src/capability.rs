@@ -536,11 +536,10 @@ pub fn nuget_sync(project: &Path, rid: &str, verbose: bool) -> Result<SyncResult
     // failed, or a `dotnet restore --packages` run by hand — and then every
     // later sync reported "already up to date" while the guest never saw them.
     if image.exists() && image_package_count(&image) == Some(after) {
-        use std::os::unix::fs::MetadataExt;
         return Ok(SyncResult {
             packages: after,
             added: 0,
-            bytes: std::fs::metadata(&image)?.blocks() * 512,
+            bytes: crate::hostfs::allocated(&image),
             rebuilt: false,
         });
     }
@@ -597,8 +596,7 @@ pub fn rebuild_nuget_image(verbose: bool) -> Result<(u64, usize)> {
     // What the volume was built from, so a later sync can tell whether it is
     // still current without opening it.
     let _ = std::fs::write(image_stamp(&image), packages.to_string());
-    use std::os::unix::fs::MetadataExt;
-    let allocated = std::fs::metadata(&image)?.blocks() * 512;
+    let allocated = crate::hostfs::allocated(&image);
     Ok((allocated, packages))
 }
 

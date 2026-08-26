@@ -9,6 +9,7 @@ mod desktop;
 mod facts;
 mod gpt;
 mod helpers;
+mod hostfs;
 mod interrupt;
 mod lock;
 mod mailbox;

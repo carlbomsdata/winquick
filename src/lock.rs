@@ -11,8 +11,7 @@
 //! it. The rest wait, then find it ready.
 
 use anyhow::{Context, Result};
-use std::fs::{File, OpenOptions};
-use std::os::unix::io::AsRawFd;
+use std::fs::File;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -36,46 +35,16 @@ fn lock_path(name: &str) -> Result<PathBuf> {
 }
 
 fn try_flock(f: &File, exclusive: bool, block: bool) -> std::io::Result<bool> {
-    let mut op = if exclusive { libc_lock_ex() } else { libc_lock_sh() };
-    if !block {
-        op |= libc_lock_nb();
-    }
-    let rc = unsafe { flock(f.as_raw_fd(), op) };
-    if rc == 0 {
-        Ok(true)
-    } else {
-        let e = std::io::Error::last_os_error();
-        if !block && e.raw_os_error() == Some(35) {
-            // EWOULDBLOCK
-            Ok(false)
-        } else {
-            Err(e)
-        }
-    }
-}
-
-extern "C" {
-    fn flock(fd: i32, operation: i32) -> i32;
-}
-fn libc_lock_sh() -> i32 {
-    1
-}
-fn libc_lock_ex() -> i32 {
-    2
-}
-fn libc_lock_nb() -> i32 {
-    4
+    crate::hostfs::try_lock(f, exclusive, block)
 }
 
 fn open_lock(name: &str) -> Result<(File, PathBuf)> {
     let path = lock_path(name)?;
-    let file = OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .open(&path)
-        .with_context(|| format!("opening lock {}", path.display()))?;
+    // On Windows the lock is taken by opening exclusively, so `None` here means
+    // another WinQuick already holds it; the callers below retry.
+    let file = crate::hostfs::open_lock_file(&path)
+        .with_context(|| format!("opening lock {}", path.display()))?
+        .ok_or_else(|| anyhow::anyhow!("another WinQuick operation holds the lock"))?;
     Ok((file, path))
 }
 
