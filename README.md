@@ -232,7 +232,9 @@ launch a WPF or WinForms application; `ui_tree`, `ui_get`, `ui_click` and
 `ui_screenshot`, which returns a real PNG of the Windows screen in the response.
 
 `mcp` is a mode of the same binary — no Node, no Python, no separate server —
-and it calls the same internals the CLI does. See [docs/mcp.md](docs/mcp.md).
+and it calls the same internals the CLI does. See [docs/mcp.md](docs/mcp.md), and
+[winquick-agent-skill](https://github.com/carlbomsdata/winquick-agent-skill) for
+a skill that teaches an agent when to reach for Windows.
 
 ## What you get
 

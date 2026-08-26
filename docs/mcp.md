@@ -14,6 +14,10 @@ claude mcp add winquick -- winquick mcp
 That is the whole setup. Claude Code starts `winquick mcp` as a child process
 and talks to it over stdin/stdout.
 
+The tools are usable as they are. For an agent that should also know *when* to
+reach for Windows, there is a companion skill:
+[winquick-agent-skill](https://github.com/carlbomsdata/winquick-agent-skill).
+
 ## How it fits together
 
 `mcp` is a mode of the same binary, not a separate program:
