@@ -1,5 +1,61 @@
 # Changelog
 
+## v0.3.0 — native MCP
+
+WinQuick is now a Model Context Protocol server, so an AI agent can build, run
+and verify Windows software through structured tools instead of shell syntax.
+
+```console
+claude mcp add winquick -- winquick mcp
+```
+
+### Added
+
+- **`winquick mcp`** — a native MCP server over stdio, built into the same
+  binary. No Node, no Python, no separate executable. It calls the same internal
+  functions the CLI calls rather than shelling out and parsing terminal output.
+- **Thirteen tools.** `windows_run` for disposable Windows commands, builds and
+  tests, with workspace and artifact support; `desktop_start`, `desktop_stop`,
+  `desktop_status`, `desktop_launch` and `desktop_wait_window` for a real
+  Windows desktop; `ui_tree`, `ui_get`, `ui_click` and `ui_type` for Microsoft
+  UI Automation; `ui_screenshot`, which returns a real PNG **in the response**;
+  and `winquick_info` and `winquick_doctor` as structured data.
+- **`docs/mcp.md`**, and a companion
+  [agent skill](https://github.com/carlbomsdata/winquick-agent-skill).
+
+### Changed
+
+- `winquick info` and `winquick doctor` now render from one structured source
+  of truth, which is also what MCP serialises. `doctor` distinguishes `ok`,
+  `note` and `fail`, so "no prepared guest yet" no longer reads as a fault.
+- The experiment write-ups use neutral paths rather than one machine's.
+
+### Semantics
+
+- A non-zero Windows exit code is a **successful** tool result carrying that
+  code, not a transport failure. Tool-level problems — no desktop session, a
+  selector that matched nothing, a timeout — are results with `isError` and a
+  readable reason. Only malformed requests are JSON-RPC errors.
+- **A persistent MCP process is not a persistent Windows VM.** A VM exists only
+  during a `windows_run`, or between `desktop_start` and `desktop_stop`. A
+  desktop session started over MCP is stopped when the client disconnects.
+- Nothing but protocol traffic reaches stdout: the server takes the real stdout
+  at startup and redirects everything else to stderr, so no log line from
+  anywhere in WinQuick can corrupt the connection.
+
+### Verified
+
+106 unit tests, 125 integration checks, 74 MCP protocol checks and 45 MCP
+desktop checks, all passing. MCP adds about 4 ms over the CLI for a warm command
+(288 ms against 284 ms at the median); the server answers `initialize` in about
+3 ms. A fresh Claude Code session, given no WinQuick syntax, used the MCP tools
+for 45 of its 54 tool calls, found and fixed five planted defects in a WPF
+application, and verified all twelve of its requirements against the running
+Windows UI.
+
+Guest networking, output streaming, HTTP/remote MCP, multiple desktop sessions
+and non-BMP filenames remain unavailable.
+
 ## v0.2.1 — hardening
 
 A hardening release. Everything here came from using v0.2.0 as an outside user
