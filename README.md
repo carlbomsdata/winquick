@@ -216,6 +216,24 @@ bugs in a .NET project, verifying each fix against a real Windows kernel, withou
 knowing anything about how WinQuick works. See
 [experiments/dogfood](experiments/dogfood/).
 
+## AI agents / MCP
+
+WinQuick is also a native [MCP](https://modelcontextprotocol.io) server, so an
+agent can use it through structured tools instead of shell syntax:
+
+```console
+claude mcp add winquick -- winquick mcp
+```
+
+That gives Claude Code thirteen tools: `windows_run` for disposable Windows
+commands, builds and tests; `desktop_*` to start a real Windows desktop and
+launch a WPF or WinForms application; `ui_tree`, `ui_get`, `ui_click` and
+`ui_type` to inspect and drive it through Microsoft UI Automation; and
+`ui_screenshot`, which returns a real PNG of the Windows screen in the response.
+
+`mcp` is a mode of the same binary — no Node, no Python, no separate server —
+and it calls the same internals the CLI does. See [docs/mcp.md](docs/mcp.md).
+
 ## What you get
 
 | | |
@@ -307,6 +325,7 @@ winquick clean [--all]                  remove generated data
 - [docs/install.md](docs/install.md) — installing and updating
 - [docs/architecture.md](docs/architecture.md) — how it works
 - [docs/desktop.md](docs/desktop.md) — the desktop capability and UI automation
+- [docs/mcp.md](docs/mcp.md) — the MCP server for AI agents
 - [docs/security.md](docs/security.md) — the isolation model, precisely
 - [docs/licensing.md](docs/licensing.md) — what may be redistributed
 - [docs/troubleshooting.md](docs/troubleshooting.md) — when something breaks
