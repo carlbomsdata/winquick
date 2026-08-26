@@ -19,14 +19,17 @@ image and leaves nothing behind.
 |---|---|
 | Windows command | **~300 ms** |
 | PowerShell command | ~870 ms |
-| Desktop session start | **~390 ms** |
+| Desktop session start | **~380 ms** |
 | UI automation step in a session | ~20 ms |
 | Host | Apple Silicon macOS (Linux and Windows hosts planned) |
 
+Times are medians observed on the development host (Apple Silicon, macOS 26,
+QEMU 11.1), not guaranteed latencies.
+
 ```console
 # Install: download the release archive for Apple Silicon, then
-tar -xzf winquick-0.2.0-darwin-arm64.tar.gz
-./winquick-0.2.0-darwin-arm64/bin/winquick setup
+tar -xzf winquick-0.2.1-darwin-arm64.tar.gz
+./winquick-0.2.1-darwin-arm64/bin/winquick setup
 ```
 
 ## Why
@@ -45,12 +48,12 @@ end.
 
 ## Install
 
-Download `winquick-0.2.0-darwin-arm64.tar.gz` from the
+Download `winquick-0.2.1-darwin-arm64.tar.gz` from the
 [releases page](https://github.com/Carlboms-Data-AB/winquick/releases), then:
 
 ```console
-tar -xzf winquick-0.2.0-darwin-arm64.tar.gz
-sudo cp -R winquick-0.2.0-darwin-arm64/* /usr/local/
+tar -xzf winquick-0.2.1-darwin-arm64.tar.gz
+sudo cp -R winquick-0.2.1-darwin-arm64/* /usr/local/
 winquick setup
 ```
 
@@ -172,7 +175,7 @@ winquick desktop screenshot after.png
 winquick desktop stop
 ```
 
-A session starts in about 390 ms and stays up; each step after that takes tens
+A session starts in about 380 ms and stays up; each step after that takes tens
 of milliseconds. It is not booting Windows that fast — it restores a Windows
 that already booted. Preparing that saved state happens once, and takes about
 20 seconds. Controls are addressed by `AutomationId`, and a selector matching
@@ -221,7 +224,7 @@ knowing anything about how WinQuick works. See
 | PowerShell command | ~870 ms |
 | `dotnet --version` | ~550 ms |
 | `dotnet test` on a small project | ~10 s |
-| Desktop session start | ~390 ms, then ~20 ms per UI step |
+| Desktop session start | ~380 ms, then ~20 ms per UI step |
 
 Optional capabilities, installed only if you ask:
 
@@ -238,35 +241,47 @@ Files, registry keys and environment variables written by one run are gone in th
 next. The Windows image itself is never modified. That is what makes it safe to
 hand to an automated agent that might do anything.
 
-## Known limits
+## Current scope
 
 Measured on the development host: Apple Silicon, macOS 26, QEMU 11.1. Your
 numbers will differ; the shape of them should not.
 
-- **Current host support is Apple Silicon macOS.** Linux and Windows hosts are
-  planned — the design is a QEMU backend behind a host-acceleration layer, and
-  nothing in the product is deliberately Mac-only — but neither is implemented
-  or tested, so neither is claimed. Intel Macs are not planned.
-- **The guest has no network by default, and that is the point.** A run that
-  cannot reach the internet is a run that behaves the same tomorrow.
-  `winquick cache sync` restores NuGet packages on your Mac and shares them with
-  Windows offline. Opt-in networking is not available yet: the guest has no
-  network driver, so enabling it means servicing the base image the way the
-  desktop capability is serviced. Planned, not present.
-- **GUI needs the desktop capability**, which is a separate install because the
-  base runtime deliberately carries no graphics stack at all — that is what
-  keeps it at 763 MiB and a command at ~300 ms. `winquick desktop start` tells
-  you exactly what to run if anything is missing.
-- **One process per run.** A run starts one Windows process and throws the
-  environment away afterwards; `cmd /c`, a PowerShell script or a build tool can
-  do as much work inside that as you like. What does not exist is an interactive
-  session you type into over time. The desktop capability is the closest thing:
-  it stays up between commands.
-- **Output arrives when the command finishes**, rather than streaming as it is
-  produced. The guest has no live channel back to the Mac that does not need a
-  driver or a compiled helper in the guest; see docs/architecture.md.
+**Host support.** Apple Silicon macOS today. Linux and Windows hosts are
+planned — the design is a QEMU backend behind a host-acceleration layer, and
+nothing in the product is deliberately Mac-only — but neither is built nor
+tested, so neither is claimed. Intel Macs are not planned.
 
-## Commands
+**Offline by default.** The guest has no network adapter unless you give it
+one, and today you cannot: enabling it means servicing the base image the way
+the desktop capability is serviced, which is not done yet. Being offline
+removes a large source of run-to-run variability and keeps the default
+environment disconnected from your network; it is not by itself a security
+boundary — [docs/security.md](docs/security.md) is precise about what is.
+`winquick cache sync` restores NuGet packages on your Mac so builds work
+offline.
+
+**Two runtimes, on purpose.** The base runtime carries no graphics stack at
+all, which is what keeps it at 763 MiB and a command at ~300 ms; it is for
+commands, builds and tests. The desktop capability adds WPF, WinForms, UI
+Automation and screenshots, and is a separate install because most runs never
+need it. `winquick desktop start` names anything still missing.
+
+**Execution model.** Each `winquick run` starts one disposable top-level
+process and throws the environment away afterwards. That process can do as much
+as you like — `cmd /c` with operators, a PowerShell script, `dotnet test` over a
+whole solution. What does not exist is a shell you type into over time; a
+desktop session is the long-lived alternative, and stays up between commands.
+
+**Output timing.** stdout and stderr are returned, separately and byte-exact,
+when the command finishes rather than streaming as it is produced. The guest
+has no live channel back to the Mac that does not need a driver or a compiled
+helper in the guest; see [docs/architecture.md](docs/architecture.md).
+
+**Filenames.** Workspace filenames may use any Unicode character in the basic
+multilingual plane — Swedish, CJK, Cyrillic and Greek all transfer normally.
+Characters above U+FFFF, which in practice means emoji, cannot be represented
+on the FAT volume used to carry the workspace. WinQuick checks the whole tree
+first and names every offending path rather than failing partway through.
 
 ## Commands
 
