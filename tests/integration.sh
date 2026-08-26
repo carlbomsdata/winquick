@@ -366,6 +366,23 @@ else
   [ $? -ne 0 ] && ok "desktop status reports no session" || ok "desktop status reports a running session"
 fi
 
+echo "== mcp =="
+# The protocol suite drives the real binary over stdin/stdout. It is its own
+# script because an MCP client is the only honest way to test an MCP server.
+if command -v python3 >/dev/null 2>&1; then
+  if python3 "$(dirname "$0")/mcp.py" "$WQ" > /tmp/wq_mcp.log 2>&1; then
+    ok "mcp protocol suite ($(grep -c '^  PASS' /tmp/wq_mcp.log) checks)"
+  else
+    bad "mcp protocol suite" "$(grep '^  FAIL' /tmp/wq_mcp.log | head -3 | tr '\n' ' ')"
+  fi
+else
+  echo "  (skipping the mcp suite: python3 not available)"
+fi
+
+"$WQ" mcp --help >/tmp/wq_o 2>&1
+grep -q "JSON-RPC" /tmp/wq_o && ok "mcp help explains the transport" || bad "mcp help" "no transport description"
+grep -q "claude mcp add winquick" /tmp/wq_o && ok "mcp help shows the Claude Code command" || bad "mcp help" "no registration command"
+
 # Regressions for the UX defects the desktop dogfood turned up.
 if [ -f "$DESKBASE" ] && [ -d "$WQ_UIAPP" ]; then
   "$WQ" desktop stop >/dev/null 2>&1

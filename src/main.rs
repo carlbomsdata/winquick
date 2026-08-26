@@ -12,6 +12,7 @@ mod helpers;
 mod interrupt;
 mod lock;
 mod mailbox;
+mod mcp;
 mod paths;
 mod qemu;
 mod qmp;
@@ -257,6 +258,24 @@ Windows sees a throwaway copy of the cache, so a build cannot change it.")]
     /// Show what is installed
     Info,
 
+    /// Native MCP server for AI agents
+    #[command(after_help = "\
+Communicates over JSON-RPC via stdin/stdout, so an MCP client starts it as a
+child process rather than connecting to a port. Nothing is written to stdout
+except protocol traffic.
+
+Register it with Claude Code:
+
+  claude mcp add winquick -- winquick mcp
+
+Any other MCP client wants the equivalent of:
+
+  command: winquick
+  args:    [\"mcp\"]
+
+The tools cover disposable Windows commands, WPF and WinForms applications, UI
+Automation and real Windows screenshots. See docs/mcp.md.")]
+    Mcp,
 
     /// Discard the prepared guest; the next run rebuilds it
     Reset,
@@ -422,6 +441,7 @@ fn dispatch(cli: Cli) -> Result<i32> {
         Cmd::Cache { action } => cache_cmd(action, verbose),
         Cmd::Doctor { smoke } => doctor(smoke),
         Cmd::Info => info(),
+        Cmd::Mcp => mcp::serve(),
         Cmd::Reset => {
             state::discard()?;
             state::discard_desktop()?;
