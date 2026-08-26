@@ -14,6 +14,18 @@
 
 ### Added
 
+- **Windows host: the shared core now compiles.** `cargo check --target
+  x86_64-pc-windows-msvc` passes with no errors, down from 16. The platform
+  seam is isolated in `src/hostfs.rs` — allocated size, file identity, advisory
+  locking and the QEMU monitor transport — and the MCP stdout guarantee is
+  ported to the Windows CRT. Nothing about the guest, workspace, artifact,
+  capability, desktop or MCP layers needed to change.
+- **The Windows backend question is answered, and the answer is no.**
+  [docs/windows-host.md](docs/windows-host.md) records the experiment on real
+  hardware: QEMU's WHPX accelerator refuses to save or restore VM state
+  (*"missing dirty memory tracking support"*), including for a VM with no
+  devices at all, so WinQuick's prepared-state architecture cannot run on it.
+  Apple Silicon macOS remains the only supported host.
 - **[docs/dotnet.md](docs/dotnet.md) — an empirical .NET build matrix.** Which
   target frameworks WinQuick can build, which the standard guest can also run,
   and what the produced binaries actually are. .NET Framework 2.0 through
