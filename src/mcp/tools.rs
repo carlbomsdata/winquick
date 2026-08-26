@@ -48,7 +48,10 @@ pub const TOOLS: &[Tool] = &[
              never a single shell string. The guest has no network. To build a project, set \
              `workspace` to its absolute host path: it appears inside Windows as C:\\workspace \
              and is the working directory. The host directory is copied in and never written \
-             back, so use `artifacts` to bring build output home.",
+             back, so use `artifacts` to bring build output home. Because the guest is offline, \
+             a NuGet restore that needs to reach the network fails with NU1301: run \
+             `winquick cache sync` on the Mac once to make packages available offline, or add a \
+             NuGet.config to a project that needs no packages.",
         schema: || json!({
             "type": "object",
             "properties": {
