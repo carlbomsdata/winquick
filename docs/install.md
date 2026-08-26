@@ -10,7 +10,7 @@
 ## Homebrew
 
 ```console
-brew install Carlboms-Data-AB/tap/winquick
+brew install carlbomsdata/tap/winquick
 winquick setup
 ```
 
@@ -25,8 +25,8 @@ Homebrew downloads and unpacks the archive itself, so nothing is marked with
 If you would rather not use Homebrew:
 
 ```console
-curl -LO https://github.com/Carlboms-Data-AB/winquick/releases/download/v0.2.1/winquick-0.2.1-darwin-arm64.tar.gz
-curl -LO https://github.com/Carlboms-Data-AB/winquick/releases/download/v0.2.1/winquick-0.2.1-darwin-arm64.tar.gz.sha256
+curl -LO https://github.com/carlbomsdata/winquick/releases/download/v0.2.1/winquick-0.2.1-darwin-arm64.tar.gz
+curl -LO https://github.com/carlbomsdata/winquick/releases/download/v0.2.1/winquick-0.2.1-darwin-arm64.tar.gz.sha256
 shasum -a 256 -c winquick-0.2.1-darwin-arm64.tar.gz.sha256
 tar xzf winquick-0.2.1-darwin-arm64.tar.gz
 sudo cp -R winquick-0.2.1-darwin-arm64/* /usr/local/

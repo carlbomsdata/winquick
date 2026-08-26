@@ -6,7 +6,7 @@ WPF or WinForms application through UI Automation, and look at what Windows is
 actually rendering — without knowing any WinQuick CLI syntax.
 
 ```console
-brew install Carlboms-Data-AB/tap/winquick
+brew install carlbomsdata/tap/winquick
 winquick setup
 claude mcp add winquick -- winquick mcp
 ```

@@ -27,7 +27,7 @@ Times are medians observed on the development host (Apple Silicon, macOS 26,
 QEMU 11.1), not guaranteed latencies.
 
 ```console
-brew install Carlboms-Data-AB/tap/winquick
+brew install carlbomsdata/tap/winquick
 winquick setup
 ```
 
@@ -48,7 +48,7 @@ end.
 ## Install
 
 ```console
-brew install Carlboms-Data-AB/tap/winquick
+brew install carlbomsdata/tap/winquick
 winquick setup
 ```
 
