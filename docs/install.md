@@ -14,20 +14,29 @@ brew install Carlboms-Data-AB/tap/winquick
 winquick setup
 ```
 
-This installs the CLI, its NTFS helpers, and pulls in QEMU and hivex.
+This installs the CLI, its `ntfscat`/`ntfscp` helpers, the guest bridge sources
+under `share/winquick/wqui`, and the documentation, and pulls in QEMU and hivex.
+
+Homebrew downloads and unpacks the archive itself, so nothing is marked with
+`com.apple.quarantine` and no Gatekeeper step is needed. Verified on macOS 26.
 
 ## Release archive
 
 If you would rather not use Homebrew:
 
 ```console
-curl -LO https://github.com/Carlboms-Data-AB/winquick/releases/download/v0.1.0/winquick-0.1.0-darwin-arm64.tar.gz
-shasum -a 256 -c winquick-0.1.0-darwin-arm64.tar.gz.sha256
-tar xzf winquick-0.1.0-darwin-arm64.tar.gz
-sudo cp -R winquick-0.1.0-darwin-arm64/bin/winquick /usr/local/bin/
-sudo mkdir -p /usr/local/libexec/winquick
-sudo cp winquick-0.1.0-darwin-arm64/libexec/winquick/* /usr/local/libexec/winquick/
+curl -LO https://github.com/Carlboms-Data-AB/winquick/releases/download/v0.2.1/winquick-0.2.1-darwin-arm64.tar.gz
+curl -LO https://github.com/Carlboms-Data-AB/winquick/releases/download/v0.2.1/winquick-0.2.1-darwin-arm64.tar.gz.sha256
+shasum -a 256 -c winquick-0.2.1-darwin-arm64.tar.gz.sha256
+tar xzf winquick-0.2.1-darwin-arm64.tar.gz
+sudo cp -R winquick-0.2.1-darwin-arm64/* /usr/local/
 brew install qemu hivex
+```
+
+The archive's SHA-256 is
+
+```
+d7d94ff6e0909819d446cb639a9c35146ba22d77a343267a4a6efc3b97964cd1
 ```
 
 WinQuick looks for its helpers next to the binary, in `../libexec/winquick`, or
@@ -38,21 +47,21 @@ Then `winquick doctor` to check, and `winquick setup`.
 ## Gatekeeper
 
 The v0.2.1 release is **not signed and not notarized** — no Apple Developer ID
-was available when it was built. macOS therefore quarantines the download.
+was available when it was built.
 
-Clear the attribute on the file you installed, and nothing broader. Do not
-disable Gatekeeper system-wide.
-
-
-Release binaries are signed and notarized where credentials allow. If macOS
-refuses to run a downloaded binary, either the archive was not notarized or the
-quarantine attribute needs clearing:
+This only matters for a **browser download**. Safari and other browsers mark
+downloaded files with `com.apple.quarantine`, and macOS then refuses to run an
+unsigned binary. Clear the attribute on the file you installed, and nothing
+broader:
 
 ```console
 xattr -d com.apple.quarantine /usr/local/bin/winquick
 ```
 
-Prefer Homebrew, which handles this.
+Never disable Gatekeeper system-wide.
+
+Installing with **Homebrew needs none of this**: brew fetches the archive itself,
+so the quarantine attribute is never set.
 
 ## Setting up Windows
 
