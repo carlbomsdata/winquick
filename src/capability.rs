@@ -528,8 +528,14 @@ pub fn nuget_sync(project: &Path, rid: &str, verbose: bool) -> Result<SyncResult
     let after = count_packages(&cache);
     let image = nuget_image()?;
     // Rebuilding the volume changes its identity, which invalidates the prepared
-    // guest. Skip it entirely when nothing was actually added.
-    if after == before && image.exists() {
+    // guest, so skip it when the volume already holds what the cache holds.
+    //
+    // The question is whether the *image* is current, not whether this
+    // particular restore added anything. Comparing before/after got that wrong:
+    // packages can reach the cache another way — an earlier sync whose rebuild
+    // failed, or a `dotnet restore --packages` run by hand — and then every
+    // later sync reported "already up to date" while the guest never saw them.
+    if image.exists() && image_package_count(&image) == Some(after) {
         use std::os::unix::fs::MetadataExt;
         return Ok(SyncResult {
             packages: after,
@@ -542,10 +548,39 @@ pub fn nuget_sync(project: &Path, rid: &str, verbose: bool) -> Result<SyncResult
     Ok(SyncResult { packages, added: after.saturating_sub(before), bytes, rebuilt: true })
 }
 
+/// Where the package count for a built volume is recorded.
+fn image_stamp(image: &Path) -> PathBuf {
+    image.with_extension("packages")
+}
+
+/// How many packages the volume was built from, if we know.
+///
+/// `None` for a volume built by an older WinQuick, which is treated as stale so
+/// that the first sync after upgrading rebuilds it once and records the count.
+fn image_package_count(image: &Path) -> Option<usize> {
+    std::fs::read_to_string(image_stamp(image)).ok()?.trim().parse().ok()
+}
+
+/// How many package *versions* the cache holds.
+///
+/// A NuGet global-packages folder nests as `<id>/<version>/`, and counting only
+/// the ids misses the case that matters here: restoring a second version of a
+/// package already present — `microsoft.netcore.app.ref/8.0.25` next to
+/// `9.0.14` — leaves the id count unchanged while the contents differ. Counting
+/// id/version pairs is both the honest number to report and a staleness signal
+/// that actually moves.
 fn count_packages(dir: &Path) -> usize {
-    std::fs::read_dir(dir)
-        .map(|d| d.filter_map(|e| e.ok()).filter(|e| e.path().is_dir()).count())
-        .unwrap_or(0)
+    let Ok(ids) = std::fs::read_dir(dir) else { return 0 };
+    let mut n = 0;
+    for id in ids.filter_map(|e| e.ok()).filter(|e| e.path().is_dir()) {
+        match std::fs::read_dir(id.path()) {
+            Ok(versions) => {
+                n += versions.filter_map(|e| e.ok()).filter(|e| e.path().is_dir()).count()
+            }
+            Err(_) => n += 1,
+        }
+    }
+    n
 }
 
 /// Rebuild the package-cache volume from the canonical directory.
@@ -553,14 +588,15 @@ pub fn rebuild_nuget_image(verbose: bool) -> Result<(u64, usize)> {
     let cache = nuget_dir()?;
     let image = nuget_image()?;
     std::fs::create_dir_all(image.parent().unwrap())?;
-    let packages = std::fs::read_dir(&cache)
-        .map(|d| d.filter_map(|e| e.ok()).filter(|e| e.path().is_dir()).count())
-        .unwrap_or(0);
+    let packages = count_packages(&cache);
     if verbose {
         eprintln!("winquick: building the package-cache volume ({packages} packages)");
     }
     build_sized(&image, &cache, "packages", NUGET_BYTES)?;
     mark(&image, "WQNUGET.TXT", "packages")?;
+    // What the volume was built from, so a later sync can tell whether it is
+    // still current without opening it.
+    let _ = std::fs::write(image_stamp(&image), packages.to_string());
     use std::os::unix::fs::MetadataExt;
     let allocated = std::fs::metadata(&image)?.blocks() * 512;
     Ok((allocated, packages))
