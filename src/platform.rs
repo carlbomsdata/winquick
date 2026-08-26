@@ -41,11 +41,19 @@ pub const ACCEL: &str = if cfg!(target_os = "macos") { "hvf" } else { "whpx" };
 /// Windows cannot: `-cpu host` and `-cpu max` make OVMF crash in `PlatformPei`
 /// under WHPX — measured on Windows 11 26200 with QEMU 11.1. A concrete model
 /// is required, and it must be the *same* concrete model everywhere, because a
-/// prepared state carries the CPUID it was created with. `qemu64` is the
-/// conservative choice: it boots under WHPX, and being the QEMU baseline it is
-/// available on any x86_64 host rather than only on Intel of a given
-/// generation.
-pub const CPU_MODEL: &str = if cfg!(target_os = "macos") { "host" } else { "qemu64" };
+/// prepared state carries the CPUID it was created with.
+///
+/// `qemu64` looked like the conservative choice and is wrong: it is a
+/// Pentium 4-era model without SSE4.2 or POPCNT, which Windows 11 requires. The
+/// guest firmware and kernel start, then userland never comes up — measured, by
+/// a guest that reached a kernel address and then sat there with an unchanging
+/// RIP and never ran its first `cmd.exe`.
+///
+/// `Nehalem` is the oldest model that carries SSE4.2 and POPCNT, so it is the
+/// least demanding thing a Windows 11 guest will actually boot on, and it is
+/// available on any x86_64 host from roughly 2008 onwards. `Skylake-Client`
+/// also works and exposes more, at the cost of requiring newer hardware.
+pub const CPU_MODEL: &str = if cfg!(target_os = "macos") { "host" } else { "Nehalem" };
 
 /// The UEFI firmware code image QEMU ships for this guest architecture.
 pub const UEFI_CODE: &str =
@@ -108,11 +116,16 @@ mod tests {
 
     /// `-cpu host` crashes OVMF under WHPX, so Windows must pin a concrete
     /// model — and it must stay pinned, because prepared states carry it.
+    ///
+    /// It also has to be new enough for Windows 11: `qemu64` predates SSE4.2
+    /// and POPCNT, and a guest on it boots its kernel and never reaches
+    /// userland.
     #[test]
-    fn windows_pins_a_concrete_cpu_model() {
+    fn windows_pins_a_cpu_model_windows_11_can_boot() {
         if cfg!(target_os = "windows") {
             assert_ne!(CPU_MODEL, "host");
             assert_ne!(CPU_MODEL, "max");
+            assert_ne!(CPU_MODEL, "qemu64", "qemu64 has no SSE4.2/POPCNT");
         }
     }
 
