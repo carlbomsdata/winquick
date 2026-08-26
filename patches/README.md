@@ -21,18 +21,28 @@ The blocker's other claim — "some system register/state save-restore" — is
 stale: `whpx_get_registers()` and `whpx_set_registers()` already carry XSAVE
 through `WHvGet/SetVirtualProcessorXsaveState`.
 
-**`io/channel-file.c`** — `qio_channel_file_set_blocking()` was a `/* not
-implemented */` stub on Win32 that always failed, which made `migrate file:`
-and `-incoming file:` unusable there regardless of accelerator. A regular file
-is always ready, so the call is now a no-op on Windows.
+**`io/channel-file.c`** — two Win32 bugs, either of which alone stops
+`migrate file:` working there regardless of accelerator:
+
+- `qio_channel_file_set_blocking()` was a `/* not implemented */` stub that
+  always failed. A regular file is always ready, so the call is now a no-op.
+- File channels were opened in the CRT's **text mode**, which translates CRLF
+  and treats `0x1A` as end of file. A migration stream is binary: it was written
+  mangled and then failed to load with `Failed to load vmstate ... ret: -5`.
+  `O_BINARY` is now set. This is a plain bug fix and the most clearly
+  upstreamable of the three.
 
 ### Measured with this patch
 
 Windows 11 Pro 25H2 (26200), i5-8265U, Validation OS x64 26100.8972:
 
-- `stop` then `migrate` under WHPX: **completed**, 153 MB state, ~2.5 s
-- the same immutable state restored into **20 fresh QEMU processes**: 20/20,
-  p50 1.99 s, state hash unchanged, zero orphans
+- `stop` then `migrate` under WHPX: **completed**, ~147 MB state, ~2.2 s
+- the same immutable state restored into **20 fresh QEMU processes** over the
+  **native `file:` transport**: 20/20, p50 **962 ms**, hash unchanged, zero
+  orphans. (An earlier measurement of 1.99 s went through a relay, which the
+  `O_BINARY` fix made unnecessary.)
+- a real command through the guest: `cmd /c ver` →
+  `Microsoft Windows [Version 10.0.26100.8972]`, exit code 0
 
 ### Upstreamability
 

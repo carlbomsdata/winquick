@@ -102,6 +102,79 @@ tiny real-mode guest captured to plain bytes (registers, XSAVE, RAM) and
 restored into **20 fresh processes** from the same file, 20/20, p50 52 ms,
 hash unchanged.
 
+### The guest path works: a real command ran
+
+With the patched QEMU, a prepared x64 Validation OS and WinQuick's own agent and
+mailbox, the guest executed a real command:
+
+```
+WQOUT.TXT   Microsoft Windows [Version 10.0.26100.8972]
+WQCODE.TXT  0 wqtoken-milestone7
+WQERR.TXT   (empty)
+```
+
+Windows x64, hardware-accelerated under WHPX, driven entirely through the
+existing mailbox protocol — the same `guest/agent.cmd` macOS uses, unmodified.
+The agent is a batch file, so nothing about it needed an x64 build. Round trip
+from cold boot to exit code: 18.4 s (this is a cold boot, not a restore).
+
+The *host* side of that is still lab scripting rather than `winquick.exe`: the
+Rust backend now knows the right QEMU, accelerator, machine, CPU and firmware,
+but `setup` and `run` are not yet wired to drive it.
+
+### The CPU model is not a free choice
+
+`qemu64` looked like the safe default and is wrong. It is a Pentium 4-era model
+without SSE4.2 or POPCNT, both of which Windows 11 requires. The symptom is
+quiet and misleading: firmware runs, the kernel starts and reaches a kernel
+address, and then nothing — an unchanging RIP, no display (Validation OS has no
+graphics driver), and no first `cmd.exe`.
+
+It was isolated by making the guest agent drop a marker on C: before doing
+anything else, then reading the disk back offline:
+
+| `-cpu` | Windows userland reached |
+|---|---|
+| `qemu64` | **no** |
+| `Nehalem` | yes |
+| `Skylake-Client` | yes |
+
+`Nehalem` is now pinned: the oldest model carrying SSE4.2 and POPCNT, so the
+least demanding thing a Windows 11 guest actually boots on, and available on any
+x86_64 host from about 2008. It is part of the prepared-state fingerprint,
+because a state carries the CPUID it was made with.
+
+### Preparing the base image on Windows is blocked
+
+WinQuick injects its agent by writing two things into the guest image: the batch
+file, and an `AutoRun` value in the SOFTWARE hive. On macOS that is done without
+mounting anything — `hdiutil -nomount` exposes the partition and `ntfscp` and
+`hivexsh` write into it.
+
+The Windows equivalent would be to attach the VHDX and copy the files. That does
+not work on the validation host:
+
+- `Mount-DiskImage` fails with a CIM `PermissionDenied`, even from a genuinely
+  elevated context (verified: `elevated: True`).
+- `diskpart` `attach vdisk` selects the disk and then fails with *Access denied*.
+- The Virtual Disk Service was started first, and `vhdmp.sys` is present, so
+  neither is the cause. **Bitdefender Endpoint Security Tools** is installed
+  alongside Defender, and blocking disk-image attach is standard anti-evasion
+  behaviour for managed endpoints.
+
+For this work the image was prepared on the Mac instead and copied over, which
+proved the guest path. For the product the better answer is not to mount at all:
+build the same `ntfsprogs` helpers WinQuick already ships for macOS, and write
+into the image directly. That needs no elevation, no VHD driver and no argument
+with the endpoint protection — and it is the same code path on both hosts.
+
+### Windows holds its disk images exclusively
+
+QEMU on Windows opens a disk image such that an ordinary read from the host
+fails with *the process cannot access the file because it is being used by
+another process*. Polling the mailbox while the guest runs needs an explicit
+`FileShare.ReadWrite` open. Worth knowing before the run loop is written.
+
 ### Other findings
 
 - **`-cpu host` and `-cpu max` crash OVMF under WHPX**, in `PlatformPei`.
