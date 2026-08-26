@@ -33,34 +33,73 @@ means a virtual machine.
     guest discarded
 ```
 
-## The question that gates everything
+## The question that gated everything — answered
 
 WinQuick is fast because it does not boot Windows. It restores a **prepared
 migration state** into a fresh QEMU process — that is what turns a ~20 second
 boot into a ~300 ms command. Every other property is downstream of it.
 
-So the first thing to establish on Windows is not whether the code compiles.
-It is whether this works:
+So the first thing to establish on Windows was whether that survives. It was
+tested on real hardware: Windows 11 Pro 25H2 (build 26200), Intel i5-8265U,
+Windows Hypervisor Platform enabled, QEMU 11.1.0 from the Software Freedom
+Conservancy's winget package.
 
-1. boot the x64 Validation OS under QEMU with a Windows hardware accelerator
-2. reach the normal guest-ready state
-3. write the prepared migration state
-4. kill QEMU
-5. start a new QEMU process and restore that state
-6. run a real command
-7. repeat enough times to know whether it is stable, not merely possible
+**It does not. QEMU's WHPX accelerator cannot save or restore VM state.**
 
-If QEMU with WHPX preserves migration state reliably, the existing architecture
-carries over and the port is mostly a host seam. If it does not, the honest
-answer is a bounded study of a Windows-native backend that can still deliver
-disposable guests, fast restore, deterministic clean state, headless operation
-and a programmatic lifecycle — and only then a decision.
+Asking a running guest to migrate returns:
 
-**This experiment has not been run.** It needs a real Windows x86_64 machine
-with hardware virtualization enabled; nested virtualization on a shared CI
-runner does not answer the question. Until it is run, writing the port would
-mean guessing the backend, and the backend determines the shape of everything
-else.
+```
+{"error": {"class": "GenericError", "desc":
+ "State blocked due to missing dirty memory tracking support,
+  And some system register/state save-restore "}}
+```
+
+This is a migration blocker the WHPX accelerator registers at initialisation.
+It was isolated as follows:
+
+| Test | Result |
+|---|---|
+| Full WinQuick-shaped VM (UEFI, NVMe, ramfb), `migrate file:` | blocked |
+| Bare VM, `-nodefaults`, no disks, no devices at all | **blocked — same message** |
+| `savevm` internal snapshot instead of migration | blocked, same message |
+| CPU models `qemu64`, `Skylake-Client`, `Nehalem` | blocked |
+| Same bare VM under TCG instead of WHPX | migrate **accepted** |
+
+Because a VM with no devices whatsoever is still refused, and the identical
+configuration under TCG is not, the cause is neither a device, a disk, the
+firmware, the CPU model nor the machine type. It is the accelerator.
+
+Two smaller findings came out of the same work:
+
+- **`-cpu host` and `-cpu max` crash OVMF under WHPX**, in `PlatformPei`.
+  Concrete models boot fine. WinQuick uses `-cpu host` on macOS, so a Windows
+  backend could not have reused that.
+- **QEMU's migration transports are weak on Windows** independently of WHPX.
+  Under TCG, `file:` failed with `Failed to set FD nonblocking`, and `exec:`
+  wants a helper program that does not exist there. Moot given the blocker
+  above, but it means even a future WHPX with state support would need a
+  working transport.
+
+Falling back to TCG is not an option: it is software emulation, and WinQuick's
+whole proposition is hardware-accelerated disposable Windows.
+
+**So QEMU + WHPX cannot host WinQuick's architecture**, and that is a property
+of the backend rather than something configuration can fix. The guest booted
+fine — the Windows kernel was executing at a kernel-range RIP under WHPX — so
+this is specifically about freezing and restoring it, not about running it.
+
+### What that leaves
+
+A Windows backend would have to come from somewhere other than WHPX. Hyper-V
+can checkpoint and restore, but adopting it means a genuinely separate backend:
+no QEMU, VHDX instead of qcow2, a WMI lifecycle instead of QMP, and a different
+route for the guest control channel — and checkpoint *apply* is typically
+measured in seconds, against the ~300 ms WinQuick exists to deliver. It is also
+not currently enabled on the validation machine, and turning it on requires
+elevation and a reboot.
+
+That is a product decision with real cost, not an implementation detail, so it
+is written down here rather than started.
 
 ## What the code audit found
 
@@ -118,12 +157,16 @@ Sketched so the estimate is honest, not so it can be started blind:
   obligations satisfied, or WinGet is a decision that follows the backend
   choice.
 
-## Why this is written down instead of built
+## Why the port stopped here
 
-The instruction that shaped this was: prove the restore mechanism *before*
-porting. That was the right instruction, and it cuts both ways — without a
-Windows machine to prove it on, the disciplined thing is to stop at the audit
-rather than write a large amount of virtualization code that cannot be run,
-against a backend that has not been chosen.
+Prove the restore mechanism before porting. The experiment was run, on real
+hardware, and it came back negative for reasons that no amount of the remaining
+work would change: the accelerator cannot save VM state, so there is nothing for
+the rest of the port to build on.
+
+What *was* worth doing regardless of the backend has been done — the shared core
+now compiles for `x86_64-pc-windows-msvc` with no errors, and the platform seam
+is isolated in `src/hostfs.rs`. Whichever backend a Windows port eventually
+uses, that work stands.
 
 Apple Silicon macOS remains the supported host.
