@@ -27,6 +27,12 @@
   build rests on the binary rather than on the project file.
 - Fixtures for the whole matrix under `experiments/dotnet-matrix/`.
 
+- **[docs/windows-host.md](docs/windows-host.md)** — what running WinQuick *on*
+  Windows would take, measured rather than guessed: 16 compile errors across 6
+  files, all in the host seam, and the prepared-state restore experiment that
+  has to be answered on real hardware before the backend can be chosen. Not
+  implemented; Apple Silicon macOS remains the supported host.
+
 ### Changed
 
 - Public URLs and the Homebrew command use the canonical `carlbomsdata`

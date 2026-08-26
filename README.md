@@ -275,10 +275,19 @@ hand to an automated agent that might do anything.
 Measured on the development host: Apple Silicon, macOS 26, QEMU 11.1. Your
 numbers will differ; the shape of them should not.
 
-**Host support.** Apple Silicon macOS today. Linux and Windows hosts are
-planned — the design is a QEMU backend behind a host-acceleration layer, and
-nothing in the product is deliberately Mac-only — but neither is built nor
-tested, so neither is claimed. Intel Macs are not planned.
+**Host support.** Apple Silicon macOS today.
+
+| Host | Status |
+|---|---|
+| Apple Silicon macOS | Supported |
+| Windows x86_64 | Planned — see [docs/windows-host.md](docs/windows-host.md) |
+| Windows ARM64 | Planned |
+| Linux | Planned |
+| Intel Mac | Not planned |
+
+Nothing in the product is deliberately Mac-only, and an audit of what a Windows
+host would take is written up in [docs/windows-host.md](docs/windows-host.md).
+It is not built or tested, so it is not claimed.
 
 **Offline by default.** The guest has no network adapter unless you give it
 one, and today you cannot: enabling it means servicing the base image the way
