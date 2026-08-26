@@ -2,8 +2,17 @@
 
 ## v0.2.1 — hardening
 
-Everything here came from using v0.2.0 as an outside user would, in an isolated
-environment, from the published archive.
+A hardening release. Everything here came from using v0.2.0 as an outside user
+would: an isolated environment, a fresh HOME, and the published archive rather
+than a development build.
+
+Validated with 66 unit tests and 118 integration checks (0 failures), a
+100-command soak, a 50-cycle desktop soak, and a 50-repetition stress of the
+live desktop sequence.
+
+No new features. Guest networking, streaming output, Linux and Windows hosts,
+and filenames above U+FFFF all remain unavailable; see **Investigated and
+deferred** below and the README's *Current scope*.
 
 ### Fixed
 
@@ -49,6 +58,9 @@ environment, from the published archive.
 - Documentation: WinForms needs `Control.Name` for an AutomationId, `%` follows
   batch rules, `--hwnd` disambiguates windows, and the measured numbers agree
   with each other.
+- README's *Known limits* is now *Current scope*, rewritten so each entry says
+  what WinQuick does and why, rather than restating a list of things it does
+  not. The artifact-pattern entry is gone because the limitation is gone.
 
 ### Investigated and deferred
 

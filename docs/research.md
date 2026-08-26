@@ -1372,8 +1372,10 @@ none), which is the cost of six extra volumes at boot.
   are rare, but it makes adding a package feel slow the first time.
 - **Artifacts are copied, not streamed** — a very large output directory is
   bounded by the 2 GiB artifact volume.
-- The pattern language is three shapes, not a real glob. `**` in the middle of a
-  path is not supported.
+- The pattern language was three shapes, not a real glob, and `**` in the middle
+  of a path was unsupported. **Fixed in v0.2.1**: `src/artifact_patterns.rs`
+  implements a real glob subset, and a single `*` now means one level rather
+  than the whole tree.
 - No artifact extraction from a run that times out or whose guest never responds.
 
 ---

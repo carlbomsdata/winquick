@@ -37,7 +37,7 @@ Then `winquick doctor` to check, and `winquick setup`.
 
 ## Gatekeeper
 
-The v0.2.0 release is **not signed and not notarized** — no Apple Developer ID
+The v0.2.1 release is **not signed and not notarized** — no Apple Developer ID
 was available when it was built. macOS therefore quarantines the download.
 
 Clear the attribute on the file you installed, and nothing broader. Do not
