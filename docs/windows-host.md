@@ -9,10 +9,15 @@ developer on an Apple Silicon Mac gets.
 elevation, no mounted images and no exception asked of the endpoint security
 software.
 
-It is not yet *fast* there. Every run is a cold boot at **~16.5 s**, because a
-restored guest under WHPX resumes and then never executes — the one thing that
-did not work, written up [below](#the-prepared-guest-restores-and-then-does-nothing).
-macOS keeps its ~300 ms because restoring works there.
+**With one vCPU the fast path now works there**: a prepared guest restores in
+about 100 ms and runs the queued command, 20 warm runs out of 20. That took
+finding a bug in WinQuick itself — it was freezing the guest half a step too
+early, mid-dismount — written up in [mailbox-freeze.md](mailbox-freeze.md).
+
+With **two or more** vCPUs a restored guest still resumes and then halts for
+good; that one is a QEMU/WHPX problem and is written up in
+[whpx-resume.md](whpx-resume.md). Until it is solved, a Windows host either
+runs one processor warm or several cold.
 
 ## The rule that must not be broken
 
@@ -375,8 +380,9 @@ rather than guessing when it meets something else.
   publishers', and archives are unpacked with the `tar` Windows has shipped
   since 10 1803 rather than the `unzip` it has not. None of that has been run
   on Windows yet, so it is a claim about the code, not a measurement.
-- **A restored guest does not resume**, so every run is a cold boot. This is the
-  one real gap, and it is above.
+- **A restored guest with more than one vCPU does not resume**, so a
+  multiprocessor guest still boots cold every time. This is the one real gap,
+  and it is above.
 - **The desktop** needs an x64 `wqui.exe` and x64 drivers.
 - **Packaging.** A Windows user should not assemble a QEMU directory by hand,
   and the fast path additionally needs a patched QEMU.

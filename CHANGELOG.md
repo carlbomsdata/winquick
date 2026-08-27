@@ -4,6 +4,18 @@
 
 ### Fixed
 
+- **A prepared guest was frozen half a step too early.** WinQuick stopped the
+  guest the instant `WQREADY.TXT` appeared, which is the moment its directory
+  entry reaches the image — the middle of the agent's work, not the end of it:
+  the agent writes the flag and then dismounts the mailbox volume. The prepared
+  state therefore captured a guest with mailbox I/O in flight, and restoring it
+  into a fresh process left that operation permanently incomplete. The agent
+  never reached its poll loop and never saw the next command.
+
+  On Windows this made warm runs fail **8 times out of 8**; letting the guest
+  settle before freezing makes them succeed **20 out of 20**, restoring in about
+  100 ms. macOS was masking the same race by timing. See
+  [docs/mailbox-freeze.md](docs/mailbox-freeze.md).
 - **A QEMU that fails to start now says why.** Its stderr was captured and
   discarded, so `winquick run` reported an exit code and nothing else. The
   message it wanted to print — a missing accelerator, an unreadable file, an

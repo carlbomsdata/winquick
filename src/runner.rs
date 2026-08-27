@@ -567,6 +567,13 @@ fn kill(child: &mut Child) {
 /// before falling back is five minutes of nothing.
 const UNPROVEN_RESTORE_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// How long to let the guest settle after it announces itself, before freezing.
+///
+/// Long enough for the agent to finish dismounting the mailbox and get back to
+/// its poll loop, which is the only state worth capturing. It is paid once per
+/// prepared guest, never per run.
+const SETTLE_BEFORE_FREEZE: Duration = Duration::from_millis(1500);
+
 fn warm_execute(
     ctx: &Ctx,
     ready: &state::ReadyState,
@@ -707,6 +714,17 @@ fn build_ready_state(ctx: &Ctx, want: &state::Fingerprint) -> Result<state::Read
         wait_for(&mbox, mailbox::READY, &mut child, deadline)?;
         ctx.vlog(format!("guest ready after {:.1}s", t0.elapsed().as_secs_f64()));
 
+        // The readiness flag becomes visible here the moment its directory
+        // entry reaches the image, and that is the middle of the agent's work,
+        // not the end of it: the agent writes the flag and then dismounts the
+        // mailbox volume. Freezing on the flag captures a guest with mailbox
+        // I/O still in flight, and on restore into a fresh process that
+        // operation never completes -- the agent never reaches its poll loop
+        // and never sees the next command. Measured on Windows: a guest frozen
+        // this way performed zero poll iterations after restore.
+        //
+        // So wait for the guest to go quiet before taking its picture.
+        std::thread::sleep(SETTLE_BEFORE_FREEZE);
         q.stop()?;
         std::fs::create_dir_all(&sdir)?;
         let state_file = sdir.join("ready.state");

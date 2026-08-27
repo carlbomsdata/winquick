@@ -150,13 +150,13 @@ guest.
 
 This is independent of the resume problem and looks upstreamable on its own.
 
-## And one more, which is not about the processor at all
+## And one more, which was not about the processor at all — now fixed
 
 Even with `-smp 1`, where the guest demonstrably resumes and executes, a real
-`winquick run` still times out waiting for `WQCODE.TXT`. The guest is alive; it
-just never acts on the command. That is a **mailbox coherency** problem — the
-host writes a command into a FAT volume that the frozen guest already has
-mounted and cached — and it is a separate investigation from this one.
+`winquick run` used to time out waiting for `WQCODE.TXT`. The guest was alive;
+it just never acted on the command. That looked like mailbox cache coherency.
+It was not. See [mailbox-freeze.md](mailbox-freeze.md): WinQuick was freezing
+the guest half a step too early, and the fix is one `sleep`.
 
 ## Reproducing
 
