@@ -10,7 +10,7 @@ software. See [docs/licensing.md](docs/licensing.md) for how the boundaries work
 **Included in WinQuick release archives.**
 
 - Project: ntfs-3g / ntfsprogs
-- Version: 2022.10.3, unmodified
+- Version: 2022.10.3, **modified** -- see below
 - Licence: GNU General Public License, version 2 or later
 - Homepage: <https://www.tuxera.com/community/open-source-ntfs-3g/>
 - Source: <https://tuxera.com/opensource/ntfs-3g_ntfsprogs-2022.10.3.tgz>
@@ -20,15 +20,39 @@ Copyright © 2000-2022 Anton Altaparmakov, Richard Russon, Szabolcs Szakacsits,
 Jean-Pierre André and contributors.
 
 WinQuick uses these two programs during `winquick setup` only, to write files
-into the Windows system volume, because macOS cannot write NTFS. They are
-invoked as separate child processes and are not linked into WinQuick.
+into the Windows system volume: macOS cannot write NTFS at all, and on Windows
+the alternative would be attaching the disk image, which needs elevation.
+They are invoked as separate child processes and are not linked into WinQuick.
+
+**Changes made (GPL-2.0 section 2a).** WinQuick modifies the upstream sources.
+The complete diff is [`patches/ntfsprogs-windows.patch`](patches/ntfsprogs-windows.patch),
+applied by the build recipe. In summary:
+
+- `libntfs-3g/unix_io.c` -- an `NTFS_IMAGE_OFFSET` environment variable shifts
+  every seek and positioned read/write by a fixed number of bytes, so a
+  partition inside a whole-disk image can be addressed without a partition
+  device node. Unset, it changes nothing.
+- `libntfs-3g/unix_io.c` -- the image is opened in binary mode on Windows, where
+  the C runtime would otherwise translate line endings and stop at `0x1A`.
+- `include/ntfs-3g/compat.h` -- upstream defines `__attribute__` away on
+  Windows, which also discards `__attribute__((packed))` and silently unpacks
+  every on-disk structure. GCC supports the attribute, so it is left alone.
+- `include/ntfs-3g/device_io.h` -- the file-based device operations are used on
+  Windows rather than the physical-drive ones.
+- `ntfsprogs/ntfscat.c`, `ntfsprogs/ntfscp.c` -- stdout and the source file are
+  put in binary mode on Windows, for the same reason as above.
+- `ntfsprogs/utils.h` -- upstream's Windows format-translation macros are
+  variadic but expand to a trailing comma; `##` makes zero-argument calls
+  compile.
+- `libntfs-3g/dir.c` -- an explicit union cast, because GCC ignores
+  `transparent_union` on the Windows ABI.
 
 **Corresponding source.** The build recipe is
 [`scripts/build-ntfs-helpers.sh`](scripts/build-ntfs-helpers.sh); it downloads
-the exact upstream tarball above, verifies its digest, and builds with no
-patches. Running it reproduces the shipped binaries. The upstream tarball is also
-attached to each WinQuick release so the source remains available alongside the
-binaries for as long as they are distributed.
+the exact upstream tarball above, verifies its digest, applies the patch and
+builds. Running it reproduces the shipped binaries. The upstream tarball and the
+patch are attached to each WinQuick release so the source remains available
+alongside the binaries for as long as they are distributed.
 
 > This program is free software; you can redistribute it and/or modify it under
 > the terms of the GNU General Public License as published by the Free Software
@@ -56,21 +80,43 @@ release archive, and is available at
 - Obtained by the user via Homebrew (`brew install qemu`)
 - Tested against: 11.1.0
 
-WinQuick runs `qemu-system-aarch64` and `qemu-img` as separate child processes.
-It does not link against QEMU, statically or dynamically, and contains no QEMU
-code. WinQuick does not distribute QEMU; Homebrew does.
+WinQuick runs `qemu-system-aarch64` (macOS) or `qemu-system-x86_64` (Windows)
+and `qemu-img` as separate child processes. It does not link against QEMU,
+statically or dynamically, and contains no QEMU code. WinQuick does not
+distribute QEMU.
+
+On Windows the prepared-state path additionally needs the changes in
+[`patches/whpx-stop-and-copy.patch`](patches/whpx-stop-and-copy.patch), which
+are not applied to any binary WinQuick ships. Without them a Windows host still
+works; it boots cold every time.
 
 ---
 
-## hivex (`hivexsh`) — required, not distributed
+## hivex (`hivexsh`)
 
-- Licence: GNU Lesser General Public License, version 2.1 or later
+- Licence: `hivexsh` is GPL-2.0-or-later; the `hivex` library it uses is
+  LGPL-2.1-or-later
 - Homepage: <https://github.com/libguestfs/hivex>
-- Obtained by the user via Homebrew (`brew install hivex`)
-- Tested against: 1.3.24
+- Version: 1.3.24
+- Source: <https://download.libguestfs.org/hivex/hivex-1.3.24.tar.gz>
+  (SHA-256 `a52fa45cecc9a78adb2d28605d68261e4f1fd4514a778a5473013d2ccc8a193c`)
 
 Used during `winquick setup` only, to set one value in a Windows registry hive.
 Invoked as a separate child process; not linked into WinQuick.
+
+**On macOS this is not distributed** -- the user installs it with
+`brew install hivex`.
+
+**On Windows it is distributed with WinQuick, modified**, because no package
+provides it there. Upstream excludes `hivexsh` from Windows builds entirely, for
+one reason: it composes its interactive prompt with `open_memstream`, which
+mingw does not have. WinQuick's change, in
+[`patches/hivex-windows.patch`](patches/hivex-windows.patch), uses a fixed
+prompt on Windows instead. Nothing else is altered, and WinQuick drives
+`hivexsh` from a script file where no prompt is ever printed. The build recipe
+is [`scripts/build-hivex-windows.sh`](scripts/build-hivex-windows.sh); it
+downloads the tarball above, verifies its digest, applies the patch and builds.
+The tarball and patch are attached to each Windows release.
 
 ---
 

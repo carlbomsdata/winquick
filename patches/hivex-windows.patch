@@ -1,0 +1,25 @@
+--- a/sh/hivexsh.c
++++ b/sh/hivexsh.c
+@@ -237,6 +237,14 @@
+   free (prompt_string);
+   prompt_string = NULL;
+ 
++#ifdef _WIN32
++  /* open_memstream is POSIX and mingw has no equivalent. It is used here only
++   * to compose the interactive prompt, and WinQuick drives hivexsh from a
++   * script file, where no prompt is ever printed. A fixed prompt keeps the
++   * shell usable interactively without pulling in a stream implementation. */
++  prompt_string = strdup ("> ");
++  return;
++#else
+   FILE *fp;
+   char *ptr;
+   size_t size;
+@@ -257,6 +265,7 @@
+   fprintf (fp, "> ");
+   fclose (fp);
+   prompt_string = ptr;
++#endif
+ }
+ 
+ /* Print the \full\path of a node. */

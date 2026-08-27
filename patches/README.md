@@ -1,7 +1,68 @@
-# QEMU patches
+# Patches
 
-Not applied to anything WinQuick ships. These are the changes a Windows host
-port would need in QEMU, kept here with the evidence for why each exists.
+Changes WinQuick makes to third-party sources, kept here with the evidence for
+why each exists.
+
+Two of them are applied by the build recipes and end up in binaries WinQuick
+ships -- `ntfsprogs-windows.patch` and `hivex-windows.patch`. The QEMU one is
+not applied to anything WinQuick ships; it is what a user builds for themselves
+if they want the fast path on Windows.
+
+| Patch | Applied by | Shipped |
+|---|---|---|
+| `ntfsprogs-windows.patch` | `scripts/build-ntfs-helpers.sh` | yes, both hosts |
+| `hivex-windows.patch` | `scripts/build-hivex-windows.sh` | yes, Windows only |
+| `whpx-stop-and-copy.patch` | nothing | no |
+
+## `ntfsprogs-windows.patch`
+
+Against **ntfs-3g/ntfsprogs 2022.10.3**. Seven files, ~165 lines. It does two
+separate jobs.
+
+**Addressing a partition without mounting anything.** `ntfscp` and `ntfscat`
+normally want a partition device node. macOS can produce one with
+`hdiutil attach -nomount`; Windows cannot without elevation and a virtual-disk
+driver, and endpoint security software blocks that route in practice -- on the
+validation host, `Mount-DiskImage` fails with a CIM `PermissionDenied` and
+`diskpart attach vdisk` with *Access denied*, both from a verified elevated
+context with the Virtual Disk Service running and `vhdmp.sys` present.
+
+Every access in `unix_io.c` is a seek or a positioned read/write, so an
+`NTFS_IMAGE_OFFSET` environment variable shifts them all by a fixed base and
+"image plus offset" behaves exactly like the partition node does elsewhere.
+Unset, it is zero and nothing changes -- which is why both hosts now use it and
+macOS no longer attaches anything either.
+
+**Making the Windows build correct.** Five of the seven files are ordinary
+portability fixes, and one of them is a real bug worth stating plainly:
+
+> `include/ntfs-3g/compat.h` defines `__attribute__` away on Windows. That also
+> discards `__attribute__((packed))` on every on-disk structure.
+> `NTFS_BOOT_SECTOR` grows from 512 to 520 bytes, `oem_id` lands at the wrong
+> offset, and every NTFS volume reports *"NTFS signature is missing"*.
+
+The rest: the image, `ntfscat`'s stdout and `ntfscp`'s source file are opened in
+binary mode, because the C runtime otherwise rewrites `0x0A` and treats `0x1A`
+as end of file -- a 6 MB registry hive grew by exactly its newline count on
+every read/write cycle until this was fixed; the file-based device operations
+are selected instead of the physical-drive ones; upstream's Windows
+format-translation macros get `##` so zero-argument calls compile; and `dir.c`
+gets an explicit union cast because GCC ignores `transparent_union` on the
+Windows ABI.
+
+Measured with this patch: a 6 MB `SOFTWARE` hive read out of a 32 GB image,
+edited, written back and read again **byte-identical over two cycles**, in
+153 ms, with no mounting, no elevation and no endpoint-security exception.
+
+## `hivex-windows.patch`
+
+Against **hivex 1.3.24**. One file, one hunk.
+
+Upstream excludes `hivexsh` from Windows builds entirely, and the reason is
+narrow: `set_prompt_string()` composes the interactive prompt with
+`open_memstream`, which is POSIX and which mingw does not have. On Windows the
+prompt becomes a fixed `"> "`. Nothing else changes, and WinQuick drives
+`hivexsh` from a script file, where no prompt is ever printed.
 
 ## `whpx-stop-and-copy.patch`
 

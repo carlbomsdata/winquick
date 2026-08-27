@@ -1,0 +1,165 @@
+--- a/libntfs-3g/unix_io.c
++++ b/libntfs-3g/unix_io.c
+@@ -66,6 +66,30 @@
+ 
+ #define DEV_FD(dev)	(*(int *)dev->d_private)
+ 
++/*
++ * WinQuick: address a partition *inside* a whole-disk image.
++ *
++ * These tools normally want a partition device node -- /dev/disk4s4 and such.
++ * Windows has no equivalent without attaching the image, which needs elevation
++ * and is precisely what endpoint security blocks. Every access below is a seek
++ * or a positioned read/write, so shifting them by a fixed base makes
++ * "image + offset" behave exactly like the partition node does elsewhere.
++ *
++ * The base comes from NTFS_IMAGE_OFFSET, in bytes; unset means zero, so nothing
++ * changes for callers that do not use it.
++ */
++static s64 ntfs_wq_base(void)
++{
++	static s64 base = -1;
++
++	if (base < 0) {
++		const char *e = getenv("NTFS_IMAGE_OFFSET");
++
++		base = (e && *e) ? (s64)strtoll(e, NULL, 10) : 0;
++	}
++	return base;
++}
++
+ /* Define to nothing if not present on this system. */
+ #ifndef O_EXCL
+ #	define O_EXCL 0
+@@ -140,6 +164,14 @@
+ 	 */ 
+ 	if (!NDevBlock(dev) && (flags & O_RDWR) == O_RDWR)
+ 		flags |= O_EXCL;
++#ifdef O_BINARY
++	/* Windows: an image is bytes, not text. Without this the CRT translates
++	 * CRLF and treats 0x1A as end of file, which corrupts every read and
++	 * silently truncates the volume. O_EXCL also has no meaning here without
++	 * O_CREAT, and msvcrt rejects the combination. */
++	flags |= O_BINARY;
++	flags &= ~O_EXCL;
++#endif
+ 	*(int*)dev->d_private = open(dev->d_name, flags);
+ 	if (*(int*)dev->d_private == -1) {
+ 		err = errno;
+@@ -244,6 +276,9 @@
+ static s64 ntfs_device_unix_io_seek(struct ntfs_device *dev, s64 offset,
+ 		int whence)
+ {
++	if (whence == SEEK_SET)
++		return lseek(DEV_FD(dev), offset + ntfs_wq_base(), whence)
++			- ntfs_wq_base();
+ 	return lseek(DEV_FD(dev), offset, whence);
+ }
+ 
+@@ -298,7 +333,7 @@
+ static s64 ntfs_device_unix_io_pread(struct ntfs_device *dev, void *buf,
+ 		s64 count, s64 offset)
+ {
+-	return pread(DEV_FD(dev), buf, count, offset);
++	return pread(DEV_FD(dev), buf, count, offset + ntfs_wq_base());
+ }
+ 
+ /**
+@@ -320,7 +355,7 @@
+ 		return -1;
+ 	}
+ 	NDevSetDirty(dev);
+-	return pwrite(DEV_FD(dev), buf, count, offset);
++	return pwrite(DEV_FD(dev), buf, count, offset + ntfs_wq_base());
+ }
+ 
+ /**
+--- a/libntfs-3g/dir.c
++++ b/libntfs-3g/dir.c
+@@ -1257,7 +1257,8 @@
+ 		 * invoke the filldir() callback as appropriate.
+ 		 */
+ 		rc = ntfs_filldir(dir_ni, pos, index_vcn_size_bits,
+-				INDEX_TYPE_ROOT, ir, ie, dirent, filldir);
++				INDEX_TYPE_ROOT, (index_union)ir, ie, dirent,
++				filldir);
+ 		if (rc) {
+ 			ntfs_attr_put_search_ctx(ctx);
+ 			ctx = NULL;
+@@ -1399,7 +1400,8 @@
+ 		 * invoke the filldir() callback as appropriate.
+ 		 */
+ 		rc = ntfs_filldir(dir_ni, pos, index_vcn_size_bits,
+-				INDEX_TYPE_ALLOCATION, ia, ie, dirent, filldir);
++				INDEX_TYPE_ALLOCATION, (index_union)ia, ie,
++				dirent, filldir);
+ 		if (rc)
+ 			goto err_out;
+ 	}
+--- a/include/ntfs-3g/device_io.h
++++ b/include/ntfs-3g/device_io.h
+@@ -67,7 +67,7 @@
+ #endif
+ 
+ /* On Windows (and Cygwin) : use Win32 low level device operations. */
+-#define ntfs_device_default_io_ops ntfs_device_win32_io_ops
++#define ntfs_device_default_io_ops ntfs_device_unix_io_ops
+ 
+ /* A few useful functions */
+ int ntfs_win32_set_sparse(int);
+--- a/include/ntfs-3g/compat.h
++++ b/include/ntfs-3g/compat.h
+@@ -80,7 +80,8 @@
+ #define atoll			_atoi64
+ #define fdatasync		commit
+ #define __inline__		inline
+-#define __attribute__(X)	/*nothing*/
++/* WinQuick: GCC honours __attribute__; neutering it unpacks the on-disk
++ * structures and silently corrupts every offset. */
+ 
+ #else /* !defined WINDOWS */
+ 
+--- a/ntfsprogs/utils.h
++++ b/ntfsprogs/utils.h
+@@ -110,13 +110,13 @@
+ char *ntfs_utils_unix_path(const char *in);
+ #define ntfs_log_redirect(fn,fi,li,le,d,fmt, args...) \
+ 		do { char _b[MAX_FMT]; ntfs_log_redirect(fn,fi,li,le,d, \
+-		ntfs_utils_reformat(_b,MAX_FMT,fmt), args); } while (0)
++		ntfs_utils_reformat(_b,MAX_FMT,fmt), ##args); } while (0)
+ #define printf(fmt, args...) \
+ 		do { char _b[MAX_FMT]; \
+-		printf(ntfs_utils_reformat(_b,MAX_FMT,fmt), args); } while (0)
++		printf(ntfs_utils_reformat(_b,MAX_FMT,fmt), ##args); } while (0)
+ #define fprintf(str, fmt, args...) \
+ 		do { char _b[MAX_FMT]; \
+-		fprintf(str, ntfs_utils_reformat(_b,MAX_FMT,fmt), args); } while (0)
++		fprintf(str, ntfs_utils_reformat(_b,MAX_FMT,fmt), ##args); } while (0)
+ #define vfprintf(file, fmt, args) \
+ 		do { char _b[MAX_FMT]; vfprintf(file, \
+ 		ntfs_utils_reformat(_b,MAX_FMT,fmt), args); } while (0)
+--- a/ntfsprogs/ntfscat.c
++++ b/ntfsprogs/ntfscat.c
+@@ -407,6 +407,11 @@
+ 	int res;
+ 	int result = 1;
+ 
++#ifdef O_BINARY
++	/* The output is a file's bytes, not text: without this Windows
++	 * rewrites every 0x0A on the way to stdout. */
++	_setmode(_fileno(stdout), O_BINARY);
++#endif
+ 	ntfs_log_set_handler(ntfs_log_handler_stderr);
+ 
+ 	res = parse_options(argc, argv);
+--- a/ntfsprogs/ntfscp.c
++++ b/ntfsprogs/ntfscp.c
+@@ -902,7 +902,7 @@
+ 	}
+ 	ntfs_log_verbose("New file size: %lld\n", (long long)new_size);
+ 
+-	in = fopen(opts.src_file, "r");
++	in = fopen(opts.src_file, "rb");
+ 	if (!in) {
+ 		ntfs_log_perror("ERROR: Couldn't open source file");
+ 		goto umount;
