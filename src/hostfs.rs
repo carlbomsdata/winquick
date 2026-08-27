@@ -48,6 +48,81 @@ pub fn identity(p: &Path) -> Result<(u64, i128)> {
     Ok((m.len(), modified))
 }
 
+/// Give a freshly created file a length without allocating the space.
+///
+/// The mailbox, workspace and artifact volumes are tens or thousands of
+/// megabytes of mostly nothing, and WinQuick makes a fresh copy of each per
+/// prepared state. On APFS and on any Unix filesystem, `set_len` alone leaves a
+/// sparse file and none of that is real. NTFS allocates eagerly unless the file
+/// is explicitly marked sparse, which turned a prepared state into 4.5 GB on
+/// disk and a multi-second copy. Marking it costs one call and makes both
+/// disappear.
+pub fn set_sparse_len(f: &File, len: u64) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        const FSCTL_SET_SPARSE: u32 = 0x000900C4;
+        extern "system" {
+            fn DeviceIoControl(
+                handle: *mut std::ffi::c_void,
+                control_code: u32,
+                in_buffer: *const std::ffi::c_void,
+                in_size: u32,
+                out_buffer: *mut std::ffi::c_void,
+                out_size: u32,
+                returned: *mut u32,
+                overlapped: *mut std::ffi::c_void,
+            ) -> i32;
+        }
+        let mut returned: u32 = 0;
+        // Best effort: a filesystem that does not support sparse files still
+        // works, it just uses the space.
+        unsafe {
+            DeviceIoControl(
+                f.as_raw_handle(),
+                FSCTL_SET_SPARSE,
+                std::ptr::null(),
+                0,
+                std::ptr::null_mut(),
+                0,
+                &mut returned,
+                std::ptr::null_mut(),
+            );
+        }
+    }
+    f.set_len(len)
+}
+
+/// Fill a buffer with randomness from the operating system.
+///
+/// WinQuick needs this in exactly one place — giving a copied disk a fresh GPT
+/// identity — where what matters is that two disks never collide, not that the
+/// values resist an adversary. Both hosts have a proper source anyway, so it
+/// uses one.
+#[cfg(unix)]
+pub fn fill_random(buf: &mut [u8]) -> Result<()> {
+    use std::io::Read;
+    std::fs::File::open("/dev/urandom")
+        .map_err(|e| anyhow::anyhow!("reading randomness: {e}"))?
+        .read_exact(buf)
+        .map_err(|e| anyhow::anyhow!("reading randomness: {e}"))
+}
+
+/// Windows has no `/dev/urandom`. `ProcessPrng` is the user-mode entry point
+/// the system RNG exposes; it cannot fail and needs nothing set up first.
+#[cfg(windows)]
+pub fn fill_random(buf: &mut [u8]) -> Result<()> {
+    #[link(name = "bcryptprimitives")]
+    extern "system" {
+        fn ProcessPrng(data: *mut u8, len: usize) -> i32;
+    }
+    let ok = unsafe { ProcessPrng(buf.as_mut_ptr(), buf.len()) };
+    if ok == 0 {
+        anyhow::bail!("the system random number generator refused");
+    }
+    Ok(())
+}
+
 // ------------------------------------------------------------------- locking
 
 /// Take an advisory lock on an open file, or report that someone else holds it.
@@ -104,6 +179,14 @@ pub fn open_lock_file(path: &Path) -> std::io::Result<Option<File>> {
     use std::os::windows::fs::OpenOptionsExt;
     // share_mode 0: no other process may open this file at all, which is
     // exactly the mutual exclusion the lock is for.
+    // ERROR_SHARING_VIOLATION (32) and ERROR_LOCK_VIOLATION (33) are the two
+    // ways Windows says "someone else has it". Neither maps to a stable
+    // ErrorKind, so they are matched by number: treating them as failures
+    // rather than as an answer turns a perfectly ordinary "another run is
+    // holding the lock" into a crash.
+    const ERROR_SHARING_VIOLATION: i32 = 32;
+    const ERROR_LOCK_VIOLATION: i32 = 33;
+
     match OpenOptions::new()
         .create(true)
         .read(true)
@@ -113,7 +196,15 @@ pub fn open_lock_file(path: &Path) -> std::io::Result<Option<File>> {
         .open(path)
     {
         Ok(f) => Ok(Some(f)),
-        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Ok(None),
+        Err(e)
+            if e.kind() == std::io::ErrorKind::PermissionDenied
+                || matches!(
+                    e.raw_os_error(),
+                    Some(ERROR_SHARING_VIOLATION) | Some(ERROR_LOCK_VIOLATION)
+                ) =>
+        {
+            Ok(None)
+        }
         Err(e) => Err(e),
     }
 }
@@ -191,6 +282,16 @@ impl ControlStream {
 
     pub fn try_clone(&self) -> std::io::Result<Self> {
         self.0.try_clone().map(ControlStream)
+    }
+
+    /// Give up rather than block forever on a QEMU that has stopped answering.
+    ///
+    /// Both underlying stream types support this and neither does it by
+    /// default. Without it, a wedged QEMU wedges WinQuick too -- and because
+    /// the prepared-guest build holds a lock, every other run on the machine
+    /// then fails as well.
+    pub fn set_read_timeout(&self, d: std::time::Duration) -> std::io::Result<()> {
+        self.0.set_read_timeout(Some(d))
     }
 }
 

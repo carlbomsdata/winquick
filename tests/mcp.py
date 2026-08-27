@@ -118,9 +118,41 @@ class Client:
         return self.p.stderr.read()
 
 
+def native_temp_dir(prefix):
+    """A temporary directory the binary under test can actually open.
+
+    Under MSYS2 the harness runs on a POSIX-flavoured Python while the binary
+    is native Windows, so `mkdtemp` hands back `/tmp/...` — a path the .exe
+    resolves to somewhere else entirely, or nowhere. `cygpath` translates it;
+    everywhere else this is the identity.
+    """
+    d = tempfile.mkdtemp(prefix=prefix)
+    cygpath = shutil.which("cygpath")
+    if not cygpath:
+        return d
+    try:
+        out = subprocess.run(
+            [cygpath, "-w", d], capture_output=True, text=True
+        ).stdout.strip()
+    except OSError:
+        return d
+    return out or d
+
+
 def have_runtime():
-    root = Path(os.environ.get("HOME", "")) / ".winquick"
-    return (root / "images" / "validation-arm64" / "base.qcow2").exists()
+    """Is a Windows runtime installed for this host's guest architecture?
+
+    The directory carries the architecture, and the guest follows the host, so
+    a Mac has `validation-arm64` and a PC `validation-x64`. Either counts.
+    `USERPROFILE` is the fallback because a `winquick.exe` started outside a
+    shell sees only that.
+    """
+    home = os.environ.get("HOME") or os.environ.get("USERPROFILE", "")
+    images = Path(home) / ".winquick" / "images"
+    return any(
+        (images / f"validation-{arch}" / "base.qcow2").exists()
+        for arch in ("arm64", "x64")
+    )
 
 
 # ------------------------------------------------------------------ protocol
@@ -222,17 +254,54 @@ def test_stdout_is_protocol_only():
     ok(f"diagnostics went to stderr ({len(err)} bytes)")
 
 
+def surviving_mcp_processes():
+    """Any `winquick mcp` still running, as a string; empty means none.
+
+    Returns None when neither host's tool is reachable, so the caller can skip
+    rather than claim a clean result it did not check.
+
+    Asked differently on each host: Windows has no `pgrep`, and `tasklist` can
+    only match an image name, so the answer there is "is any winquick.exe
+    left" -- which is the thing that would actually matter. The choice is made
+    on which tool exists rather than on `os.name`, because this also runs under
+    MSYS2, where `os.name` says posix and the binary under test is native
+    Windows.
+    """
+    if shutil.which("pgrep"):
+        return subprocess.run(
+            ["pgrep", "-f", "winquick mcp"], capture_output=True, text=True
+        ).stdout.strip()
+
+    for tasklist in (
+        shutil.which("tasklist"),
+        "/c/Windows/System32/tasklist.exe",
+        "C:\\Windows\\System32\\tasklist.exe",
+    ):
+        if not tasklist:
+            continue
+        try:
+            out = subprocess.run(
+                [tasklist, "/FI", "IMAGENAME eq winquick.exe", "/NH"],
+                capture_output=True,
+                text=True,
+            ).stdout
+        except OSError:
+            continue
+        return "" if "winquick.exe" not in out else out.strip()
+    return None
+
+
 def test_clean_shutdown():
     print("== shutdown ==")
     c = Client()
     c.initialize()
     c.close()
     check("server exits 0 on EOF", c.p.returncode, 0)
-    # Nothing MCP-specific may survive the process.
-    leftover = subprocess.run(
-        ["pgrep", "-f", "winquick mcp"], capture_output=True, text=True
-    ).stdout.strip()
-    check("no MCP process left behind", leftover, "")
+    leftover = surviving_mcp_processes()
+    if leftover is None:
+        print("  SKIP  no MCP process left behind (no way to list processes here)")
+    else:
+        check("no MCP process left behind", leftover, "")
 
 
 # ------------------------------------------------------------------- windows
@@ -299,7 +368,7 @@ def tree_hash(root):
 
 def test_workspace_immutability():
     print("== workspace immutability through MCP ==")
-    ws = tempfile.mkdtemp(prefix="wq-mcp-ws-")
+    ws = native_temp_dir("wq-mcp-ws-")
     try:
         d = Path(ws)
         (d / "src" / "nested deep").mkdir(parents=True)
@@ -342,8 +411,8 @@ def test_workspace_immutability():
 
 def test_artifacts():
     print("== artifacts through MCP ==")
-    ws = tempfile.mkdtemp(prefix="wq-mcp-art-")
-    dest = tempfile.mkdtemp(prefix="wq-mcp-out-")
+    ws = native_temp_dir("wq-mcp-art-")
+    dest = native_temp_dir("wq-mcp-out-")
     try:
         d = Path(ws)
         (d / "bin" / "Release" / "net10.0").mkdir(parents=True)

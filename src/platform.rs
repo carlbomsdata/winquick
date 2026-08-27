@@ -11,13 +11,9 @@
 //!   macOS arm64   →  qemu-system-aarch64  -M virt  -accel hvf   -cpu host
 //!                    → Windows ARM64
 //!
-//!   Windows x64   →  qemu-system-x86_64   -M q35   -accel whpx  -cpu qemu64
+//!   Windows x64   →  qemu-system-x86_64   -M q35   -accel whpx  -cpu Nehalem
 //!                    → Windows x64
 //! ```
-
-/// The guest architecture this host runs, in the spelling Microsoft uses for
-/// download RIDs (`win-arm64`, `win-x64`).
-pub const GUEST_RID: &str = if cfg!(target_arch = "aarch64") { "win-arm64" } else { "win-x64" };
 
 /// Short name for the guest architecture, used in image directory names.
 pub const GUEST_ARCH: &str = if cfg!(target_arch = "aarch64") { "arm64" } else { "x64" };
@@ -99,11 +95,9 @@ mod tests {
     fn guest_architecture_follows_the_host() {
         if cfg!(target_arch = "aarch64") {
             assert_eq!(GUEST_ARCH, "arm64");
-            assert_eq!(GUEST_RID, "win-arm64");
             assert!(QEMU_SYSTEM.ends_with("aarch64"));
         } else {
             assert_eq!(GUEST_ARCH, "x64");
-            assert_eq!(GUEST_RID, "win-x64");
             assert!(QEMU_SYSTEM.ends_with("x86_64"));
         }
     }

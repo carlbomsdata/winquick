@@ -150,6 +150,39 @@ fn meta_path() -> Result<PathBuf> {
 
 /// Load the ready state, but only if every piece is present and the fingerprint
 /// still matches the world we are about to run in.
+/// Where the "this host cannot restore a prepared guest" note lives.
+///
+/// Beside the state directories rather than inside one: whether a restore works
+/// is a property of the QEMU and the accelerator, not of any particular image,
+/// so it must outlive `setup` discarding a stale prepared guest.
+pub fn restore_note() -> Result<PathBuf> {
+    Ok(crate::paths::root()?.join("restore-unsupported"))
+}
+
+/// Record that a prepared guest was built here, restored, and then did nothing.
+///
+/// This is not a failure WinQuick can fix and not one it should keep paying
+/// for. Without the note, every run rebuilds a prepared guest, restores it,
+/// waits, gives up and boots cold -- three boots to run one command. With it,
+/// the run goes straight to a cold boot, which works.
+///
+/// The backend signature is written alongside, so installing a QEMU that *can*
+/// restore makes the note stop applying by itself.
+pub fn mark_restore_unsupported(signature: &str) -> Result<()> {
+    let p = restore_note()?;
+    std::fs::create_dir_all(p.parent().unwrap())?;
+    std::fs::write(p, signature)?;
+    Ok(())
+}
+
+/// Whether restoring is already known not to work with this backend.
+pub fn restore_unsupported(signature: &str) -> bool {
+    restore_note()
+        .and_then(|p| Ok(std::fs::read_to_string(p)?))
+        .map(|s| s.trim() == signature)
+        .unwrap_or(false)
+}
+
 pub fn load_valid(want: &Fingerprint) -> Result<Option<ReadyState>> {
     let dir = state_dir()?;
     let mp = meta_path()?;

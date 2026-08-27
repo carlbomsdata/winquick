@@ -82,7 +82,7 @@ pub fn create_template(path: &Path) -> Result<()> {
         .truncate(true)
         .open(path)
         .with_context(|| format!("creating mailbox at {}", path.display()))?;
-    img.set_len(SIZE_BYTES)?;
+    crate::hostfs::set_sparse_len(&img, SIZE_BYTES)?;
     write_mbr(&img)?;
 
     let slice = StreamSlice::new(img, PART_START_LBA * SECTOR, SIZE_BYTES)?;

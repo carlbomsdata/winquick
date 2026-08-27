@@ -38,8 +38,9 @@ pub struct Spec {
     /// Name used on the command line and for the image filename.
     pub name: &'static str,
     pub version: &'static str,
-    pub url: &'static str,
-    pub sha256: &'static str,
+    /// Where to get this capability for each guest architecture.
+    pub arm64: Payload,
+    pub x64: Payload,
     /// Directory the payload lands in on the volume; the agent probes for this.
     pub dest: &'static str,
     /// A file that must exist after unpacking, as a sanity check.
@@ -47,12 +48,39 @@ pub struct Spec {
     pub description: &'static str,
 }
 
+/// One architecture's download.
+///
+/// A capability is not architecture-neutral: an ARM64 `pwsh.exe` will not run
+/// in an x64 guest, and the guest architecture follows the host. Keeping both
+/// here means the catalogue states the fact rather than the build hiding it.
+pub struct Payload {
+    pub url: &'static str,
+    pub sha256: &'static str,
+}
+
+impl Spec {
+    /// The download for the guest this host runs.
+    pub fn payload(&self) -> &Payload {
+        if crate::platform::GUEST_ARCH == "arm64" {
+            &self.arm64
+        } else {
+            &self.x64
+        }
+    }
+}
+
 pub const SPECS: &[Spec] = &[
     Spec {
         name: "powershell",
         version: "7.6.5",
-        url: "https://github.com/PowerShell/PowerShell/releases/download/v7.6.5/PowerShell-7.6.5-win-arm64.zip",
-        sha256: "20514a755d16428dc4355c85e0883c859531e71cc3e122670aa1fccdbf96ba7e",
+        arm64: Payload {
+            url: "https://github.com/PowerShell/PowerShell/releases/download/v7.6.5/PowerShell-7.6.5-win-arm64.zip",
+            sha256: "20514a755d16428dc4355c85e0883c859531e71cc3e122670aa1fccdbf96ba7e",
+        },
+        x64: Payload {
+            url: "https://github.com/PowerShell/PowerShell/releases/download/v7.6.5/PowerShell-7.6.5-win-x64.zip",
+            sha256: "32eb8f6cdce08f86e987d625a2733e54ac3e289ae7e1621b14c0b5bcec2434ea",
+        },
         dest: "pwsh",
         sentinel: "pwsh.exe",
         description: "PowerShell 7 (pwsh)",
@@ -60,8 +88,14 @@ pub const SPECS: &[Spec] = &[
     Spec {
         name: "dotnet-runtime",
         version: "10.0.5",
-        url: "https://builds.dotnet.microsoft.com/dotnet/Runtime/10.0.5/dotnet-runtime-10.0.5-win-arm64.zip",
-        sha256: "0368339d9ebd5e6d0a05e196fbe4c6d886e433373d772d41d9536cffe3e6e5f1",
+        arm64: Payload {
+            url: "https://builds.dotnet.microsoft.com/dotnet/Runtime/10.0.5/dotnet-runtime-10.0.5-win-arm64.zip",
+            sha256: "0368339d9ebd5e6d0a05e196fbe4c6d886e433373d772d41d9536cffe3e6e5f1",
+        },
+        x64: Payload {
+            url: "https://builds.dotnet.microsoft.com/dotnet/Runtime/10.0.5/dotnet-runtime-10.0.5-win-x64.zip",
+            sha256: "ba5d7ca9a366fe7955e25b3da92b3f95a67837514c4f76aad719df73a5fb18ed",
+        },
         dest: "dotnet",
         sentinel: "dotnet.exe",
         description: ".NET 10 runtime (framework-dependent apps)",
@@ -69,13 +103,43 @@ pub const SPECS: &[Spec] = &[
     Spec {
         name: "dotnet-sdk",
         version: "10.0.201",
-        url: "https://builds.dotnet.microsoft.com/dotnet/Sdk/10.0.201/dotnet-sdk-10.0.201-win-arm64.zip",
-        sha256: "4fde214de7b4f52ab0d10d02ec99ff7c8a0d6682ad8d9f0e67c5725e0624bfcf",
+        arm64: Payload {
+            url: "https://builds.dotnet.microsoft.com/dotnet/Sdk/10.0.201/dotnet-sdk-10.0.201-win-arm64.zip",
+            sha256: "4fde214de7b4f52ab0d10d02ec99ff7c8a0d6682ad8d9f0e67c5725e0624bfcf",
+        },
+        x64: Payload {
+            url: "https://builds.dotnet.microsoft.com/dotnet/Sdk/10.0.201/dotnet-sdk-10.0.201-win-x64.zip",
+            sha256: "56c346275e765767f335ce3df4468e5d471836e967a6cca0234ddf60ad9a6c80",
+        },
         dest: "dotnet",
         sentinel: "dotnet.exe",
         description: ".NET 10 SDK (dotnet build / test)",
     },
 ];
+
+/// Unpack a capability archive.
+///
+/// macOS ships `unzip`. Windows does not, but it has shipped bsdtar as
+/// `tar.exe` since Windows 10 1803, and bsdtar reads zip archives perfectly
+/// well -- so neither host needs anything installed. `-o` on macOS overwrites
+/// without prompting, which matters because a prompt would hang a
+/// non-interactive install.
+fn unzip(archive: &Path, into: &Path) -> Result<()> {
+    let mut c = if cfg!(windows) {
+        let mut c = std::process::Command::new("tar");
+        c.arg("-xf").arg(archive).arg("-C").arg(into);
+        c
+    } else {
+        let mut c = std::process::Command::new("/usr/bin/unzip");
+        c.args(["-q", "-o"]).arg(archive).arg("-d").arg(into);
+        c
+    };
+    let st = c.status().context("unpacking the capability archive")?;
+    if !st.success() {
+        bail!("could not unpack {}", archive.display());
+    }
+    Ok(())
+}
 
 pub fn spec(name: &str) -> Option<&'static Spec> {
     SPECS.iter().find(|s| s.name == name)
@@ -134,14 +198,16 @@ pub fn install(name: &str, zip: Option<PathBuf>, verbose: bool) -> Result<u64> {
     let archive = match zip {
         Some(p) => p,
         None => {
-            let file = sp.url.rsplit('/').next().unwrap();
+            let file = sp.payload().url.rsplit('/').next().unwrap();
             let p = cache.join(file);
             if !p.exists() {
                 println!("Downloading {} {} from Microsoft...", sp.description, sp.version);
-                let st = std::process::Command::new("/usr/bin/curl")
+                let st = std::process::Command::new(
+                    crate::helpers::which("curl").unwrap_or_else(|| PathBuf::from("curl")),
+                )
                     .args(["-sSL", "-o"])
                     .arg(&p)
-                    .arg(sp.url)
+                    .arg(sp.payload().url)
                     .status()
                     .context("running curl")?;
                 if !st.success() {
@@ -153,13 +219,13 @@ pub fn install(name: &str, zip: Option<PathBuf>, verbose: bool) -> Result<u64> {
         }
     };
 
-    if !sp.sha256.is_empty() {
+    if !sp.payload().sha256.is_empty() {
         let got = sha256_file(&archive)?;
-        if got != sp.sha256 {
+        if got != sp.payload().sha256 {
             bail!(
                 "checksum mismatch for {}\n  expected {}\n  got      {got}",
                 archive.display(),
-                sp.sha256
+                sp.payload().sha256
             );
         }
         if verbose {
@@ -172,16 +238,7 @@ pub fn install(name: &str, zip: Option<PathBuf>, verbose: bool) -> Result<u64> {
     let work = paths::root()?.join("work").join(name);
     let _ = std::fs::remove_dir_all(&work);
     std::fs::create_dir_all(&work)?;
-    let st = std::process::Command::new("/usr/bin/unzip")
-        .args(["-q", "-o"])
-        .arg(&archive)
-        .arg("-d")
-        .arg(&work)
-        .status()
-        .context("running unzip")?;
-    if !st.success() {
-        bail!("could not unpack {}", archive.display());
-    }
+    unzip(&archive, &work)?;
     if !work.join(sp.sentinel).exists() {
         bail!(
             "{} does not look like {}: no {} inside",
@@ -239,7 +296,7 @@ fn build_inner(image: &Path, src_dir: &Path, dest_name: Option<&str>, size: u64)
         .truncate(true)
         .open(image)
         .with_context(|| format!("creating {}", image.display()))?;
-    img.set_len(size)?;
+    crate::hostfs::set_sparse_len(&img, size)?;
     write_mbr(&img, size)?;
 
     let slice = StreamSlice::new(img, PART_START_LBA * SECTOR, size)?;

@@ -16,12 +16,14 @@ mod mailbox;
 mod mcp;
 mod paths;
 mod platform;
+mod proc;
 mod qemu;
 mod qmp;
 mod runner;
 mod servicing;
 mod setup;
 mod state;
+mod udf;
 mod uiscript;
 
 use anyhow::{Context, Result};

@@ -79,6 +79,9 @@ pub struct BootConfig<'a> {
     pub cpus: u32,
     pub serial_log: &'a Path,
     pub qmp_socket: &'a Path,
+    /// Print the command line before starting. A VM that will not boot is
+    /// almost always diagnosed by reading the arguments it was given.
+    pub verbose: bool,
     /// When set, restore RAM and device state from this file instead of booting.
     pub incoming: Option<&'a Path>,
 }
@@ -153,12 +156,12 @@ impl Qemu {
             .arg("-serial")
             .arg(format!("file:{}", cfg.serial_log.display()))
             .arg("-qmp")
-            .arg(format!(
-                "unix:{},server=on,wait=off",
-                cfg.qmp_socket.display()
-            ));
+            .arg(qmp_arg(cfg.qmp_socket)?);
         if let Some(state) = cfg.incoming {
             c.arg("-incoming").arg(format!("file:{}", state.display()));
+        }
+        if cfg.verbose {
+            eprintln!("winquick: {}", describe(&c));
         }
         c.stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -167,15 +170,74 @@ impl Qemu {
     }
 }
 
+/// A command line as a person would have to type it, for `--verbose` and for
+/// bug reports. Arguments containing spaces are quoted so the result can be
+/// pasted back into a shell and reproduced.
+fn describe(c: &Command) -> String {
+    let quote = |s: &str| {
+        if s.contains(' ') {
+            format!("\"{s}\"")
+        } else {
+            s.to_string()
+        }
+    };
+    let mut out = quote(&c.get_program().to_string_lossy());
+    for a in c.get_args() {
+        out.push(' ');
+        out.push_str(&quote(&a.to_string_lossy()));
+    }
+    out
+}
+
+/// How QEMU should publish its monitor on this host.
+///
+/// macOS gets a Unix socket at `endpoint`, which QEMU creates. Windows has no
+/// Unix sockets, so the monitor is a loopback TCP port instead and `endpoint`
+/// becomes a small file naming it -- the same rendezvous point, spelled the
+/// only way the platform allows. [`crate::hostfs::ControlStream`] reads
+/// whichever of the two it finds.
+#[cfg(unix)]
+fn qmp_arg(endpoint: &Path) -> Result<String> {
+    Ok(format!("unix:{},server=on,wait=off", endpoint.display()))
+}
+
+#[cfg(windows)]
+fn qmp_arg(endpoint: &Path) -> Result<String> {
+    // The port is chosen by binding one and immediately dropping it, so the
+    // kernel picks something free. QEMU claims it a moment later. Nothing else
+    // on the machine is likely to take it in between, and if it does, the boot
+    // fails loudly rather than talking to the wrong process.
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .context("reserving a port for QEMU's monitor")?
+        .local_addr()
+        .context("reserving a port for QEMU's monitor")?
+        .port();
+    std::fs::write(endpoint, format!("127.0.0.1:{port}"))
+        .with_context(|| format!("writing {}", endpoint.display()))?;
+    Ok(format!("tcp:127.0.0.1:{port},server=on,wait=off"))
+}
+
 pub fn which(bin: &str) -> Result<PathBuf> {
     crate::helpers::which(bin).ok_or_else(|| {
-        anyhow!("QEMU is not installed.\n\nInstall it with:\n    brew install qemu")
+        if cfg!(target_os = "macos") {
+            anyhow!("QEMU is not installed.\n\nInstall it with:\n    brew install qemu")
+        } else {
+            anyhow!(
+                "QEMU is not installed, or {bin} is not on PATH.\n\n\
+                 Install QEMU for Windows and make sure its directory is on PATH."
+            )
+        }
     })
 }
 
-/// Copy-on-write clone where the filesystem supports it. On APFS this is
-/// effectively free regardless of file size, which is what keeps per-run setup
-/// in the tens of milliseconds.
+/// Copy-on-write clone where the filesystem supports it.
+///
+/// On APFS this is effectively free regardless of file size, which is what
+/// keeps per-run setup in the tens of milliseconds. NTFS has no equivalent --
+/// block cloning on Windows needs ReFS -- so there the copy is real, and the
+/// prepared-guest build is correspondingly slower. A plain copy is always the
+/// fallback, so this is never a correctness question, only a speed one.
+#[cfg(target_os = "macos")]
 pub fn clone_file(src: &Path, dst: &Path) -> Result<()> {
     let _ = std::fs::remove_file(dst);
     // Captured, not inherited: a message from `cp` must never end up mixed into
@@ -196,6 +258,14 @@ pub fn clone_file(src: &Path, dst: &Path) -> Result<()> {
             )
         })?;
     }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn clone_file(src: &Path, dst: &Path) -> Result<()> {
+    let _ = std::fs::remove_file(dst);
+    std::fs::copy(src, dst)
+        .with_context(|| format!("copying {} to {}", src.display(), dst.display()))?;
     Ok(())
 }
 
@@ -313,10 +383,7 @@ impl Qemu {
             .arg("-serial")
             .arg(format!("file:{}", cfg.serial_log.display()))
             .arg("-qmp")
-            .arg(format!(
-                "unix:{},server=on,wait=off",
-                cfg.qmp_socket.display()
-            ));
+            .arg(qmp_arg(cfg.qmp_socket)?);
         if let Some(state) = cfg.incoming {
             c.arg("-incoming").arg(format!("file:{}", state.display()));
         }

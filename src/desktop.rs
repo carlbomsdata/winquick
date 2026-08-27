@@ -42,7 +42,8 @@ use std::time::{Duration, Instant};
 use crate::{capability, mailbox, paths, qemu};
 
 /// Image name for the serviced, desktop-capable Windows.
-pub const IMAGE_NAME: &str = "desktop-arm64";
+pub const IMAGE_NAME: &str =
+    if cfg!(target_arch = "aarch64") { "desktop-arm64" } else { "desktop-x64" };
 
 /// The capability name users type. Unlike the others it is built, not downloaded.
 pub const CAPABILITY: &str = "desktop";
@@ -128,12 +129,7 @@ pub fn read_session() -> Option<Session> {
 /// Whether the recorded process is still alive. A crashed or killed QEMU leaves
 /// the session file behind, and reporting it as running would be a lie.
 pub fn alive(pid: u32) -> bool {
-    // Signal 0 checks for existence and permission without delivering anything.
-    unsafe { kill(pid as i32, 0) == 0 }
-}
-
-extern "C" {
-    fn kill(pid: i32, sig: i32) -> i32;
+    crate::proc::is_alive(pid)
 }
 
 pub fn running() -> Option<Session> {
@@ -406,7 +402,7 @@ fn build_prepared_state(
     let serial = work.join("serial.log");
 
     ctx.q.create_overlay(&ctx.base, &overlay)?;
-    std::fs::File::create(&vars)?.set_len(64 * 1024 * 1024)?;
+    crate::helpers::fresh_uefi_vars(&vars)?;
     mailbox::create_template(&mbox)?;
     build_bridge_volume(&bridge_img)?;
     // Empty, but the right size: sessions refill it without reformatting, so
@@ -591,7 +587,7 @@ pub fn stop() -> Result<bool> {
     let existed = match read_session() {
         Some(s) => {
             if alive(s.pid) {
-                unsafe { kill(s.pid as i32, 15) };
+                crate::proc::terminate(s.pid);
                 // Give QEMU a moment to go on its own before insisting.
                 for _ in 0..50 {
                     if !alive(s.pid) {
@@ -600,7 +596,7 @@ pub fn stop() -> Result<bool> {
                     std::thread::sleep(Duration::from_millis(100));
                 }
                 if alive(s.pid) {
-                    unsafe { kill(s.pid as i32, 9) };
+                    crate::proc::force_kill(s.pid);
                 }
             }
             true

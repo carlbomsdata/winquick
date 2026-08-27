@@ -38,24 +38,38 @@ fn try_flock(f: &File, exclusive: bool, block: bool) -> std::io::Result<bool> {
     crate::hostfs::try_lock(f, exclusive, block)
 }
 
-fn open_lock(name: &str) -> Result<(File, PathBuf)> {
+/// Try to take the lock once.
+///
+/// The two hosts refuse at different moments, and both refusals mean the same
+/// thing. Unix always opens the file and then finds out from `flock`; Windows
+/// opens it exclusively, so a busy lock is refused at open time and never
+/// reaches `flock` at all. `None` means somebody else holds it -- which is an
+/// answer, not a failure, and the callers below are built around waiting for it.
+fn try_acquire(name: &str) -> Result<Option<Guard>> {
     let path = lock_path(name)?;
-    // On Windows the lock is taken by opening exclusively, so `None` here means
-    // another WinQuick already holds it; the callers below retry.
-    let file = crate::hostfs::open_lock_file(&path)
+    let Some(file) = crate::hostfs::open_lock_file(&path)
         .with_context(|| format!("opening lock {}", path.display()))?
-        .ok_or_else(|| anyhow::anyhow!("another WinQuick operation holds the lock"))?;
-    Ok((file, path))
+    else {
+        return Ok(None);
+    };
+    if !try_flock(&file, true, false)? {
+        return Ok(None);
+    }
+    Ok(Some(Guard { _file: file, path }))
 }
 
 /// Take an exclusive lock, telling the user if we have to wait for someone else.
 pub fn acquire_blocking(what: &str) -> Result<Guard> {
-    let (file, path) = open_lock("winquick")?;
-    if !try_flock(&file, true, false)? {
-        eprintln!("winquick: waiting for another winquick {what} to finish...");
-        try_flock(&file, true, true)?;
+    if let Some(g) = try_acquire("winquick")? {
+        return Ok(g);
     }
-    Ok(Guard { _file: file, path })
+    eprintln!("winquick: waiting for another winquick {what} to finish...");
+    loop {
+        std::thread::sleep(Duration::from_millis(100));
+        if let Some(g) = try_acquire("winquick")? {
+            return Ok(g);
+        }
+    }
 }
 
 /// Take the prepared-guest build lock, waiting up to `timeout`.
@@ -64,18 +78,19 @@ pub fn acquire_blocking(what: &str) -> Result<Guard> {
 /// the caller should then re-check whether the prepared guest now exists rather
 /// than building a second one.
 pub fn acquire_build(timeout: Duration) -> Result<Option<Guard>> {
-    let (file, path) = open_lock("prepare")?;
-    if try_flock(&file, true, false)? {
-        return Ok(Some(Guard { _file: file, path }));
-    }
     let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(100));
-        if try_flock(&file, true, false)? {
-            // We got it, but someone may have built it while we waited; the
-            // caller re-checks.
-            return Ok(Some(Guard { _file: file, path }));
+    loop {
+        // Re-opened on every attempt, not just re-locked: on Windows the open
+        // is the lock, so holding a handle from a failed attempt would be
+        // holding nothing and waiting forever.
+        if let Some(g) = try_acquire("prepare")? {
+            // We have it, but someone may have built the prepared guest while
+            // we waited; the caller re-checks.
+            return Ok(Some(g));
         }
+        if Instant::now() >= deadline {
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(100));
     }
-    Ok(None)
 }

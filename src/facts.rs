@@ -157,24 +157,36 @@ pub fn doctor() -> Result<Doctor> {
     let mut b = Builder { checks: Vec::new(), problems: Vec::new() };
 
     // -- host
+    //
+    // Two hosts are supported, and each one only in the shape that gives real
+    // hardware virtualisation: an Apple Silicon Mac running an ARM64 guest
+    // through Hypervisor.framework, and an x86_64 PC running an x64 guest
+    // through the Windows Hypervisor Platform. Emulating a guest of the other
+    // architecture would work and would not be this product.
     let arch = std::env::consts::ARCH;
-    if arch == "aarch64" {
-        b.ok("Host", "cpu", format!("Apple Silicon ({arch})"));
-    } else {
-        b.fail("Host", "cpu", format!("not Apple Silicon ({arch})"),
-               "WinQuick only supports Apple Silicon Macs.");
+    match (std::env::consts::OS, arch) {
+        ("macos", "aarch64") => b.ok("Host", "cpu", format!("Apple Silicon ({arch})")),
+        ("windows", "x86_64") => b.ok("Host", "cpu", format!("x86_64 ({arch})")),
+        ("macos", _) => b.fail(
+            "Host",
+            "cpu",
+            format!("not Apple Silicon ({arch})"),
+            "On macOS, WinQuick needs an Apple Silicon Mac.",
+        ),
+        ("windows", _) => b.fail(
+            "Host",
+            "cpu",
+            format!("not x86_64 ({arch})"),
+            "On Windows, WinQuick needs an x86_64 PC.",
+        ),
+        (os, _) => b.fail(
+            "Host",
+            "cpu",
+            format!("unsupported host ({os} {arch})"),
+            "WinQuick runs on Apple Silicon macOS and x86_64 Windows.",
+        ),
     }
-    let sw = std::process::Command::new("/usr/bin/sw_vers")
-        .arg("-productVersion")
-        .output()
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default();
-    if sw.is_empty() {
-        b.note("Host", "macos", "version unknown");
-    } else {
-        b.ok("Host", "macos", format!("macOS {sw}"));
-    }
+    host_version(&mut b);
 
     // -- tools
     let have_runtime = paths::base_image()?.exists();
@@ -212,10 +224,28 @@ pub fn doctor() -> Result<Doctor> {
                "No Windows runtime. Run `winquick setup`.");
     }
     let prepared = state::state_dir().map(|d| d.join("ready.json").exists()).unwrap_or(false);
-    if prepared {
+    let restore_off = state::restore_note().map(|p| p.exists()).unwrap_or(false);
+    if restore_off {
+        // Not a fault, and not something the user did: this accelerator cannot
+        // resume a saved guest, so WinQuick stopped trying. Saying so here is
+        // the difference between "runs are slow" and "runs are slow, and here
+        // is exactly why, and here is what changes it".
+        b.note(
+            "Runtime",
+            "prepared guest",
+            "disabled: this QEMU restores a guest that never resumes, so every run boots cold",
+        );
+    } else if prepared {
         b.ok("Runtime", "prepared guest", "ready (runs are fast)");
     } else {
         b.note("Runtime", "prepared guest", "not built yet; the first run will build it");
+    }
+    if crate::platform::NEEDS_PATCHED_QEMU && !restore_off && !prepared {
+        b.note(
+            "Runtime",
+            "fast path",
+            "needs a QEMU carrying patches/whpx-stop-and-copy.patch; stock QEMU boots cold",
+        );
     }
     let caps = capability::installed()?;
     let names = if caps.is_empty() {
@@ -297,12 +327,81 @@ pub fn dir_size(p: &Path) -> u64 {
     total
 }
 
+/// The host operating system's own version, as a note rather than a check:
+/// nothing depends on it, but it is the first thing worth knowing in a bug
+/// report.
+fn host_version(b: &mut Builder) {
+    #[cfg(target_os = "macos")]
+    {
+        let sw = std::process::Command::new("/usr/bin/sw_vers")
+            .arg("-productVersion")
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+        if sw.is_empty() {
+            b.note("Host", "macos", "version unknown");
+        } else {
+            b.ok("Host", "macos", format!("macOS {sw}"));
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let ver = std::process::Command::new("cmd")
+            .args(["/c", "ver"])
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+        if ver.is_empty() {
+            b.note("Host", "windows", "version unknown");
+        } else {
+            b.ok("Host", "windows", ver);
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        b.note("Host", "os", std::env::consts::OS);
+    }
+}
+
+#[cfg(unix)]
 pub fn free_bytes(p: &Path) -> Option<u64> {
     let out = std::process::Command::new("/bin/df").arg("-k").arg(p).output().ok()?;
     let text = String::from_utf8_lossy(&out.stdout);
     let line = text.lines().nth(1)?;
     let blocks: u64 = line.split_whitespace().nth(3)?.parse().ok()?;
     Some(blocks * 1024)
+}
+
+/// Windows reports free space per directory, because a quota can make it differ
+/// from the volume's own free space. That is the number that matters here.
+#[cfg(windows)]
+pub fn free_bytes(p: &Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+
+    extern "system" {
+        fn GetDiskFreeSpaceExW(
+            directory: *const u16,
+            free_to_caller: *mut u64,
+            total: *mut u64,
+            total_free: *mut u64,
+        ) -> i32;
+    }
+
+    // The path has to exist for the query to mean anything; walk up until it
+    // does, so a missing ~/.winquick still reports the volume it would live on.
+    let mut dir = p;
+    while !dir.exists() {
+        dir = dir.parent()?;
+    }
+    let wide: Vec<u16> =
+        dir.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let mut free: u64 = 0;
+    let ok = unsafe {
+        GetDiskFreeSpaceExW(wide.as_ptr(), &mut free, std::ptr::null_mut(), std::ptr::null_mut())
+    };
+    (ok != 0).then_some(free)
 }
 
 #[cfg(test)]

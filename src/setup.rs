@@ -9,15 +9,30 @@
 //! and point cmd.exe's AutoRun at it. Two writes, nothing else. No drivers are
 //! injected, no packages added, no firmware touched.
 
-use crate::{capability, helpers, paths, qemu, state};
+use crate::{capability, gpt, helpers, paths, platform, qemu, state};
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub const AGENT: &str = include_str!("../guest/agent.cmd");
 
-/// Where Microsoft publishes the image, and what it is called.
-pub const VALIDATION_OS_URL: &str = "https://aka.ms/DownloadValidationOS_arm64";
+/// Where the agent and the registry hive live inside the Windows volume.
+///
+/// No leading slash: the native Windows build of `ntfscp` rejects that form,
+/// while both builds accept this one. Forward slashes work on both.
+const GUEST_AGENT: &str = "Windows/System32/wqagent.cmd";
+const GUEST_SOFTWARE: &str = "Windows/System32/config/SOFTWARE";
+
+/// Where Microsoft publishes the image for this host's guest architecture.
+///
+/// The guest architecture follows the host: an ARM64 Mac runs an ARM64 guest,
+/// an x86_64 PC runs an x64 one. Emulating the other way would throw away the
+/// hardware acceleration the whole product depends on.
+pub const VALIDATION_OS_URL: &str = if cfg!(target_arch = "aarch64") {
+    "https://aka.ms/DownloadValidationOS_arm64"
+} else {
+    "https://aka.ms/DownloadValidationOS"
+};
 pub const VALIDATION_OS_PAGE: &str =
     "https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/validation-os-overview";
 
@@ -66,55 +81,43 @@ pub fn setup(opts: &Options) -> Result<()> {
     q.convert(&vhdx, &raw, "raw")?;
 
     println!("  [2/4] installing the WinQuick agent");
-    let dev = attach(&raw)?;
-    let ntfs = format!("{dev}s4");
-    let result = (|| -> Result<()> {
-        let agent = work.join("agent.cmd");
-        std::fs::write(&agent, AGENT.replace('\n', "\r\n"))?;
-        run_ok(
-            Command::new(&tools.ntfscp)
-                .arg(&ntfs)
-                .arg(&agent)
-                .arg("/Windows/System32/wqagent.cmd"),
-            "writing the agent into the image",
-        )?;
+    let volume = Volume::open(&raw)?;
+    let agent = work.join("agent.cmd");
+    std::fs::write(&agent, AGENT.replace('\n', "\r\n"))?;
+    run_ok(
+        volume.tool(&tools.ntfscp).arg(&agent).arg(GUEST_AGENT),
+        "writing the agent into the image",
+    )?;
 
-        println!("  [3/4] configuring the guest");
-        let hive = work.join("SOFTWARE");
-        let out = Command::new(&tools.ntfscat)
-            .arg(&ntfs)
-            .arg("/Windows/System32/config/SOFTWARE")
-            .output()
-            .context("reading the guest registry")?;
-        if !out.status.success() || out.stdout.is_empty() {
-            bail!("could not read the registry hive out of the image");
-        }
-        std::fs::write(&hive, &out.stdout)?;
+    println!("  [3/4] configuring the guest");
+    let hive = work.join("SOFTWARE");
+    let out = volume
+        .tool(&tools.ntfscat)
+        .arg(GUEST_SOFTWARE)
+        .output()
+        .context("reading the guest registry")?;
+    if !out.status.success() || out.stdout.is_empty() {
+        bail!("could not read the registry hive out of the image");
+    }
+    std::fs::write(&hive, &out.stdout)?;
 
-        let script = "cd \\Microsoft\\Command Processor\n\
-                      setval 1\n\
-                      AutoRun\n\
-                      string:call C:\\Windows\\System32\\wqagent.cmd\n\
-                      commit\n\
-                      close\n";
-        let sf = work.join("hive.hvx");
-        std::fs::write(&sf, script)?;
-        run_ok(
-            // hivexsh wants the script before the hive.
-            Command::new(&tools.hivexsh).arg("-w").arg("-f").arg(&sf).arg(&hive),
-            "editing the guest registry",
-        )?;
-        run_ok(
-            Command::new(&tools.ntfscp)
-                .arg(&ntfs)
-                .arg(&hive)
-                .arg("/Windows/System32/config/SOFTWARE"),
-            "writing the guest registry back",
-        )?;
-        Ok(())
-    })();
-    detach(&dev);
-    result?;
+    let script = "cd \\Microsoft\\Command Processor\n\
+                  setval 1\n\
+                  AutoRun\n\
+                  string:call C:\\Windows\\System32\\wqagent.cmd\n\
+                  commit\n\
+                  close\n";
+    let sf = work.join("hive.hvx");
+    std::fs::write(&sf, script)?;
+    run_ok(
+        // hivexsh wants the script before the hive.
+        Command::new(&tools.hivexsh).arg("-w").arg("-f").arg(&sf).arg(&hive),
+        "editing the guest registry",
+    )?;
+    run_ok(
+        volume.tool(&tools.ntfscp).arg(&hive).arg(GUEST_SOFTWARE),
+        "writing the guest registry back",
+    )?;
 
     println!("  [4/4] packing the runtime");
     q.convert(&raw, &staged, "qcow2")?;
@@ -196,7 +199,7 @@ fn acquire_image(opts: &Options) -> Result<PathBuf> {
             }
             // A directory of downloads is a reasonable thing to point at.
             if let Some(iso) = newest_iso(s) {
-                return mount_iso(&iso);
+                return extract_vhdx(&iso);
             }
             bail!("no Validation OS image found in {}", s.display());
         }
@@ -204,7 +207,7 @@ fn acquire_image(opts: &Options) -> Result<PathBuf> {
             bail!("{} does not exist", s.display());
         }
         return if s.extension().map(|e| e.eq_ignore_ascii_case("iso")).unwrap_or(false) {
-            mount_iso(s)
+            extract_vhdx(s)
         } else {
             Ok(s.clone())
         };
@@ -212,18 +215,18 @@ fn acquire_image(opts: &Options) -> Result<PathBuf> {
 
     let cache = paths::cache()?;
     std::fs::create_dir_all(&cache)?;
-    let cached = cache.join("validationos-arm64.iso");
+    let cached = cache.join(format!("validationos-{}.iso", platform::GUEST_ARCH));
     if cached.exists() {
         println!("Using the Validation OS image already downloaded to");
         println!("  {}", cached.display());
-        return mount_iso(&cached);
+        return extract_vhdx(&cached);
     }
     // Somewhere obvious the user may have put it.
     for dir in [dirs_download(), Some(PathBuf::from("."))].into_iter().flatten() {
         if let Some(iso) = newest_iso(&dir) {
             println!("Found a Validation OS image at");
             println!("  {}", iso.display());
-            return mount_iso(&iso);
+            return extract_vhdx(&iso);
         }
     }
 
@@ -231,10 +234,10 @@ fn acquire_image(opts: &Options) -> Result<PathBuf> {
         bail!("{}", acquisition_message(&cached));
     }
 
-    println!("Downloading Microsoft Validation OS for ARM64 (about 2.4 GB)...");
+    println!("Downloading Microsoft Validation OS for {} (about 2.4 GB)...", platform::GUEST_ARCH);
     println!("  from {VALIDATION_OS_URL}");
-    let tmp = cache.join("validationos-arm64.iso.part");
-    let st = Command::new("/usr/bin/curl")
+    let tmp = cache.join(format!("validationos-{}.iso.part", platform::GUEST_ARCH));
+    let st = Command::new(helpers::which("curl").unwrap_or_else(|| PathBuf::from("curl")))
         .args(["-fL", "--progress-bar", "-C", "-", "-o"])
         .arg(&tmp)
         .arg(VALIDATION_OS_URL)
@@ -244,7 +247,7 @@ fn acquire_image(opts: &Options) -> Result<PathBuf> {
         bail!("download failed. Re-run to resume, or download it yourself:\n  {VALIDATION_OS_URL}");
     }
     std::fs::rename(&tmp, &cached)?;
-    mount_iso(&cached)
+    extract_vhdx(&cached)
 }
 
 fn acquisition_message(cached: &Path) -> String {
@@ -286,35 +289,42 @@ fn newest_iso(dir: &Path) -> Option<PathBuf> {
     best.map(|(_, p)| p)
 }
 
-fn mount_iso(iso: &Path) -> Result<PathBuf> {
-    if let Some(existing) = existing_mount(iso) {
-        let v = existing.join("ValidationOS.vhdx");
-        if v.exists() {
-            return Ok(v);
-        }
+/// Get `ValidationOS.vhdx` out of Microsoft's ISO.
+///
+/// Read directly rather than mounted. The media is a UDF disc, and mounting one
+/// means `hdiutil` on macOS and `Mount-DiskImage` on Windows -- the latter needs
+/// elevation and is blocked outright by some endpoint security software. The
+/// same reader works on both hosts, needs no privileges, and cannot leave a
+/// mount behind for the next run to trip over.
+///
+/// The extracted copy is kept: it is about a gigabyte, and `setup --force`
+/// should not have to read 2.4 GB of ISO again to get it.
+fn extract_vhdx(iso: &Path) -> Result<PathBuf> {
+    const NAME: &str = "ValidationOS.vhdx";
+    let out = paths::cache()?.join(format!("ValidationOS-{}.vhdx", platform::GUEST_ARCH));
+    if out.exists() {
+        return Ok(out);
     }
-    let mnt = paths::root()?.join("mnt");
-    std::fs::create_dir_all(&mnt)?;
-    let v = mnt.join("ValidationOS.vhdx");
-    if v.exists() {
-        return Ok(v);
+    std::fs::create_dir_all(out.parent().unwrap())?;
+
+    println!("  reading {NAME} from the Microsoft image");
+    // Written beside the target and renamed, so an interrupted extract cannot
+    // be mistaken for a finished one next time.
+    let partial = out.with_extension("vhdx.partial");
+    let _ = std::fs::remove_file(&partial);
+    let written = crate::udf::extract_file(iso, NAME, &partial).map_err(|e| {
+        let _ = std::fs::remove_file(&partial);
+        anyhow::anyhow!(
+            "{e}\n\nThis should be the Validation OS {} edition; download it from:\n  {VALIDATION_OS_URL}",
+            platform::GUEST_ARCH
+        )
+    })?;
+    if written == 0 {
+        let _ = std::fs::remove_file(&partial);
+        bail!("{} in {} is empty", NAME, iso.display());
     }
-    run_ok(
-        Command::new("/usr/bin/hdiutil")
-            .args(["attach", "-readonly", "-nobrowse", "-mountpoint"])
-            .arg(&mnt)
-            .arg(iso),
-        "opening the Microsoft image",
-    )?;
-    if !v.exists() {
-        let _ = Command::new("/usr/bin/hdiutil").args(["detach"]).arg(&mnt).output();
-        bail!(
-            "{} does not look like a Validation OS ARM64 image.\n\
-             Expected ValidationOS.vhdx inside it. Download the ARM64 edition from:\n  {VALIDATION_OS_URL}",
-            iso.display()
-        );
-    }
-    Ok(v)
+    std::fs::rename(&partial, &out)?;
+    Ok(out)
 }
 
 /// Ask hdiutil where, if anywhere, this image is already attached.
@@ -358,27 +368,30 @@ pub fn release_mounts() {
     let _ = std::fs::remove_dir(&mnt);
 }
 
-fn attach(raw: &Path) -> Result<String> {
-    let out = Command::new("/usr/bin/hdiutil")
-        .args(["attach", "-imagekey", "diskimage-class=CRawDiskImage", "-nomount"])
-        .arg(raw)
-        .output()
-        .context("opening the runtime image")?;
-    if !out.status.success() {
-        bail!("could not open the runtime image: {}", String::from_utf8_lossy(&out.stderr).trim());
-    }
-    let dev = String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .next()
-        .and_then(|l| l.split_whitespace().next())
-        .map(str::to_string)
-        .ok_or_else(|| anyhow::anyhow!("could not open the runtime image"))?;
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    Ok(dev)
+/// The Windows volume inside a disk image, addressed without mounting it.
+///
+/// `ntfscp` and `ntfscat` normally want a partition device node. Handing them
+/// the image file and the offset the partition starts at does the same job and
+/// is the only route that works on both hosts: macOS can produce a node with
+/// `hdiutil attach -nomount`, but the Windows equivalent needs elevation and a
+/// virtual-disk driver, and endpoint security software blocks it in practice.
+/// Nothing here needs privileges, and nothing outside the file is touched.
+struct Volume {
+    image: PathBuf,
+    offset: u64,
 }
 
-fn detach(dev: &str) {
-    let _ = Command::new("/usr/bin/hdiutil").args(["detach", dev]).output();
+impl Volume {
+    fn open(image: &Path) -> Result<Self> {
+        Ok(Self { image: image.to_path_buf(), offset: gpt::windows_volume_offset(image)? })
+    }
+
+    /// One of the ntfs helpers, already pointed at this volume.
+    fn tool(&self, exe: &Path) -> Command {
+        let mut c = Command::new(exe);
+        c.env("NTFS_IMAGE_OFFSET", self.offset.to_string()).arg(&self.image);
+        c
+    }
 }
 
 fn run_ok(c: &mut Command, what: &str) -> Result<()> {
@@ -402,7 +415,7 @@ pub fn mount_microsoft_image(from: Option<&Path>) -> Result<PathBuf> {
         }
         return mount_iso_at(p);
     }
-    let cached = paths::cache()?.join("validationos-arm64.iso");
+    let cached = paths::cache()?.join(format!("validationos-{}.iso", platform::GUEST_ARCH));
     if cached.exists() {
         return mount_iso_at(&cached);
     }
@@ -421,7 +434,7 @@ pub fn mount_microsoft_image(from: Option<&Path>) -> Result<PathBuf> {
 
 /// Attach any ISO read-only and return its mount point.
 ///
-/// Unlike [`mount_iso`], this makes no assumption about what is inside, so it
+/// Unlike [`extract_vhdx`], this makes no assumption about what is inside, so it
 /// works for the virtio-win media as well as Microsoft's. An image already
 /// attached — by an earlier WinQuick command, or by the user — is reused rather
 /// than attached a second time, which the kernel refuses as busy.

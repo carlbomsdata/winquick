@@ -18,6 +18,13 @@ pub struct Qmp {
     writer: ControlStream,
 }
 
+/// How long to wait for one reply from QEMU's monitor.
+///
+/// Generous, because a migration's `query-migrate` can be answered slowly on a
+/// busy machine, but finite: QEMU is a child process and a silent one is a
+/// failure to report, not a reason to wait forever.
+const REPLY_TIMEOUT: Duration = Duration::from_secs(60);
+
 impl Qmp {
     /// Connect once QEMU's monitor endpoint is answering.
     ///
@@ -28,6 +35,8 @@ impl Qmp {
         let deadline = Instant::now() + timeout;
         loop {
             if let Ok(s) = ControlStream::connect(endpoint) {
+                // A monitor that has stopped answering must fail, not hang.
+                let _ = s.set_read_timeout(REPLY_TIMEOUT);
                 let writer = s.try_clone()?;
                 let mut q = Qmp { reader: BufReader::new(s), writer };
                 q.read_greeting()?;
@@ -95,6 +104,17 @@ impl Qmp {
     /// writable block device support snapshots (the raw mailbox does not), and
     /// it picks which device stores the state, which it gets wrong here.
     pub fn migrate_to_file(&mut self, path: &Path, timeout: Duration) -> Result<()> {
+        // The guest is already stopped, so "downtime" is not a cost anyone
+        // pays and bandwidth should not be rationed. Saying so matters: with
+        // the defaults, QEMU keeps the iterative phase going until it predicts
+        // it can finish inside 300 ms, and on an accelerator without dirty-page
+        // tracking that prediction never arrives -- it re-sends RAM forever
+        // (measured: 11 GB of transfer for a 1 GB guest, still `active`).
+        // Given an unlimited downtime it completes on the first pass.
+        self.command(
+            "migrate-set-parameters",
+            json!({ "downtime-limit": 600_000u64, "max-bandwidth": 0u64 }),
+        )?;
         self.command("migrate", json!({ "uri": format!("file:{}", path.display()) }))?;
         let deadline = Instant::now() + timeout;
         loop {

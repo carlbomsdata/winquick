@@ -177,11 +177,20 @@ fn execute(command: &str, opts: &Options) -> Result<Outcome> {
     let want = fingerprint(&ctx)?;
     ctx.vlog(format!("host startup {:.0}ms", t_start.elapsed().as_secs_f64() * 1000.0));
 
-    if !opts.force_cold {
+    // Keyed on the accelerator and the QEMU that would do the restoring, not
+    // on the guest topology: whether restore works at all is a property of
+    // those two, and re-testing it for every memory size would be noise.
+    let backend = format!("{}|{}", want.qemu_version, crate::platform::backend_signature());
+    let can_restore = !state::restore_unsupported(&backend);
+    if !can_restore {
+        ctx.vlog("prepared guests do not restore with this QEMU; booting cold");
+    }
+
+    if !opts.force_cold && can_restore {
         match state::load_valid(&want) {
             Ok(Some(ready)) => {
                 ctx.vlog("using existing ready state");
-                match warm_execute(&ctx, &ready, command) {
+                match warm_execute(&ctx, &ready, command, true) {
                     Ok(o) => return Ok(o),
                     Err(e) if crate::interrupt::interrupted() => return Err(e),
                     Err(e) => {
@@ -207,25 +216,37 @@ fn execute(command: &str, opts: &Options) -> Result<Outcome> {
     // The lock is held across both the re-check and the build: several runs can
     // start at once with nothing prepared, and a run must never read a ready
     // state that another process is still writing.
-    if !opts.force_cold {
+    if !opts.force_cold && can_restore {
         match crate::lock::acquire_build(Duration::from_secs(600))? {
             Some(_guard) => {
                 // Someone may have built it while we waited.
                 if let Ok(Some(ready)) = state::load_valid(&want) {
                     ctx.vlog("another run prepared the guest while we waited");
-                    match warm_execute(&ctx, &ready, command) {
+                    match warm_execute(&ctx, &ready, command, true) {
                         Ok(o) => return Ok(o),
                         Err(e) if crate::interrupt::interrupted() => return Err(e),
                         Err(e) => ctx.vlog(format!("that prepared guest did not work: {e:#}")),
                     }
                 }
                 match build_ready_state(&ctx, &want) {
-                    Ok(ready) => match warm_execute(&ctx, &ready, command) {
+                    Ok(ready) => match warm_execute(&ctx, &ready, command, false) {
                         Ok(o) => return Ok(o),
                         Err(e) if crate::interrupt::interrupted() => return Err(e),
                         Err(e) => {
                             ctx.vlog(format!("newly built ready state did not work: {e:#}"));
                             let _ = state::discard();
+                            // Only a silent guest is evidence about the host.
+                            // Anything else -- QEMU dying, a disk error, a
+                            // killed process -- is an accident of this run, and
+                            // remembering it would disable the fast path
+                            // permanently on a machine where it works.
+                            if guest_was_silent(&e) {
+                                let _ = state::mark_restore_unsupported(&backend);
+                                ctx.vlog(
+                                    "this QEMU cannot restore a prepared guest; \
+                                     later runs will boot cold without trying",
+                                );
+                            }
                         }
                     },
                     Err(e) if crate::interrupt::interrupted() => return Err(e),
@@ -456,9 +477,29 @@ fn prepare_artifacts(template: Option<&Path>, dst: &Path) -> Result<()> {
 }
 
 fn fresh_vars(path: &Path) -> Result<()> {
-    let f = std::fs::File::create(path)?;
-    f.set_len(64 * 1024 * 1024)?;
-    Ok(())
+    crate::helpers::fresh_uefi_vars(path)
+}
+
+/// The guest was resumed, said nothing, and ran out of time.
+///
+/// Distinguished from every other way a run can fail because it is the only one
+/// that says something about the *host*: QEMU dying, an I/O error or a Ctrl-C
+/// are all accidents of this run, while a guest that resumes and never executes
+/// is a property of the accelerator. Only this one is worth remembering.
+#[derive(Debug)]
+struct GuestSilent(String);
+
+impl std::fmt::Display for GuestSilent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "timed out waiting for {} from the guest", self.0)
+    }
+}
+
+impl std::error::Error for GuestSilent {}
+
+/// Did this failure mean "the guest resumed and never executed"?
+fn guest_was_silent(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.downcast_ref::<GuestSilent>().is_some())
 }
 
 /// Wait for a mailbox file to appear, polling the image directly.
@@ -481,12 +522,31 @@ fn wait_for(
             }
         }
         if let Some(st) = child.try_wait()? {
-            bail!("qemu exited ({st}) before {name} appeared");
+            bail!("qemu exited ({st}) before {name} appeared{}", qemu_complaint(child));
         }
         if Instant::now() > deadline {
-            bail!("timed out waiting for {name} from the guest");
+            return Err(anyhow::Error::new(GuestSilent(name.to_string())));
         }
         std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+/// Whatever QEMU said on its way out.
+///
+/// An exit code on its own is not a diagnosis, and QEMU is usually explicit
+/// about what it could not do -- a missing accelerator, a file it could not
+/// open, an option this build does not support. Passing that through is the
+/// difference between a report and a shrug.
+fn qemu_complaint(child: &mut Child) -> String {
+    use std::io::Read;
+    let Some(mut err) = child.stderr.take() else { return String::new() };
+    let mut text = String::new();
+    let _ = err.read_to_string(&mut text);
+    let text = text.trim();
+    if text.is_empty() {
+        String::new()
+    } else {
+        format!(":\n{text}")
     }
 }
 
@@ -498,7 +558,21 @@ fn kill(child: &mut Child) {
 
 // ---------------------------------------------------------------- warm path
 
-fn warm_execute(ctx: &Ctx, ready: &state::ReadyState, command: &str) -> Result<Outcome> {
+/// How long to give a prepared guest that has never actually run a command.
+///
+/// A proven prepared guest gets the user's whole timeout, because a long build
+/// is a legitimate thing to wait for. One that has just been built has not
+/// earned that: if restoring silently produces a guest that never executes --
+/// which is what WHPX does today -- then waiting out a five-minute timeout
+/// before falling back is five minutes of nothing.
+const UNPROVEN_RESTORE_TIMEOUT: Duration = Duration::from_secs(60);
+
+fn warm_execute(
+    ctx: &Ctx,
+    ready: &state::ReadyState,
+    command: &str,
+    proven: bool,
+) -> Result<Outcome> {
     let t0 = Instant::now();
     let dir = new_run_dir()?;
     let _scratch = Scratch(dir.clone());
@@ -535,6 +609,7 @@ fn warm_execute(ctx: &Ctx, ready: &state::ReadyState, command: &str) -> Result<O
         cpus: ctx.opts_cpus,
         serial_log: &serial,
         qmp_socket: &qmp_sock,
+        verbose: ctx.verbose,
         incoming: Some(&ready.state_file()),
     })?;
     crate::interrupt::watch_child(child.id());
@@ -545,7 +620,9 @@ fn warm_execute(ctx: &Ctx, ready: &state::ReadyState, command: &str) -> Result<O
         q.wait_incoming(Duration::from_secs(30))?;
         let t_restore = t0.elapsed();
         q.cont()?;
-        let deadline = Instant::now() + ctx.timeout;
+        let budget =
+            if proven { ctx.timeout } else { ctx.timeout.min(UNPROVEN_RESTORE_TIMEOUT) };
+        let deadline = Instant::now() + budget;
         wait_for(&mbox, mailbox::CODE_FILE, &mut child, deadline)?;
         let t_exec = t0.elapsed();
         let r = mailbox::read_results(&mbox)?;
@@ -615,6 +692,7 @@ fn build_ready_state(ctx: &Ctx, want: &state::Fingerprint) -> Result<state::Read
         cpus: ctx.opts_cpus,
         serial_log: &serial,
         qmp_socket: &qmp_sock,
+        verbose: ctx.verbose,
         incoming: None,
     })?;
     crate::interrupt::watch_child(child.id());
@@ -705,6 +783,7 @@ fn cold_execute(ctx: &Ctx, command: &str) -> Result<Outcome> {
         cpus: ctx.opts_cpus,
         serial_log: &serial,
         qmp_socket: &qmp_sock,
+        verbose: ctx.verbose,
         incoming: None,
     })?;
     crate::interrupt::watch_child(child.id());
@@ -737,4 +816,34 @@ fn strip_cr(b: &[u8]) -> Vec<u8> {
         i += 1;
     }
     v
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Recording "this host cannot restore" is a decision that makes every
+    /// later run slower, so it must rest on the one failure that actually says
+    /// something about the host. A killed QEMU or a disk error must not count:
+    /// that is how a machine where restoring works fine ends up booting cold
+    /// forever.
+    #[test]
+    fn only_a_silent_guest_counts_as_evidence_about_the_host() {
+        let silent = anyhow::Error::new(GuestSilent("WQCODE.TXT".into()));
+        assert!(guest_was_silent(&silent));
+
+        let wrapped = silent.context("restoring the prepared guest");
+        assert!(guest_was_silent(&wrapped), "context must not hide the cause");
+
+        assert!(!guest_was_silent(&anyhow!("qemu exited (exit code: 1)")));
+        assert!(!guest_was_silent(&anyhow!("interrupted")));
+    }
+
+    /// The message is what a user sees; it should name what was waited for.
+    #[test]
+    fn a_silent_guest_says_what_it_was_waiting_for() {
+        let e = GuestSilent("WQCODE.TXT".into()).to_string();
+        assert!(e.contains("WQCODE.TXT"), "{e}");
+    }
 }

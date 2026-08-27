@@ -44,11 +44,19 @@ fn bundled_dirs() -> Vec<PathBuf> {
                 // cargo target/<profile>/winquick -> repo root
                 if let Some(root) = prefix.parent() {
                     dirs.push(root.join("vendor").join("ntfsprogs"));
+                    // hivexsh comes from Homebrew on macOS, but Windows has no
+                    // package for it, so it is built and shipped alongside.
+                    dirs.push(root.join("vendor").join("hivex"));
                 }
             }
         }
     }
     dirs
+}
+
+/// A helper's file name on this host: `ntfscp` on macOS, `ntfscp.exe` on Windows.
+fn exe_name(name: &str) -> String {
+    format!("{name}{}", std::env::consts::EXE_SUFFIX)
 }
 
 fn find(name: &str, env_override: &str) -> Option<PathBuf> {
@@ -57,8 +65,9 @@ fn find(name: &str, env_override: &str) -> Option<PathBuf> {
             return Some(p);
         }
     }
+    let file = exe_name(name);
     for d in bundled_dirs() {
-        let c = d.join(name);
+        let c = d.join(&file);
         if c.is_file() {
             return Some(c);
         }
@@ -66,13 +75,27 @@ fn find(name: &str, env_override: &str) -> Option<PathBuf> {
     which(name)
 }
 
+/// Find an executable on `PATH`.
+///
+/// Done here rather than by shelling out, because `which` is not a program on
+/// Windows and the separator differs; `split_paths` knows both conventions.
 pub fn which(bin: &str) -> Option<PathBuf> {
-    let out = std::process::Command::new("/usr/bin/which").arg(bin).output().ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let p = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim().to_string());
-    p.is_file().then_some(p)
+    let file = exe_name(bin);
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path).map(|d| d.join(&file)).find(|c| is_executable(c))
+}
+
+#[cfg(unix)]
+fn is_executable(p: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(p).map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).unwrap_or(false)
+}
+
+/// Windows has no execute bit; the extension is what makes a file runnable, and
+/// [`exe_name`] has already applied it.
+#[cfg(windows)]
+fn is_executable(p: &Path) -> bool {
+    p.is_file()
 }
 
 pub fn find_ntfscp() -> Option<PathBuf> {
@@ -81,7 +104,7 @@ pub fn find_ntfscp() -> Option<PathBuf> {
 pub fn find_ntfscat() -> Option<PathBuf> {
     // Conventionally installed beside ntfscp; prefer that before searching PATH.
     if let Some(cp) = find_ntfscp() {
-        let sibling = cp.with_file_name("ntfscat");
+        let sibling = cp.with_file_name(exe_name("ntfscat"));
         if sibling.is_file() {
             return Some(sibling);
         }
@@ -115,7 +138,15 @@ pub fn setup_tools() -> Result<SetupTools> {
 
     let mut msg = String::from("winquick setup needs a few tools that are not installed.\n\n");
     if missing.contains(&"hivex") {
-        msg.push_str("  hivex      brew install hivex\n");
+        if cfg!(windows) {
+            msg.push_str(
+                "  hivexsh    normally ships with WinQuick. If you are running from a\n\
+                 \x20            source checkout, build it once with:\n\
+                 \x20                ./scripts/build-hivex-windows.sh\n",
+            );
+        } else {
+            msg.push_str("  hivex      brew install hivex\n");
+        }
     }
     if missing.contains(&"ntfsprogs") {
         msg.push_str(
@@ -127,6 +158,15 @@ pub fn setup_tools() -> Result<SetupTools> {
     msg.push_str("\nThen run `winquick setup` again. `winquick doctor` shows what is missing.");
     bail!("{msg}");
 }
+
+/// How to get QEMU on this host. Homebrew is the only sensible answer on
+/// macOS; Windows has no single one, so the hint says what is needed rather
+/// than naming a package manager the user may not have.
+const QEMU_HINT: &str = if cfg!(target_os = "macos") {
+    "brew install qemu"
+} else {
+    "install QEMU for Windows and put it on PATH"
+};
 
 /// Report for `winquick doctor`.
 pub struct ToolStatus {
@@ -142,13 +182,13 @@ pub fn survey() -> Vec<ToolStatus> {
             name: crate::platform::QEMU_SYSTEM,
             path: which(crate::platform::QEMU_SYSTEM),
             needed_for: "running Windows",
-            install_hint: "brew install qemu",
+            install_hint: QEMU_HINT,
         },
         ToolStatus {
             name: "qemu-img",
             path: which("qemu-img"),
             needed_for: "running Windows",
-            install_hint: "brew install qemu",
+            install_hint: QEMU_HINT,
         },
         ToolStatus {
             name: "ntfscp",
@@ -166,13 +206,24 @@ pub fn survey() -> Vec<ToolStatus> {
             name: "hivexsh",
             path: find_hivexsh(),
             needed_for: "setup only",
-            install_hint: "brew install hivex",
+            // Windows has no package for it, so WinQuick ships one; if it is
+            // missing there, the installation is incomplete rather than the
+            // machine underprovisioned.
+            install_hint: if cfg!(windows) {
+                "should have shipped with WinQuick; reinstall"
+            } else {
+                "brew install hivex"
+            },
         },
         ToolStatus {
-            name: "unzip",
-            path: which("unzip"),
+            name: if cfg!(windows) { "tar" } else { "unzip" },
+            path: which(if cfg!(windows) { "tar" } else { "unzip" }),
             needed_for: "installing capabilities",
-            install_hint: "ships with macOS",
+            install_hint: if cfg!(windows) {
+                "ships with Windows 10 1803 and later"
+            } else {
+                "ships with macOS"
+            },
         },
     ]
 }
@@ -196,6 +247,34 @@ pub fn uefi_firmware() -> Option<PathBuf> {
         .into_iter()
         .map(|r| r.join(crate::platform::UEFI_CODE))
         .find(|p| p.is_file())
+}
+
+/// A blank UEFI variable store for one boot.
+///
+/// The two hosts want different things here, and getting it wrong is not
+/// subtle. The aarch64 `virt` machine expects a 64 MiB pflash pair, so a file
+/// of zeroes is exactly right. The x86_64 `q35` machine refuses any firmware
+/// pair totalling more than 8 MiB, and its code image expects the variable
+/// store QEMU ships beside it -- so that template is copied rather than
+/// invented. A blank 64 MiB file there produces
+/// `combined size of system firmware exceeds 8388608 bytes` and no boot at all.
+pub fn fresh_uefi_vars(path: &Path) -> Result<()> {
+    if let Some(name) = crate::platform::UEFI_VARS_TEMPLATE {
+        let template = uefi_firmware()
+            .and_then(|code| code.parent().map(|d| d.join(name)))
+            .filter(|p| p.is_file())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "QEMU is installed but its UEFI variable template {name} is missing"
+                )
+            })?;
+        std::fs::copy(&template, path).map_err(|e| {
+            anyhow::anyhow!("copying {} to {}: {e}", template.display(), path.display())
+        })?;
+        return Ok(());
+    }
+    std::fs::File::create(path)?.set_len(64 * 1024 * 1024)?;
+    Ok(())
 }
 
 /// Human-readable size, for status output.

@@ -291,7 +291,7 @@ fn service(
     mailbox::inject_command(&mbox, &servicing_script(), None, "servicing")?;
 
     let vars = work.join("vars.fd");
-    std::fs::File::create(&vars)?.set_len(64 * 1024 * 1024)?;
+    crate::helpers::fresh_uefi_vars(&vars)?;
     let log = work.join("servicing.log");
 
     let uefi = paths::uefi_code()

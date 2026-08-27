@@ -157,6 +157,63 @@ pub fn randomize(disk: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The GUID that marks a Microsoft basic data partition, in GPT's mixed-endian
+/// layout. Validation OS puts the Windows volume in one of these.
+const BASIC_DATA: [u8; 16] = [
+    0xA2, 0xA0, 0xD0, 0xEB, 0xE5, 0xB9, 0x33, 0x44, 0x87, 0xC0, 0x68, 0xB6, 0xB7, 0x26, 0x99, 0xC7,
+];
+
+/// Where the Windows volume starts inside a whole-disk image, in bytes.
+///
+/// This is what lets the ntfsprogs helpers work on the image file itself
+/// instead of on a partition device node. macOS could produce such a node with
+/// `hdiutil attach -nomount`; Windows has no equivalent that does not require
+/// elevation and a virtual-disk driver, and endpoint security software blocks
+/// that route in practice. Reading the partition table and passing an offset
+/// works the same way on both, needs no privileges, and touches nothing outside
+/// the file.
+///
+/// A Validation OS disk carries several Microsoft partitions; the Windows
+/// volume is the large basic data one, so the largest is what gets picked
+/// rather than a fixed index.
+pub fn windows_volume_offset(disk: &Path) -> Result<u64> {
+    let mut f = std::fs::File::open(disk)
+        .with_context(|| format!("opening {}", disk.display()))?;
+    check_len(f.metadata()?.len())?;
+
+    let header = read_at(&mut f, SECTOR, SECTOR as usize)?;
+    if &header[..8] != SIG {
+        bail!("{} does not start with a GPT header", disk.display());
+    }
+    let entries_lba = u64::from_le_bytes(header[72..80].try_into().unwrap());
+    let count = u32::from_le_bytes(header[80..84].try_into().unwrap()) as usize;
+    let entry_size = u32::from_le_bytes(header[84..88].try_into().unwrap()) as usize;
+    if entry_size < 128 || count == 0 || count > 512 {
+        bail!("unsupported GPT geometry: {count} entries of {entry_size} bytes");
+    }
+    let entries = read_at(&mut f, entries_lba * SECTOR, count * entry_size)?;
+
+    let mut best: Option<(u64, u64)> = None; // (sectors, offset)
+    for i in 0..count {
+        let e = &entries[i * entry_size..i * entry_size + entry_size];
+        if e[..16] != BASIC_DATA {
+            continue;
+        }
+        let first = u64::from_le_bytes(e[32..40].try_into().unwrap());
+        let last = u64::from_le_bytes(e[40..48].try_into().unwrap());
+        if last < first {
+            continue;
+        }
+        let sectors = last - first + 1;
+        if best.map_or(true, |(b, _)| sectors > b) {
+            best = Some((sectors, first * SECTOR));
+        }
+    }
+    best.map(|(_, off)| off).ok_or_else(|| {
+        anyhow::anyhow!("{} has no basic data partition to write into", disk.display())
+    })
+}
+
 /// Recompute a header's own CRC, which is defined over the header with the CRC
 /// field zeroed.
 fn reseal(header: &mut [u8]) {
@@ -194,9 +251,7 @@ fn write_at(f: &mut std::fs::File, off: u64, data: &[u8]) -> Result<()> {
 /// does not have.
 fn random_guid() -> Result<[u8; 16]> {
     let mut b = [0u8; 16];
-    std::fs::File::open("/dev/urandom")
-        .context("reading randomness")?
-        .read_exact(&mut b)?;
+    crate::hostfs::fill_random(&mut b)?;
     b[7] = (b[7] & 0x0F) | 0x40; // version 4, in the little-endian time_hi field
     b[8] = (b[8] & 0x3F) | 0x80; // RFC 4122 variant
     Ok(b)

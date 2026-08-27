@@ -6,12 +6,22 @@
 use anyhow::{anyhow, Result};
 use std::path::PathBuf;
 
-pub const IMAGE_NAME: &str = "validation-arm64";
+/// The runtime directory name, which carries the guest architecture: an x64
+/// runtime under an `arm64` name would be a trap for anyone reading the
+/// directory, and the two are not interchangeable.
+pub const IMAGE_NAME: &str =
+    if cfg!(target_arch = "aarch64") { "validation-arm64" } else { "validation-x64" };
 
+/// The user's home directory.
+///
+/// `HOME` is the Unix answer and is also what a shell sets on Windows, but a
+/// `winquick.exe` started from cmd.exe or Explorer sees only `USERPROFILE`.
+/// Preferring `HOME` keeps a deliberately overridden home working on both.
 pub fn home() -> Result<PathBuf> {
     std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
-        .ok_or_else(|| anyhow!("HOME is not set"))
+        .ok_or_else(|| anyhow!("neither HOME nor USERPROFILE is set"))
 }
 
 pub fn root() -> Result<PathBuf> {

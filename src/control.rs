@@ -60,7 +60,7 @@ pub fn create(path: &Path) -> Result<()> {
         .truncate(true)
         .open(path)
         .with_context(|| format!("creating the control disk at {}", path.display()))?;
-    f.set_len(DISK_BYTES)?;
+    crate::hostfs::set_sparse_len(&f, DISK_BYTES)?;
     let mut f = f;
 
     let mut id = [0u8; SECTOR as usize];
