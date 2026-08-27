@@ -21,7 +21,7 @@ image and leaves nothing behind.
 | PowerShell command | ~870 ms |
 | Desktop session start | **~380 ms** |
 | UI automation step in a session | ~20 ms |
-| Host | Apple Silicon macOS (Linux and Windows hosts planned) |
+| Host | Apple Silicon macOS; Windows x86_64 (early) |
 
 Times are medians observed on the development host (Apple Silicon, macOS 26,
 QEMU 11.1), not guaranteed latencies.
@@ -79,6 +79,8 @@ Setup finishes by booting Windows and running a real command, so it only says
 "Ready" when it actually is. It takes about a minute.
 
 Requirements: an Apple Silicon Mac (M1 or newer) and macOS 13 or later.
+Windows x86_64 works too, and is earlier along — see
+[docs/windows-host.md](docs/windows-host.md).
 
 See [docs/install.md](docs/install.md) for details.
 
@@ -275,19 +277,27 @@ hand to an automated agent that might do anything.
 Measured on the development host: Apple Silicon, macOS 26, QEMU 11.1. Your
 numbers will differ; the shape of them should not.
 
-**Host support.** Apple Silicon macOS today.
+**Host support.**
 
 | Host | Status |
 |---|---|
 | Apple Silicon macOS | Supported |
-| Windows x86_64 | Planned — see [docs/windows-host.md](docs/windows-host.md) |
+| Windows x86_64 | Early — `setup` and `run` work; see [docs/windows-host.md](docs/windows-host.md) |
 | Windows ARM64 | Planned |
 | Linux | Planned |
 | Intel Mac | Not planned |
 
-Nothing in the product is deliberately Mac-only, and an audit of what a Windows
-host would take is written up in [docs/windows-host.md](docs/windows-host.md).
-It is not built or tested, so it is not claimed.
+On Windows, `winquick setup` and `winquick run` work today: a real x64
+Validation OS guest, hardware-accelerated through the Windows Hypervisor
+Platform, driven by the same agent and the same mailbox protocol macOS uses.
+Nothing needs elevation, no disk image is ever mounted, and no exception is
+asked of endpoint security software.
+
+It is *early*, and the honest list of what is missing — architecture-specific
+capability payloads, extracting the VHDX from Microsoft's ISO without mounting
+it, the desktop, packaging — is in
+[docs/windows-host.md](docs/windows-host.md). The fast path also needs a
+patched QEMU there; without it, every run is a cold boot.
 
 **Offline by default.** The guest has no network adapter unless you give it
 one, and today you cannot: enabling it means servicing the base image the way

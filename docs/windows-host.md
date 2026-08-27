@@ -4,9 +4,15 @@ WinQuick's guest has always been Windows. This is about the other half: making
 Windows a **host**, so a developer on Windows x86_64 gets the same product a
 developer on an Apple Silicon Mac gets.
 
-**Status: architecture proven, product port not started.** Prepared-state
-restore works under WHPX with two small QEMU patches, measured on real
-hardware. What remains is the WinQuick port itself.
+**Status: the product runs on Windows.** `winquick setup` builds a runtime and
+`winquick run` executes a command in it, both through `winquick.exe`, with no
+elevation, no mounted images and no exception asked of the endpoint security
+software.
+
+It is not yet *fast* there. Every run is a cold boot at **~16.5 s**, because a
+restored guest under WHPX resumes and then never executes — the one thing that
+did not work, written up [below](#the-prepared-guest-restores-and-then-does-nothing).
+macOS keeps its ~300 ms because restoring works there.
 
 ## The rule that must not be broken
 
@@ -47,7 +53,10 @@ state** into a fresh QEMU process — that is what turns a ~20 second boot into 
 > process terminated → **the same immutable file restored into 20 fresh QEMU
 > processes**, 20/20, p50 **1.99 s**, state hash unchanged, zero orphans.
 
-That is fan-out reusable prepared state, not a one-way transfer.
+That is fan-out reusable prepared state, not a one-way transfer — as far as the
+file and the loader are concerned. Whether the *guest* resumes executing
+afterwards is a separate question, and the answer turned out to be no; see
+[below](#the-prepared-guest-restores-and-then-does-nothing).
 
 ### Why stock QEMU refuses
 
@@ -118,9 +127,63 @@ existing mailbox protocol — the same `guest/agent.cmd` macOS uses, unmodified.
 The agent is a batch file, so nothing about it needed an x64 build. Round trip
 from cold boot to exit code: 18.4 s (this is a cold boot, not a restore).
 
-The *host* side of that is still lab scripting rather than `winquick.exe`: the
-Rust backend now knows the right QEMU, accelerator, machine, CPU and firmware,
-but `setup` and `run` are not yet wired to drive it.
+That was lab scripting. The same command now runs through `winquick.exe` itself:
+
+```console
+> winquick setup --from C:\media\ValidationOS.vhdx
+  [1/4] expanding the image
+  [2/4] installing the WinQuick agent
+  [3/4] configuring the guest
+  [4/4] packing the runtime
+Windows runtime installed (652 MiB).
+
+> winquick run -- cmd /c ver
+Microsoft Windows [Version 10.0.26100.8972]
+```
+
+Setup takes 57 s and a cold run 16.5 s, repeatably, with no orphaned QEMU
+processes left behind.
+
+### The prepared guest restores, and then does nothing
+
+This is the one that did not work, and it is worth stating precisely because
+the earlier measurements are all still true and all still insufficient.
+
+With the patched QEMU, WinQuick builds a prepared state on Windows exactly as it
+does on macOS: the guest boots, announces itself, is stopped, and is migrated to
+a file. That takes **25-32 s** and produces a **~341 MiB** state. A later run
+starts a fresh QEMU with `-incoming`, the load completes, `cont` succeeds, and
+QEMU reports a running guest.
+
+The guest then does nothing at all. It never reads the command, never writes
+`WQOUT.TXT`, never writes an exit code; the overlay does not grow by a single
+byte. Waiting longer does not help.
+
+What the earlier work proved was that the *state file* survives a round trip and
+can be loaded many times over — 20 fresh processes, hash unchanged. That is a
+statement about the file and about QEMU accepting it. It is not a statement
+about the guest resuming execution, and this is where the two part company.
+The likely place to look is what WHPX puts back into a vCPU on restore, which
+is the half of the accelerator the stop-and-copy patch does not touch.
+
+**So on Windows every run is a cold boot: ~16.5 s.** That is the honest number,
+and it is what the product does today.
+
+WinQuick handles this rather than repeating it. The first run that hits it
+writes `~/.winquick/restore-unsupported`, keyed on the QEMU and the
+accelerator, and later runs skip the warm path entirely instead of rebuilding a
+prepared guest, restoring it, waiting and giving up — three boots to run one
+command. A prepared guest that has never actually run a command also gets a
+short budget rather than the user's whole timeout, because there is nothing to
+wait for. Install a QEMU that can restore and the note stops matching, on its
+own; `winquick doctor` says when it is in effect.
+
+The note is written **only** when the guest resumed and then said nothing.
+That distinction is load-bearing, and it was learned the hard way: an earlier
+version recorded it on any warm-path failure, and a QEMU killed by hand during
+testing was enough to disable the fast path permanently on a Mac where it works
+perfectly. QEMU dying, a disk error or a Ctrl-C are accidents of one run; a
+silent guest is the only one that says anything about the host.
 
 ### The CPU model is not a free choice
 
@@ -144,12 +207,12 @@ least demanding thing a Windows 11 guest actually boots on, and available on any
 x86_64 host from about 2008. It is part of the prepared-state fingerprint,
 because a state carries the CPUID it was made with.
 
-### Preparing the base image on Windows is blocked
+### Preparing the base image needs no mounting at all
 
 WinQuick injects its agent by writing two things into the guest image: the batch
-file, and an `AutoRun` value in the SOFTWARE hive. On macOS that is done without
-mounting anything — `hdiutil -nomount` exposes the partition and `ntfscp` and
-`hivexsh` write into it.
+file, and an `AutoRun` value in the SOFTWARE hive. On macOS that was done by
+attaching the image with `hdiutil -nomount` and pointing `ntfscp` and `hivexsh`
+at the partition node.
 
 The Windows equivalent would be to attach the VHDX and copy the files. That does
 not work on the validation host:
@@ -162,11 +225,55 @@ not work on the validation host:
   alongside Defender, and blocking disk-image attach is standard anti-evasion
   behaviour for managed endpoints.
 
-For this work the image was prepared on the Mac instead and copied over, which
-proved the guest path. For the product the better answer is not to mount at all:
-build the same `ntfsprogs` helpers WinQuick already ships for macOS, and write
-into the image directly. That needs no elevation, no VHD driver and no argument
-with the endpoint protection — and it is the same code path on both hosts.
+**So WinQuick stopped attaching images.** Every access the ntfs helpers make is
+a seek or a positioned read/write, so an `NTFS_IMAGE_OFFSET` environment
+variable shifts them by the byte offset of the partition, and "image plus
+offset" behaves exactly like a partition device node did. WinQuick finds that
+offset by reading the GPT itself (`src/gpt.rs`) and picking the largest basic
+data partition.
+
+This is now the **only** path on either host: macOS no longer attaches anything
+either, and `hdiutil attach -nomount`, its detach handling and its
+stale-attachment recovery are gone. One code path, no privileges, nothing
+touched outside the image file.
+
+The helpers are native Windows builds of the same programs macOS uses, from the
+same upstream tarball and the same patch — see
+[`patches/ntfsprogs-windows.patch`](../patches/ntfsprogs-windows.patch) and
+[`scripts/build-ntfs-helpers.sh`](../scripts/build-ntfs-helpers.sh). MSYS2 is a
+build-time dependency only; the results link nothing but `KERNEL32` and
+`msvcrt`.
+
+Measured: a 6 MB `SOFTWARE` hive read out of a 32 GB image, edited, written back
+and read again **byte-identical over two cycles**, in 153 ms.
+
+`hivexsh` had to be built too, because no Windows package provides it and
+upstream excludes it from Windows builds — it composes its interactive prompt
+with `open_memstream`, which mingw lacks. WinQuick's build uses a fixed prompt
+and drives it from a script file, where no prompt is printed.
+See [`patches/hivex-windows.patch`](../patches/hivex-windows.patch).
+
+### Two Windows bugs worth knowing, both the same bug
+
+Neither is subtle in hindsight and both cost real time.
+
+**`__attribute__` is defined away.** `ntfs-3g`'s `compat.h` neuters
+`__attribute__` on Windows, for MSVC's benefit. That also discards
+`__attribute__((packed))` on every on-disk structure: `NTFS_BOOT_SECTOR` grows
+from 512 to 520 bytes, `oem_id` lands at the wrong offset, and a perfectly good
+NTFS volume reports *"NTFS signature is missing"*.
+
+**Text mode eats binary data.** The C runtime rewrites `0x0A` on the way out and
+treats `0x1A` as end of file. A registry hive read through `ntfscat`'s stdout
+grew by exactly its own newline count on every cycle — 6 029 312 bytes became
+6 040 930, then 6 052 548 — and `ntfscp` reading its source in text mode did the
+same in reverse. This is the third time the same class of bug has appeared in
+this port; the QEMU migration stream was the first
+(see [`patches/README.md`](../patches/README.md)).
+
+A trap that follows from it: `#ifdef O_BINARY` compiles to *nothing* if
+`<fcntl.h>` was not included, so the guard silently does the wrong thing rather
+than failing to build.
 
 ### Windows holds its disk images exclusively
 
@@ -182,15 +289,89 @@ another process*. Polling the mailbox while the guest runs needs an explicit
   `-cpu host` on macOS, so a Windows backend must pin a concrete model — which
   is fine, and the prepared state's fingerprint must include it.
 
-### What this does not yet prove
+### One trap that is not WinQuick's fault
 
-Restore is **~2 s**, not the ~300 ms macOS delivers. Much of that is streaming
-153 MB through a relay rather than reading the file directly, so there is real
-headroom, but it is not yet a WinQuick-class number. And no WinQuick command has
-run through a restored x64 guest: that needs the agent, the x64 capability
-payloads and an x64 guest bridge, none of which exist yet.
+Driving `winquick.exe` from an **MSYS2 or Cygwin shell** silently corrupts the
+command. Those runtimes rewrite arguments that look like POSIX paths before the
+program ever sees them, so
 
-So the architecture is proven and the product port is not started.
+```console
+$ winquick run -- cmd /c ver
+```
+
+arrives as `cmd C:/ ver`. That starts an *interactive* `cmd.exe` in the guest,
+which never exits, and the run times out with no useful explanation. The
+captured output ends mid-prompt at `C:\workspace>`, which is the tell.
+
+It cost an afternoon to find, because every symptom pointed inward: the guest
+booted, the agent announced itself, the command file was written, output files
+appeared, and nothing came back. Set `MSYS2_ARG_CONV_EXCL='*'`, or use
+`cmd.exe` or PowerShell. Nothing on WinQuick's side can detect this -- by the
+time `main` runs, the argument is already gone.
+
+### What is verified there
+
+Measured on Windows 11 Pro 25H2 (build 26200), i5-8265U, QEMU 11.1.0,
+Validation OS x64 26100.8972.
+
+| | |
+|---|---|
+| `winquick setup` from a VHDX | 57 s |
+| `winquick setup` from the ISO | + ~0.5 s to read the VHDX out of it |
+| `winquick run -- cmd /c ver` | 14.6-18.2 s, repeatable |
+| first run after a fresh setup | 112 s — it builds a prepared guest, finds it will not resume, records that, and boots cold |
+| orphaned QEMU processes | none |
+
+The **unit suite runs natively there too: 127 tests, all passing**, built with
+the `x86_64-pc-windows-gnu` toolchain. Getting it to run turned up a real bug:
+every GPT test failed, because giving a copied disk a fresh identity read
+`/dev/urandom`, so the servicing path could not have worked on Windows at all.
+It now goes through `hostfs::fill_random`, which uses `ProcessPrng` there. Two
+of the tests are new and exist because their failure modes are silent — that
+the Job Object limit structures are the size `winnt.h` says (a mismatch makes
+`SetInformationJobObject` fail and quietly lose containment), and that only a
+guest that resumed and said nothing is treated as evidence about the host.
+
+The behaviour suite covers doctor, stdout and stderr separation, exit-code
+propagation, the workspace, artifact retrieval, disposability and containment:
+**14 checks, all passing**. `winquick mcp` passes the protocol suite in
+[`tests/mcp.py`](../tests/mcp.py) — **72 checks, all passing**, including the
+Windows-touching workspace and artifact tools.
+
+Two harness fixes were needed for that, and neither was a product bug: the
+suite looked for a runtime under `validation-arm64` only, and it built its
+temporary workspaces with MSYS2 paths that a native `winquick.exe` cannot
+resolve. Both now handle either host.
+
+Capabilities — PowerShell, the .NET runtime and SDK — resolve `win-x64`
+payloads and unpack with the `tar` Windows ships, but have not been run there
+yet. That is a claim about the code, not a measurement.
+
+### Reading Microsoft's ISO
+
+The media is a **UDF bridge disc**: its ISO 9660 filesystem holds a single
+`README.TXT` saying so, and `ValidationOS.vhdx` lives in the UDF filesystem
+beside it. Mounting that needs `hdiutil` on macOS and `Mount-DiskImage` on
+Windows, and the second is exactly what this port refuses to depend on.
+
+[`src/udf.rs`](../src/udf.rs) is the smallest reader that gets the file out:
+anchor, volume descriptors, file set, root directory, one file's extents. It
+takes **0.48 s for 1 GB** and is now the path on both hosts, so `hdiutil` is
+gone from `setup` entirely. It implements no more UDF than that, and says so
+rather than guessing when it meets something else.
+
+### What is not done yet
+
+- **Capabilities are wired but untested here.** PowerShell and the .NET runtime
+  and SDK now resolve `win-x64` payloads, with digests verified against the
+  publishers', and archives are unpacked with the `tar` Windows has shipped
+  since 10 1803 rather than the `unzip` it has not. None of that has been run
+  on Windows yet, so it is a claim about the code, not a measurement.
+- **A restored guest does not resume**, so every run is a cold boot. This is the
+  one real gap, and it is above.
+- **The desktop** needs an x64 `wqui.exe` and x64 drivers.
+- **Packaging.** A Windows user should not assemble a QEMU directory by hand,
+  and the fast path additionally needs a patched QEMU.
 
 ## What the code audit found, and what was fixed
 
@@ -252,12 +433,16 @@ Sketched so the estimate is honest, not so it can be started blind:
 
 ## Where this stands
 
-The gate was: prove the restore mechanism before porting. It is proven, so the
-port is now worth doing — and it is the next phase, not this one.
+The gate was: prove the restore mechanism, then port. Both are done. `setup` and
+`run` work on Windows x86_64 through the product's own binary, using the same
+guest protocol, the same agent and the same image-preparation code as macOS.
 
-What was worth doing regardless of the backend has been done — the shared core
-now compiles for `x86_64-pc-windows-msvc` with no errors, and the platform seam
-is isolated in `src/hostfs.rs`. Whichever backend a Windows port eventually
-uses, that work stands.
+The two hosts now differ in exactly the places
+[`src/platform.rs`](../src/platform.rs) names -- QEMU binary, accelerator,
+machine, CPU model, firmware, guest architecture -- plus the handful of
+filesystem and process spellings in [`src/hostfs.rs`](../src/hostfs.rs) and
+[`src/proc.rs`](../src/proc.rs). Everything above that line is one product.
 
-Apple Silicon macOS remains the only supported host until that port lands.
+What is left is breadth — the list is above — and one piece of depth: making a
+restored guest actually resume under WHPX, which is what stands between a
+16.5 second cold boot and the sub-second run macOS gets.

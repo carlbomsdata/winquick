@@ -134,9 +134,18 @@ transforms it, entirely locally:
 Two writes. Nothing else is changed — no drivers injected, no BCD edited, no
 packages added. The stock VHDX already boots under QEMU/HVF unmodified.
 
-This runs natively on macOS via `qemu-img`, `hdiutil`, `hivexsh` and `ntfscp`.
-The NTFS tooling currently has to be built from source, which is a known rough
-edge; see research.md.
+This runs through `qemu-img`, `ntfscp` and `hivexsh`, and it **mounts nothing**.
+The helpers are pointed at the image file plus the byte offset of the Windows
+partition, which WinQuick reads out of the GPT itself. Microsoft's ISO is read
+the same way, by a small UDF reader (`src/udf.rs`), rather than being mounted.
+
+That matters on both hosts: macOS could attach an image with
+`hdiutil -nomount`, but Windows cannot without elevation and a virtual-disk
+driver that endpoint security software routinely blocks. One code path, no
+privileges, and no mount left behind for the next run to trip over.
+
+The NTFS tooling and `hivexsh` are built from upstream sources; see
+[`scripts/`](../scripts/) and [`patches/`](../patches/).
 
 ## Two execution paths
 

@@ -4,6 +4,16 @@
 
 ### Fixed
 
+- **A QEMU that fails to start now says why.** Its stderr was captured and
+  discarded, so `winquick run` reported an exit code and nothing else. The
+  message it wanted to print — a missing accelerator, an unreadable file, an
+  option this build does not support — is now included.
+- **`--verbose` prints the QEMU command line**, quoted so it can be pasted back
+  into a shell. A VM that will not boot is usually diagnosed by reading the
+  arguments it was given.
+- **The QEMU monitor no longer waits forever.** A QEMU that stopped answering
+  hung WinQuick with it, and because building a prepared guest holds a lock,
+  every other run on the machine then failed too.
 - **`winquick cache sync` could report "already up to date" while the guest saw
   none of the new packages.** Freshness was judged by what that particular
   restore added, so packages arriving any other way — an earlier sync whose
@@ -29,9 +39,46 @@
   `Microsoft Windows [Version 10.0.26100.8972]` with exit code 0.
   `src/platform.rs` now carries the host differences — QEMU binary,
   accelerator, machine, CPU model, firmware — and they are part of the
-  prepared-state fingerprint. The port is not finished: `setup` and `run` do
-  not yet drive the Windows backend, so Apple Silicon macOS remains the only
-  supported host. See [docs/windows-host.md](docs/windows-host.md).
+  prepared-state fingerprint. See [docs/windows-host.md](docs/windows-host.md).
+- **Windows x86_64: `winquick setup` and `winquick run` work.** Both through
+  `winquick.exe`, on a real x64 Validation OS guest accelerated by the Windows
+  Hypervisor Platform, using the same agent and mailbox protocol macOS uses.
+  Setup takes 57 s and a run 16.5 s, repeatably, with no orphaned processes.
+  Nothing needs elevation, no disk image is ever mounted, and no exception is
+  asked of endpoint security software.
+
+  Every Windows run is a **cold boot**, because a prepared guest restored under
+  WHPX resumes and then never executes — it reads no command and writes no
+  output. WinQuick records that once, keyed on the QEMU and accelerator, and
+  later runs skip the warm path instead of rebuilding a prepared guest, waiting
+  and giving up on each one.
+- **Image preparation no longer mounts anything, on either host.** The
+  `ntfsprogs` helpers now take a byte offset into a whole-disk image
+  (`NTFS_IMAGE_OFFSET`) instead of a partition device node, so `hdiutil attach`
+  and its detach and stale-attachment handling are gone from macOS, and Windows
+  never needed `Mount-DiskImage` or the VHD driver at all. One code path, no
+  privileges, nothing touched outside the image file. Native Windows builds of
+  the same two helpers, plus `hivexsh`, are built from the same upstream
+  tarballs by [`scripts/`](scripts/) — see
+  [`patches/`](patches/) and THIRD_PARTY_NOTICES.md.
+- **Microsoft's ISO is read rather than mounted.** The media is a UDF bridge
+  disc, and mounting one needs `hdiutil` or `Mount-DiskImage`. `src/udf.rs` is
+  the smallest reader that takes `ValidationOS.vhdx` off it: 1 GB in 0.48 s,
+  identical on both hosts, no privileges, and no mount left behind.
+- **The unit suite runs natively on Windows**: 125 tests, all passing. Fixing
+  that turned up a real bug — giving a copied disk a fresh GPT identity read
+  `/dev/urandom`, so the servicing path could not have worked there at all.
+- **The workspace, artifacts and `winquick mcp` work on Windows.** Verified
+  there: 14 behaviour checks (doctor, stream separation, exit codes, workspace,
+  artifact retrieval, disposability, containment) and the 72-check MCP protocol
+  suite, all passing. `tests/mcp.py` needed two fixes to run on either host —
+  it looked for a runtime under `validation-arm64` only, and built temporary
+  workspaces with MSYS2 paths a native binary cannot resolve.
+- **Windows process containment.** Every QEMU is assigned to a Job Object whose
+  kill-on-close limit is set, so a WinQuick that is killed outright — not merely
+  interrupted — cannot strand a running VM. Ctrl-C is handled through
+  `SetConsoleCtrlHandler`, and `src/proc.rs` carries the three process
+  operations both hosts need.
 - **[docs/dotnet.md](docs/dotnet.md) — an empirical .NET build matrix.** Which
   target frameworks WinQuick can build, which the standard guest can also run,
   and what the produced binaries actually are. .NET Framework 2.0 through

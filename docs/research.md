@@ -282,9 +282,15 @@ Tools it shells out to, all running natively on macOS ARM64:
 | Tool | Purpose | Availability |
 |---|---|---|
 | `qemu-img` | VHDX → raw → qcow2 | `brew install qemu` |
-| `hdiutil` | mount ISO, attach raw image | built in |
 | `hivexsh` | edit the offline `SOFTWARE` hive | `brew install hivex` |
 | `ntfscp` / `ntfscat` | read and write files in the NTFS partition | **must be built from source** |
+
+> **Later.** `hdiutil` used to be in this table, for mounting the ISO and
+> attaching the raw image. Neither is done any more: the helpers take a byte
+> offset into the image (`NTFS_IMAGE_OFFSET`) and the ISO is read by
+> `src/udf.rs`. Nothing is mounted on either host. See
+> [windows-host.md](windows-host.md), which is where the reason came from.
+
 
 The NTFS tooling is the rough edge. macOS 26 has no NTFS driver at all (not even
 read-only), and Homebrew's `ntfs-3g` is Linux-only. `ntfsprogs` does build
@@ -1473,10 +1479,15 @@ users to build `ntfsprogs` from source, which is not a product.
 Options considered, in the order the brief suggested:
 
 1. **Vendor the helpers** — chosen. `scripts/build-ntfs-helpers.sh` builds
-   `ntfscp` and `ntfscat` from unmodified ntfs-3g/ntfsprogs 2022.10.3, statically
+   `ntfscp` and `ntfscat` from ntfs-3g/ntfsprogs 2022.10.3, statically
    linked against `libntfs-3g`, producing **312 KiB arm64 binaries whose only
    dynamic dependencies are `/usr/lib/libSystem` and CoreFoundation**. They ship
    in the release archive.
+
+   (They were unmodified at the time. They no longer are: the Windows port
+   needed an offset into a whole-disk image and a handful of portability fixes,
+   and the same patch is now applied on both hosts so the two builds stay the
+   same program. See [`patches/README.md`](../patches/README.md).)
 2. **Another library** — hivex is already a Homebrew formula that works on macOS,
    so the registry side needs no vendoring at all: the formula declares it.
 3. **Custom NTFS write logic** — rejected. Overwriting an existing same-size file
