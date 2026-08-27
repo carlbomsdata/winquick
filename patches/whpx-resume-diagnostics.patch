@@ -1,0 +1,388 @@
+--- a/target/i386/whpx/whpx-all.c
++++ b/target/i386/whpx/whpx-all.c
+@@ -50,6 +50,123 @@
+ 
+ #include <winhvplatform.h>
+ 
++/* WHPX_DIAG: lab instrumentation for the migration-resume investigation. */
++static int whpx_diag = -1;
++
++static bool whpx_diag_on(void)
++{
++    if (whpx_diag < 0) {
++        whpx_diag = getenv("WHPX_DIAG") != NULL;
++    }
++    return whpx_diag != 0;
++}
++
++static struct {
++    uint64_t prerun, hard, inj_event, inj_interruption;
++    uint64_t blocked_notready, window_reg, kick_hlt, kicks, exits;
++    uint64_t exit_kind[24];
++    uint64_t percpu_runs[8], percpu_exits[8], percpu_cancel[8];
++    uint64_t percpu_setreg[8], percpu_getreg[8];
++    int last_irr, last_ready, last_if, last_interruptable, last_intpending;
++    int last_inkernel, last_exitreq;
++    uint32_t last_intreq;
++} whpx_diag_st;
++
++static const char *whpx_diag_names[24] = {
++    "None", "MemoryAccess", "IoPortAccess", "Unrecoverable", "InvalidVpReg",
++    "UnsupportedFeature", "InterruptWindow", "Halt", "ApicEoi", "SynicSint",
++    "MsrAccess", "Cpuid", "Exception", "Rdtsc", "ApicSmiTrap", "Hypercall",
++    "ApicInitSipiTrap", "ApicWriteTrap", "Canceled", "other", "", "", "", ""
++};
++
++static int whpx_diag_reason(WHV_RUN_VP_EXIT_REASON r)
++{
++    switch (r) {
++    case WHvRunVpExitReasonNone:                   return 0;
++    case WHvRunVpExitReasonMemoryAccess:           return 1;
++    case WHvRunVpExitReasonX64IoPortAccess:        return 2;
++    case WHvRunVpExitReasonUnrecoverableException: return 3;
++    case WHvRunVpExitReasonInvalidVpRegisterValue: return 4;
++    case WHvRunVpExitReasonUnsupportedFeature:     return 5;
++    case WHvRunVpExitReasonX64InterruptWindow:     return 6;
++    case WHvRunVpExitReasonX64Halt:                return 7;
++    case WHvRunVpExitReasonX64ApicEoi:             return 8;
++    case WHvRunVpExitReasonX64MsrAccess:           return 10;
++    case WHvRunVpExitReasonX64Cpuid:               return 11;
++    case WHvRunVpExitReasonException:              return 12;
++    case WHvRunVpExitReasonX64Rdtsc:               return 13;
++    case WHvRunVpExitReasonX64ApicSmiTrap:         return 14;
++    case WHvRunVpExitReasonHypercall:              return 15;
++    case WHvRunVpExitReasonX64ApicInitSipiTrap:    return 16;
++    case WHvRunVpExitReasonX64ApicWriteTrap:       return 17;
++    case WHvRunVpExitReasonCanceled:               return 18;
++    default:                                       return 19;
++    }
++}
++
++static void whpx_diag_dump(const char *why)
++{
++    GString *g = g_string_new(NULL);
++    int i;
++
++    g_string_append_printf(g,
++        "whpx-diag [%s] exits=%" PRIu64 " prerun=%" PRIu64 " hard=%" PRIu64
++        " inj_event=%" PRIu64 " inj_intr=%" PRIu64 " blocked_notready=%" PRIu64
++        " window=%" PRIu64 " kick_hlt=%" PRIu64 " kicks=%" PRIu64 "\n",
++        why, whpx_diag_st.exits, whpx_diag_st.prerun, whpx_diag_st.hard,
++        whpx_diag_st.inj_event, whpx_diag_st.inj_interruption,
++        whpx_diag_st.blocked_notready, whpx_diag_st.window_reg,
++        whpx_diag_st.kick_hlt, whpx_diag_st.kicks);
++
++    g_string_append(g, "whpx-diag per-vcpu runs/exits/canceled setreg/getreg:");
++    for (i = 0; i < 8; i++) {
++        if (whpx_diag_st.percpu_runs[i] || whpx_diag_st.percpu_setreg[i]) {
++            g_string_append_printf(g,
++                " cpu%d=%" PRIu64 "/%" PRIu64 "/%" PRIu64 " %" PRIu64 "/%" PRIu64,
++                i, whpx_diag_st.percpu_runs[i], whpx_diag_st.percpu_exits[i],
++                whpx_diag_st.percpu_cancel[i], whpx_diag_st.percpu_setreg[i],
++                whpx_diag_st.percpu_getreg[i]);
++        }
++    }
++    g_string_append_c(g, '\n');
++
++    g_string_append(g, "whpx-diag exits by reason:");
++    for (i = 0; i < 20; i++) {
++        if (whpx_diag_st.exit_kind[i]) {
++            g_string_append_printf(g, " %s=%" PRIu64,
++                                   whpx_diag_names[i], whpx_diag_st.exit_kind[i]);
++        }
++    }
++    g_string_append_printf(g,
++        "\nwhpx-diag last gate: irr=%d ready_for_pic=%d IF=%d interruptable=%d"
++        " interruption_pending=%d irqchip_in_kernel=%d interrupt_request=0x%x"
++        " exit_request=%d\n",
++        whpx_diag_st.last_irr, whpx_diag_st.last_ready, whpx_diag_st.last_if,
++        whpx_diag_st.last_interruptable, whpx_diag_st.last_intpending,
++        whpx_diag_st.last_inkernel, whpx_diag_st.last_intreq,
++        whpx_diag_st.last_exitreq);
++    fputs(g->str, stderr);
++    fflush(stderr);
++    g_string_free(g, TRUE);
++}
++
++static void whpx_diag_tick(void)
++{
++    static int64_t next;
++    int64_t now;
++
++    if (!whpx_diag_on()) {
++        return;
++    }
++    now = g_get_monotonic_time();
++    if (now < next) {
++        return;
++    }
++    next = now + 1000000;
++    whpx_diag_dump("tick");
++}
++
++
+ #define HYPERV_APIC_BUS_FREQUENCY      (200000000ULL)
+ /* for kernel-irqchip=off */
+ #define HV_X64_MSR_APIC_FREQUENCY       0x40000023
+@@ -515,6 +632,9 @@
+ 
+ void whpx_set_registers(CPUState *cpu, WHPXStateLevel level)
+ {
++    if (whpx_diag_on() && cpu->cpu_index < 8) {
++        whpx_diag_st.percpu_setreg[cpu->cpu_index]++;
++    }
+     struct whpx_state *whpx = &whpx_global;
+     AccelCPUState *vcpu = cpu->accel;
+     X86CPU *x86_cpu = X86_CPU(cpu);
+@@ -855,6 +975,9 @@
+ 
+ void whpx_get_registers(CPUState *cpu, WHPXStateLevel level)
+ {
++    if (whpx_diag_on() && cpu->cpu_index < 8) {
++        whpx_diag_st.percpu_getreg[cpu->cpu_index]++;
++    }
+     struct whpx_state *whpx = &whpx_global;
+     AccelCPUState *vcpu = cpu->accel;
+     X86CPU *x86_cpu = X86_CPU(cpu);
+@@ -2020,6 +2143,9 @@
+ 
+         /* Setup interrupt state if new one was prepared */
+         if (new_int.InterruptionPending) {
++            if (whpx_diag_on()) {
++                whpx_diag_st.inj_interruption++;
++            }
+             reg_values[reg_count].PendingInterruption = new_int;
+             reg_names[reg_count] = WHvRegisterPendingInterruption;
+             reg_count += 1;
+@@ -2029,6 +2155,9 @@
+         cpu_reset_interrupt(cpu, CPU_INTERRUPT_HARD);
+         irq = cpu_get_pic_interrupt(env);
+         if (irq >= 0) {
++            if (whpx_diag_on()) {
++                whpx_diag_st.inj_event++;
++            }
+             reg_names[reg_count] = WHvRegisterPendingEvent;
+             reg_values[reg_count].ExtIntEvent = (WHV_X64_PENDING_EXT_INT_EVENT)
+             {
+@@ -2046,6 +2175,9 @@
+              * instead of WHVRequestInterrupt, which does not reset the HLT state.
+              */
+             if (whpx_irqchip_in_kernel()) {
++                if (whpx_diag_on()) {
++                    whpx_diag_st.kick_hlt++;
++                }
+                 whpx_vcpu_kick_out_of_hlt(cpu);
+             }
+         }
+@@ -2071,12 +2203,33 @@
+                 .InterruptNotification = 1,
+                 .InterruptPriority = irr >> 4
+             };
++        if (whpx_diag_on()) {
++            whpx_diag_st.window_reg++;
++        }
+         vcpu->window_registered = 1;
+         vcpu->window_priority = irr;
+         reg_names[reg_count] = WHvX64RegisterDeliverabilityNotifications;
+         reg_count += 1;
+     }
+ 
++    if (whpx_diag_on()) {
++        whpx_diag_st.prerun++;
++        whpx_diag_st.last_irr = irr;
++        whpx_diag_st.last_ready = vcpu->ready_for_pic_interrupt;
++        whpx_diag_st.last_if = !!(env->eflags & IF_MASK);
++        whpx_diag_st.last_interruptable = vcpu->interruptable;
++        whpx_diag_st.last_intpending = vcpu->interruption_pending;
++        whpx_diag_st.last_inkernel = whpx_irqchip_in_kernel();
++        whpx_diag_st.last_intreq = qatomic_read(&cpu->interrupt_request);
++        whpx_diag_st.last_exitreq = qatomic_read(&cpu->exit_request);
++        if (cpu_test_interrupt(cpu, CPU_INTERRUPT_HARD)) {
++            whpx_diag_st.hard++;
++            if (whpx_irqchip_in_kernel() && !vcpu->ready_for_pic_interrupt) {
++                whpx_diag_st.blocked_notready++;
++            }
++        }
++    }
++
+     bql_unlock();
+     vcpu->ready_for_pic_interrupt = false;
+ 
+@@ -2262,6 +2415,9 @@
+ 
+             /* Corresponding store-release is in cpu_exit. */
+             if (qatomic_load_acquire(&cpu->exit_request)) {
++                if (whpx_diag_on()) {
++                    whpx_diag_st.kicks++;
++                }
+                 whpx_vcpu_kick(cpu);
+             }
+         }
+@@ -2272,6 +2428,10 @@
+ 
+         whpx_inject_exceptions(cpu);
+ 
++        if (whpx_diag_on() && cpu->cpu_index < 8) {
++            whpx_diag_st.percpu_runs[cpu->cpu_index]++;
++        }
++
+         hr = whp_dispatch.WHvRunVirtualProcessor(
+             whpx->partition, cpu->cpu_index,
+             &vcpu->exit_ctx, sizeof(vcpu->exit_ctx));
+@@ -2289,6 +2449,18 @@
+                 &vcpu->exit_ctx.VpContext.Rflags);
+         }
+ 
++        if (whpx_diag_on()) {
++            whpx_diag_st.exits++;
++            whpx_diag_st.exit_kind[whpx_diag_reason(vcpu->exit_ctx.ExitReason)]++;
++            if (cpu->cpu_index < 8) {
++                whpx_diag_st.percpu_exits[cpu->cpu_index]++;
++                if (vcpu->exit_ctx.ExitReason == WHvRunVpExitReasonCanceled) {
++                    whpx_diag_st.percpu_cancel[cpu->cpu_index]++;
++                }
++            }
++            whpx_diag_tick();
++        }
++
+         whpx_vcpu_post_run(cpu);
+ 
+         switch (vcpu->exit_ctx.ExitReason) {
+--- a/target/i386/whpx/whpx-apic.c
++++ b/target/i386/whpx/whpx-apic.c
+@@ -20,6 +20,58 @@
+ #include "system/whpx.h"
+ #include "system/whpx-internal.h"
+ 
++/* WHPX_DIAG: lab instrumentation, see whpx-all.c */
++static int whpx_msi_diag = -1;
++static uint64_t whpx_msi_calls, whpx_msi_ok, whpx_msi_fail, whpx_msi_zero;
++static uint64_t whpx_msi_vec[256];
++static uint64_t whpx_apic_put_count[8], whpx_apic_get_count[8];
++static uint64_t whpx_apic_postload_count, whpx_apic_reset_count;
++
++static bool whpx_msi_diag_on(void)
++{
++    if (whpx_msi_diag < 0) {
++        whpx_msi_diag = getenv("WHPX_DIAG") != NULL;
++    }
++    return whpx_msi_diag != 0;
++}
++
++static void whpx_msi_tick(void)
++{
++    static int64_t next;
++    int64_t now = g_get_monotonic_time();
++    GString *g;
++    int i;
++
++    if (now < next) {
++        return;
++    }
++    next = now + 1000000;
++    g = g_string_new(NULL);
++    g_string_append_printf(g,
++        "whpx-msi calls=%" PRIu64 " ok=%" PRIu64 " fail=%" PRIu64
++        " vector0=%" PRIu64 " by vector:",
++        whpx_msi_calls, whpx_msi_ok, whpx_msi_fail, whpx_msi_zero);
++    for (i = 0; i < 256; i++) {
++        if (whpx_msi_vec[i]) {
++            g_string_append_printf(g, " %d=%" PRIu64, i, whpx_msi_vec[i]);
++        }
++    }
++    g_string_append_printf(g, "\nwhpx-apic post_load=%" PRIu64
++                           " reset=%" PRIu64 " per-vcpu put/get:",
++                           whpx_apic_postload_count, whpx_apic_reset_count);
++    for (i = 0; i < 8; i++) {
++        if (whpx_apic_put_count[i] || whpx_apic_get_count[i]) {
++            g_string_append_printf(g, " cpu%d=%" PRIu64 "/%" PRIu64,
++                                   i, whpx_apic_put_count[i], whpx_apic_get_count[i]);
++        }
++    }
++    g_string_append_c(g, '\n');
++    fputs(g->str, stderr);
++    fflush(stderr);
++    g_string_free(g, TRUE);
++}
++
++
+ struct whpx_lapic_state {
+     struct {
+         uint32_t data;
+@@ -203,6 +255,10 @@
+     struct whpx_lapic_state kapic;
+     HRESULT hr;
+ 
++    if (whpx_msi_diag_on() && cs->cpu_index < 8) {
++        whpx_apic_put_count[cs->cpu_index]++;
++        whpx_msi_tick();
++    }
+     whpx_put_apic_base(CPU(s->cpu), s->apicbase);
+     whpx_put_apic_state(s, &kapic);
+ 
+@@ -225,6 +281,9 @@
+     CPUState *cpu = CPU(s->cpu);
+     struct whpx_lapic_state kapic;
+ 
++    if (whpx_msi_diag_on() && cpu->cpu_index < 8) {
++        whpx_apic_get_count[cpu->cpu_index]++;
++    }
+     HRESULT hr = whp_dispatch.WHvGetVirtualProcessorInterruptControllerState2(
+         whpx_global.partition,
+         cpu->cpu_index,
+@@ -244,6 +303,11 @@
+ 
+ static void whpx_apic_post_load(APICCommonState *s)
+ {
++    if (whpx_msi_diag_on()) {
++        whpx_apic_postload_count++;
++        fprintf(stderr, "whpx-apic post_load for cpu%d\n", CPU(s->cpu)->cpu_index);
++        fflush(stderr);
++    }
+     run_on_cpu(CPU(s->cpu), whpx_apic_put, RUN_ON_CPU_HOST_PTR(s));
+ }
+ 
+@@ -261,8 +325,18 @@
+     uint8_t trigger_mode = (data >> MSI_DATA_TRIGGER_SHIFT) & 0x1;
+     uint8_t delivery = (data >> MSI_DATA_DELIVERY_MODE_SHIFT) & 0x7;
+ 
++    if (whpx_msi_diag_on()) {
++        whpx_msi_calls++;
++        whpx_msi_vec[vector]++;
++        whpx_msi_tick();
++    }
++
+     if (vector == 0) {
+-        warn_report("Ignoring request for interrupt vector 0");
++        if (whpx_msi_diag_on()) {
++            whpx_msi_zero++;
++        } else {
++            warn_report("Ignoring request for interrupt vector 0");
++        }
+         return;
+     }
+ 
+@@ -281,6 +355,13 @@
+     };
+     HRESULT hr = whp_dispatch.WHvRequestInterrupt(whpx_global.partition,
+                      &interrupt, sizeof(interrupt));
++    if (whpx_msi_diag_on()) {
++        if (FAILED(hr)) {
++            whpx_msi_fail++;
++        } else {
++            whpx_msi_ok++;
++        }
++    }
+     if (FAILED(hr)) {
+         fprintf(stderr, "whpx: injection failed, MSI (%llx, %x) delivery: %d, "
+                 "dest_mode: %d, trigger mode: %d, vector: %d, lost (%08lx)\n",
+@@ -313,6 +394,9 @@
+ 
+ static void whpx_apic_reset(APICCommonState *s)
+ {
++    if (whpx_msi_diag_on()) {
++        whpx_apic_reset_count++;
++    }
+     /* Not used by WHPX. */
+     s->wait_for_sipi = 0;
+ 

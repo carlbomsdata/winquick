@@ -13,6 +13,7 @@ if they want the fast path on Windows.
 | `ntfsprogs-windows.patch` | `scripts/build-ntfs-helpers.sh` | yes, both hosts |
 | `hivex-windows.patch` | `scripts/build-hivex-windows.sh` | yes, Windows only |
 | `whpx-stop-and-copy.patch` | nothing | no |
+| `whpx-resume-diagnostics.patch` | nothing | no |
 
 ## `ntfsprogs-windows.patch`
 
@@ -118,3 +119,18 @@ migration and not for restoring on the same machine.
 The `channel-file.c` change is a behaviour fix rather than a feature and would
 need review from someone who knows whether any caller depends on real
 non-blocking semantics there.
+
+## `whpx-resume-diagnostics.patch`
+
+Against **QEMU v11.1.0**, on top of `whpx-stop-and-copy.patch`. Lab
+instrumentation, not a fix and not shipped.
+
+Everything it adds is behind `WHPX_DIAG=1` and silent otherwise. It tallies, per
+virtual processor, how many times `WHvRunVirtualProcessor` is entered and with
+which exit reason it returns; how often registers and the local APIC are written
+back; whether QEMU's userspace interrupt injection is used; and every interrupt
+handed to the hypervisor, by vector.
+
+That accounting is what turned "the guest does not resume" into "every exit on
+every processor is `Canceled`, and only when the partition has more than one
+processor" — see [../docs/whpx-resume.md](../docs/whpx-resume.md).

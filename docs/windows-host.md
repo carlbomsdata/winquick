@@ -163,8 +163,16 @@ What the earlier work proved was that the *state file* survives a round trip and
 can be loaded many times over — 20 fresh processes, hash unchanged. That is a
 statement about the file and about QEMU accepting it. It is not a statement
 about the guest resuming execution, and this is where the two part company.
-The likely place to look is what WHPX puts back into a vCPU on restore, which
-is the half of the accelerator the stop-and-copy patch does not touch.
+**This has since been investigated properly**, and the boundary turned out to be
+sharp: a **one-processor** guest restores and executes; **two or more** and
+every vCPU halts within fifty milliseconds and never runs again, with every
+`WHvRunVirtualProcessor` return being `Canceled`. A minimal hand-written guest
+restores fine, and `stop`/`cont` in the same process with four processors is
+fine, so neither the migration stream nor the run-state transition is at fault.
+Registers and the whole LAPIC register page come back byte-identical.
+
+The full write-up, with what was ruled out and how, is in
+[whpx-resume.md](whpx-resume.md).
 
 **So on Windows every run is a cold boot: ~16.5 s.** That is the honest number,
 and it is what the product does today.
@@ -445,4 +453,6 @@ filesystem and process spellings in [`src/hostfs.rs`](../src/hostfs.rs) and
 
 What is left is breadth — the list is above — and one piece of depth: making a
 restored guest actually resume under WHPX, which is what stands between a
-16.5 second cold boot and the sub-second run macOS gets.
+16.5 second cold boot and the sub-second run macOS gets. That one now has its
+own document, [whpx-resume.md](whpx-resume.md), narrowed to multiprocessor
+partitions and to two remaining candidates.
