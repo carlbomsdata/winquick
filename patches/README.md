@@ -19,6 +19,18 @@ if they want the fast path on Windows.
 | `whpx-hyperv-synthetic-migration.patch` | nothing | no |
 | `whpx-synic-migration.patch` | nothing | no |
 
+The five QEMU patches stack in this order, and
+applying them to a pristine **QEMU v11.1.0** (`84f0721`) reproduces the tree
+these measurements were taken on, byte for byte:
+
+```console
+$ patch -p1 -i patches/whpx-nmi-delivery.patch
+$ patch -p1 -i patches/whpx-stop-and-copy.patch
+$ patch -p1 -i patches/whpx-activity-state-migration.patch
+$ patch -p1 -i patches/whpx-hyperv-synthetic-migration.patch
+$ patch -p1 -i patches/whpx-synic-migration.patch
+```
+
 ## `ntfsprogs-windows.patch`
 
 Against **ntfs-3g/ntfsprogs 2022.10.3**. Seven files, ~165 lines. It does two
