@@ -17,9 +17,8 @@ if they want the fast path on Windows.
 | `whpx-nmi-delivery.patch` | nothing | no |
 | `whpx-activity-state-migration.patch` | nothing | no |
 | `whpx-hyperv-synthetic-migration.patch` | nothing | no |
-| `whpx-synic-migration.patch` | nothing | no |
 
-The five QEMU patches stack in this order, and
+The four QEMU patches stack in this order, and
 applying them to a pristine **QEMU v11.1.0** (`84f0721`) reproduces the tree
 these measurements were taken on, byte for byte:
 
@@ -28,7 +27,6 @@ $ patch -p1 -i patches/whpx-nmi-delivery.patch
 $ patch -p1 -i patches/whpx-stop-and-copy.patch
 $ patch -p1 -i patches/whpx-activity-state-migration.patch
 $ patch -p1 -i patches/whpx-hyperv-synthetic-migration.patch
-$ patch -p1 -i patches/whpx-synic-migration.patch
 ```
 
 ## `ntfsprogs-windows.patch`
@@ -262,38 +260,28 @@ Reading and writing these registers is best-effort. A platform that does not
 have them fails the access, the fields come across zero, and the restore behaves
 exactly as it did before the patch.
 
-## `whpx-synic-migration.patch`
+## The SynIC, which was tried and is not here
 
-Against **QEMU v11.1.0**, on top of `whpx-hyperv-synthetic-migration.patch`.
-192 lines, one file. Not applied to anything WinQuick ships.
+Carrying the synthetic interrupt controller across a restore looked like the
+answer to the second failure -- a restored guest that halts and is never woken.
+The guest does have it switched on (`Scontrol = 1`, a message page per
+processor at `Simp = 0x19001` / `0x1a001`, two hundred bytes of synthetic timer
+state), and none of it crosses the migration.
 
-The hypercall page was the first thing a restored multiprocessor guest fell
-over. The second is quieter: it resumes, runs for about two seconds, and then
-every processor stops at a fixed address and stays there. Not spinning, not
-crashed -- halted, waiting for an interrupt that never comes.
+It was implemented -- `Scontrol`, `Sversion`, `Simp`, `Siefp`, `Sint0`-`Sint15`
+and the three blobs `WHvGet/SetVirtualProcessorState` exposes -- and measured:
 
-Reading the hypervisor's per-processor state out of a live prepared guest says
-what it is waiting for:
+| `winquick run --cpus 2 -- cmd /c ver` | guest exec + mailbox sync | total |
+|---|---|---|
+| without it | 520, 540, 656, 656, 521 ms | 15.8 - 22.9 s |
+| with it | 44,945 and 47,394 ms | 77.9 s |
 
-```
-vp0 Scontrol  0x1        vp1 Scontrol  0x1
-vp0 Simp      0x19001    vp1 Simp      0x1a001
-vp0 Siefp     0          vp1 Siefp     0
-vp0 SynicMessagePage  4096 bytes   vp0 SynicTimerState  200 bytes
-```
+Eighty-six times slower, on the same host and the same guest, and the halting
+carried on at about the same rate. So there is no patch here.
 
-`Scontrol = 1`: the guest has the **synthetic interrupt controller** switched
-on, with a message page of its own per processor and two hundred bytes of
-synthetic timer state. Windows uses SynIC timers as a clock source when it is
-enlightened, and none of this is in `whpx_register_names` or in any vmstate, so
-a processor that went idle waiting for a synthetic timer had nothing left to
-wake it.
-
-The patch carries `Scontrol`, `Sversion`, `Simp`, `Siefp` and `Sint0`-`Sint15`,
-plus the three opaque per-processor blobs WHP exposes through
-`WHvGet/SetVirtualProcessorState`: the message page, the event flag page and
-the timer state. `Simp` and `Siefp` carry the enable bits that establish those
-overlays, so they are written before the page contents; the timer state goes in
-last, because a synthetic timer armed against a message page that is not there
-yet has nowhere to deliver. As with the other two, every access is best-effort
-and a guest that never enabled the SynIC carries nothing.
+The likely reason is worth keeping: a synthetic timer's expiry is a *partition
+reference-time* value, and a fresh partition starts its reference clock over, so
+a restored expiry lands an arbitrary distance into the new partition's future.
+Carrying it correctly would mean translating every expiry into the destination's
+timeline, which needs a reference-time reading on both sides that WHP does not
+obviously expose. See [../docs/whpx-resume.md](../docs/whpx-resume.md).

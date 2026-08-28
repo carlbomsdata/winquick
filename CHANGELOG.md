@@ -5,10 +5,10 @@
 ### Fixed
 
 - **Windows x86_64: a prepared guest now restores with more than one
-  processor.** It used to resume and then stop, and the reason was three
-  separate pieces of per-processor state that the Windows Hypervisor Platform
-  owns and QEMU does not carry across a migration -- each hidden behind the
-  last, and none of them a register in `whpx_register_names`:
+  processor.** It used to resume and then stop, and the reason was two separate
+  pieces of per-processor state that the Windows Hypervisor Platform owns and
+  QEMU does not carry across a migration, one hidden behind the other, and
+  neither a register in `whpx_register_names`:
 
   - `InternalActivityState`, which left every application processor parked in
     `StartupSuspend` waiting for a startup message the guest had already sent
@@ -18,13 +18,17 @@
     underneath it, so the first enlightened remote TLB flush jumped into filler
     and bugchecked `0xD1`. Only multiprocessor guests reached it, because
     `nt!HvlFlushRangeListTb` is the *remote* flush and one processor has nobody
-    to flush;
-  - the **synthetic interrupt controller** and its timers, without which a
-    processor that went idle waiting for a synthetic timer was never woken.
+    to flush.
 
-  Three QEMU patches, in [`patches/`](patches/), with the evidence in
+  Two QEMU patches, in [`patches/`](patches/), with the evidence in
   [docs/whpx-resume.md](docs/whpx-resume.md) -- including the guest's own crash
   dump, read with WinDbg against Microsoft's public symbols.
+
+  One failure mode is still open: some restored guests resume, run for about
+  two seconds and then halt for good. Migrating the synthetic interrupt
+  controller looked like the answer, was implemented, and made warm runs
+  eighty-six times slower without fixing the halting, so it is not shipped. The
+  measurement and the likely reason are in the same document.
 - **One bad freeze no longer disables the fast path for good.** Where a
   prepared guest gets frozen is partly luck: the agent's poll loop mounts the
   mailbox, looks and dismounts again without ever going quiet, and a guest

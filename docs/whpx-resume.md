@@ -4,26 +4,24 @@ WinQuick is fast because it does not boot Windows: it restores a prepared state
 into a fresh QEMU process. On Windows that did not work, and this is the
 investigation into why.
 
-**Status: three pieces of per-processor state that WHP owns and QEMU does not
-carry across a migration, found one behind the other.**
+**Status: two pieces of per-processor state found and fixed, one failure mode
+still open.**
 
 1. `InternalActivityState` parked every restored application processor in
    `StartupSuspend` for ever, so it never executed an instruction.
+   ([patch](../patches/whpx-activity-state-migration.patch))
 2. With the processor running, the guest bugchecked --
    `DRIVER_IRQL_NOT_LESS_OR_EQUAL`, reading address `0xa` at `DISPATCH_LEVEL` --
    because the **Hyper-V hypercall page** is an overlay owned by the partition
    and a fresh partition has none.
-3. With the crash gone, some restored guests resume, run for two seconds and
-   then halt for ever, because the **synthetic interrupt controller** and its
-   timers are per-processor hypervisor state that also did not cross.
+   ([patch](../patches/whpx-hyperv-synthetic-migration.patch))
+3. **Still open.** With the crash gone, some restored guests resume, run for
+   about two seconds and then halt for ever. The synthetic interrupt controller
+   looked like the answer and is not: migrating it was tried, measured, and made
+   things much worse. See [below](#the-synic-was-not-the-answer).
 
-Each is fixed by its own patch:
-[activity state](../patches/whpx-activity-state-migration.patch),
-[hypercall page and friends](../patches/whpx-hyperv-synthetic-migration.patch),
-[SynIC](../patches/whpx-synic-migration.patch).
-
-The one-word summary of all three: **WHP keeps state for a virtual processor
-that is not a register, and none of it is in `whpx_register_names`.**
+The one-word summary of the two that are fixed: **WHP keeps state for a virtual
+processor that is not a register, and none of it is in `whpx_register_names`.**
 
 Measured on ROAD-WARRIOR01: Windows 11 Pro 25H2 (build 26200), Intel i5-8265U,
 Windows Hypervisor Platform enabled, QEMU 11.1.0 (`84f0721`) carrying
@@ -164,7 +162,7 @@ recorded, months of investigation ago, when this was written up as "every vCPU
 halts permanently". That failure was never a separate bug. It was always this
 one, hidden behind the crash.
 
-### What the guest is waiting for
+### What the guest is enlightened with
 
 Reading the hypervisor's own per-processor state out of a live prepared guest,
 just before it is frozen:
@@ -180,27 +178,58 @@ vp0 Siefp         0                   vp1 Siefp         0
 vp0 SynicMessagePage    4096 bytes    vp0 SynicTimerState   200 bytes
 ```
 
-`Hypercall = 0x1fc003` is page frame `0x1fc` with the enable bit set — the same
+`Hypercall = 0x1fc003` is page frame `0x1fc` with the enable bit set -- the same
 frame the crash dump faulted in, which is a pleasing independent confirmation of
-the first fix.
+the fix above.
 
-`Scontrol = 1` is the interesting one: **the guest has the synthetic interrupt
-controller switched on**, with a message page of its own per processor
-(`Simp`, again a partition-owned overlay) and two hundred bytes of synthetic
-timer state. Windows uses SynIC timers as a clock source when it is
-enlightened. None of it is in `whpx_register_names`, and none of it crossed the
-migration — so a processor that went idle waiting for a synthetic timer had
-nothing left to wake it.
+`Scontrol = 1` says the guest has the **synthetic interrupt controller**
+switched on, with a message page of its own per processor and two hundred bytes
+of synthetic timer state. Windows uses SynIC timers as a clock source when it is
+enlightened. None of it is in `whpx_register_names` and none of it crossed the
+migration, so it looked exactly like the missing wake-up.
 
-That is carried by
-[`patches/whpx-synic-migration.patch`](../patches/whpx-synic-migration.patch):
-`Scontrol`, `Sversion`, `Simp`, `Siefp` and `Sint0`–`Sint15`, plus the three
-opaque per-processor blobs WHP exposes through
-`WHvGet/SetVirtualProcessorState` — the message page, the event flag page and
-the timer state. Order matters here too: `Simp` and `Siefp` carry the enable
-bits that establish the overlays, so they go in before the page contents, and
-the timers go in last, because a synthetic timer armed against a message page
-that is not there yet has nowhere to deliver.
+### The SynIC was not the answer
+
+It was implemented and measured: `Scontrol`, `Sversion`, `Simp`, `Siefp` and
+`Sint0`-`Sint15`, plus the three opaque per-processor blobs WHP exposes through
+`WHvGet/SetVirtualProcessorState` -- message page, event flag page and timer
+state -- written in overlay-then-contents order.
+
+It made the product **eighty-six times slower**, on the same host, the same
+guest and the same command:
+
+| `winquick run --cpus 2 -- cmd /c ver` | guest exec + mailbox sync | total |
+|---|---|---|
+| without the SynIC patch | 520, 540, 656, 656, 521 ms | 15.8 - 22.9 s |
+| with it | 44,945 and 47,394 ms | 77.9 s |
+
+and it did not fix the halting: prepared states went on failing at about the
+same rate either way. So it is not in `patches/`, and it should not be tried
+again in that form.
+
+**The most likely reason it hurts is worth writing down.** A synthetic timer's
+expiry is a *partition reference-time* value, and a fresh partition starts its
+reference clock over. A restored expiry therefore lands an arbitrary distance
+into the new partition's future, so the timer the guest is waiting on is now
+further away than it was before the migration -- which is the same
+discontinuity as the TSC jump measured earlier, arriving by a different route.
+Carrying this state correctly would mean translating every expiry into the
+destination partition's timeline, which needs a reference-time reading on both
+sides that WHP does not obviously expose.
+
+### So what is the halting?
+
+Not established. What is known:
+
+- it is not the LAPIC: `whpx_apic_post_load()` pushes the whole 993-byte
+  interrupt-controller state back through
+  `WHvSetVirtualProcessorInterruptControllerState2`, and the state compares
+  byte-identical either side;
+- it is not the SynIC, at least not in the form above;
+- the guest is genuinely halted, not spinning and not crashed;
+- it correlates with where the freeze landed, which is why WinQuick's answer for
+  now is to build another prepared guest rather than to conclude the host cannot
+  restore.
 
 ## What was ruled out, with evidence
 

@@ -14,9 +14,10 @@ far meant a bug in WinQuick itself — it was freezing the guest half a step too
 early, mid-dismount ([mailbox-freeze.md](mailbox-freeze.md)) — and then three
 separate pieces of per-processor state that WHP owns and QEMU does not carry
 across a migration: the activity state that leaves an application processor
-parked in `StartupSuspend`, the Hyper-V hypercall page, and the synthetic
-interrupt controller with its timers. Each has its own patch in
-[`patches/`](../patches/); the investigation is
+parked in `StartupSuspend`, and the Hyper-V hypercall page. Each has its own
+patch in [`patches/`](../patches/). One failure mode is still open -- some
+restored guests halt and are never woken -- and WinQuick builds another prepared
+guest rather than giving up on the warm path. The investigation is
 [whpx-resume.md](whpx-resume.md).
 
 ## The rule that must not be broken
@@ -166,19 +167,20 @@ statement about the file, and about QEMU accepting it. It is not a statement
 about the guest resuming execution, and this is exactly where the two part
 company: the guest then did nothing at all.
 
-Three separate pieces of per-processor state turned out to be missing, each
-hidden behind the last. WHP keeps state for a virtual processor that is not a
-register, and none of it is in QEMU's `whpx_register_names`:
+Two pieces of per-processor state turned out to be missing, one hidden behind
+the other. WHP keeps state for a virtual processor that is not a register, and
+none of it is in QEMU's `whpx_register_names`:
 
 | Missing state | What it looked like |
 |---|---|
 | `InternalActivityState` | every application processor parked in `StartupSuspend` for ever |
 | the Hyper-V **hypercall page** | the guest bugchecks `0xD1` about three seconds in |
-| the **synthetic interrupt controller** and its timers | the guest halts and is never woken |
 
 Each has its own patch and its own evidence; the full account, including the
 crash dump that named the second one, is in
-[whpx-resume.md](whpx-resume.md).
+[whpx-resume.md](whpx-resume.md). A third failure remains open there: some
+restored guests halt and are never woken. Migrating the synthetic interrupt
+controller was the obvious candidate, and the measurement refuted it.
 
 There is a fourth thing, and it is WinQuick's rather than QEMU's: *where* a
 prepared guest gets frozen is partly luck, because the agent's poll loop never
