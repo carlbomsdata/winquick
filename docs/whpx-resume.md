@@ -336,11 +336,16 @@ guest half a step too early, and the fix is one `sleep`.
 On ROAD-WARRIOR01, with the two patches applied, `winquick run --cpus N -- cmd /c ver`
 twenty times from one prepared guest:
 
-| processors | result | min | p50 | mean | p95 | max |
-|---|---|---|---|---|---|---|
-| 1 | **20 warm of 20** | 13.3 s | 18.4 s | 18.7 s | 25.3 s | 26.0 s |
-| 2 | **20 warm of 20** | 13.9 s | 24.8 s | 22.7 s | 28.2 s | 29.2 s |
-| 4 | **0 warm of 20** | | | | | |
+| processors | runs | result | min | p50 | mean | p95 | max |
+|---|---|---|---|---|---|---|---|
+| 1 | 20 | **20 warm of 20** | 13.3 s | 18.4 s | 18.7 s | 25.3 s | 26.0 s |
+| 2 | 20 | **20 warm of 20** | 13.9 s | 24.8 s | 22.7 s | 28.2 s | 29.2 s |
+| 2 | 100 | **98 warm of 100** | 14.6 s | 23.0 s | 34.8 s | 133.5 s | 237.8 s |
+| 4 | 20 | **0 warm of 20** | | | | | |
+
+The hundred-run figures carry the two rebuilds in their tail: a run that has to
+build a new prepared guest before it can answer takes a couple of minutes, which
+is what the p95 and the max are. The p50 is what a run costs.
 
 Every run produced the right output and the right exit code, at every processor
 count; the prepared state and the canonical image were byte-identical
@@ -367,7 +372,15 @@ in a row were unlucky, and it wrote `restore-unsupported`. Every remaining run
 cold-booted -- on a machine that had just demonstrated twenty-five times that it
 restores perfectly well. The note claims "this QEMU cannot restore a prepared
 guest", and a QEMU that has restored one refutes that claim, so WinQuick now
-records the demonstration and lets it outrank any later run of silent guests.
+records the demonstration and lets it outrank any later run of silent guests. A
+silent guest is also recognised in seconds now rather than in a minute, by
+waiting for the agent to take the go flag rather than for the command to finish,
+which is what makes retrying five times affordable.
+
+| hundred runs at `-smp 2` | warm | cold |
+|---|---|---|
+| before | 25 | 75 |
+| after | **98** | 2 |
 
 ## Reproducing
 
