@@ -158,9 +158,9 @@ seconds. It is not spinning and it is not crashed. It is halted, waiting for an
 interrupt that never arrives.
 
 Those two addresses are the same ones the very first `-smp 4` measurement
-recorded, months of investigation ago, when this was written up as "every vCPU
-halts permanently". That failure was never a separate bug. It was always this
-one, hidden behind the crash.
+recorded, when this was written up as "every vCPU halts permanently". That
+failure was never a separate bug. It was always this one, hidden behind the
+crash.
 
 ### What the guest is enlightened with
 
