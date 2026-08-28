@@ -200,7 +200,7 @@ fn execute(command: &str, opts: &Options) -> Result<Outcome> {
         match state::load_valid(&want) {
             Ok(Some(ready)) => {
                 ctx.vlog("using existing ready state");
-                match warm_execute(&ctx, &ready, command, true) {
+                match warm_execute(&ctx, &ready, command) {
                     Ok(o) => {
                         let _ = state::mark_restore_works(&backend);
                         return Ok(o);
@@ -235,7 +235,7 @@ fn execute(command: &str, opts: &Options) -> Result<Outcome> {
                 // Someone may have built it while we waited.
                 if let Ok(Some(ready)) = state::load_valid(&want) {
                     ctx.vlog("another run prepared the guest while we waited");
-                    match warm_execute(&ctx, &ready, command, true) {
+                    match warm_execute(&ctx, &ready, command) {
                         Ok(o) => {
                             let _ = state::mark_restore_works(&backend);
                             return Ok(o);
@@ -254,7 +254,7 @@ fn execute(command: &str, opts: &Options) -> Result<Outcome> {
                 for attempt in 1..=PREPARE_ATTEMPTS {
                     match build_ready_state(&ctx, &want) {
                         Ok(ready) => {
-                            match warm_execute(&ctx, &ready, command, false) {
+                            match warm_execute(&ctx, &ready, command) {
                                 Ok(o) => {
                                     let _ = state::mark_restore_works(&backend);
                                     return Ok(o);
@@ -580,6 +580,35 @@ fn guest_was_silent(e: &anyhow::Error) -> bool {
 ///
 /// Cheap on purpose: FAT32 metadata for a handful of files is a few sectors, so
 /// a 2 ms poll does not distort the measurement it is part of.
+/// Wait for the guest to take something out of the mailbox.
+///
+/// The agent deletes the go flag as soon as it has read this run's token, so
+/// the flag going away is the earliest and cheapest proof that a restored guest
+/// is not only running but running *the agent*. Reported as a silent guest when
+/// it does not happen, which is exactly what it is.
+fn wait_until_gone(
+    mbox: &Path,
+    name: &str,
+    child: &mut Child,
+    deadline: Instant,
+) -> Result<()> {
+    loop {
+        if crate::interrupt::interrupted() {
+            bail!("interrupted");
+        }
+        if mailbox::probe(mbox, name).is_none() {
+            return Ok(());
+        }
+        if let Some(st) = child.try_wait()? {
+            bail!("qemu exited ({st}) before the guest took the command{}", qemu_complaint(child));
+        }
+        if Instant::now() > deadline {
+            return Err(anyhow::Error::new(GuestSilent(name.to_string())));
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
 fn wait_for(
     mbox: &Path,
     name: &str,
@@ -634,21 +663,23 @@ fn kill(child: &mut Child) {
 
 /// How long to give a prepared guest that has never actually run a command.
 ///
-/// A proven prepared guest gets the user's whole timeout, because a long build
-/// is a legitimate thing to wait for. One that has just been built has not
-/// earned that: if restoring silently produces a guest that never executes --
-/// which is what WHPX does today -- then waiting out a five-minute timeout
-/// before falling back is five minutes of nothing.
-const UNPROVEN_RESTORE_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long a restored guest gets to pick the command up.
+///
+/// A working one does it in about half a second -- the agent's poll loop turns
+/// over in tens of milliseconds -- so this is twenty times the margin it needs,
+/// and a guest that came back halted is recognised as such in seconds rather
+/// than in whatever the user set `--timeout` to.
+const FIRST_CONTACT: Duration = Duration::from_secs(10);
 
 /// How many prepared guests to build before believing the machine cannot restore.
 ///
 /// Each attempt costs one guest boot, and only a *silent* restored guest --
 /// one that came back and then never polled -- counts as an attempt at all.
-/// Three is enough that a run of bad freezes is a real signal rather than
-/// ordinary luck, and few enough that a host which genuinely cannot restore
-/// pays the price once.
-const PREPARE_ATTEMPTS: usize = 3;
+/// About half of them are unusable at two processors, so three attempts give up
+/// roughly one time in ten. Five is affordable because a silent guest is now
+/// recognised in seconds rather than in a minute, and it brings that down to
+/// about one time in thirty.
+const PREPARE_ATTEMPTS: usize = 5;
 
 /// How long to let the guest settle after it announces itself, before freezing.
 ///
@@ -657,12 +688,7 @@ const PREPARE_ATTEMPTS: usize = 3;
 /// prepared guest, never per run.
 const SETTLE_BEFORE_FREEZE: Duration = Duration::from_millis(1500);
 
-fn warm_execute(
-    ctx: &Ctx,
-    ready: &state::ReadyState,
-    command: &str,
-    proven: bool,
-) -> Result<Outcome> {
+fn warm_execute(ctx: &Ctx, ready: &state::ReadyState, command: &str) -> Result<Outcome> {
     let t0 = Instant::now();
     let dir = new_run_dir()?;
     let _scratch = Scratch(dir.clone());
@@ -710,9 +736,19 @@ fn warm_execute(
         q.wait_incoming(Duration::from_secs(30))?;
         let t_restore = t0.elapsed();
         q.cont()?;
-        let budget =
-            if proven { ctx.timeout } else { ctx.timeout.min(UNPROVEN_RESTORE_TIMEOUT) };
-        let deadline = Instant::now() + budget;
+        // Two waits, not one, because they are two different questions.
+        //
+        // "Did this guest come back alive?" is answered in about half a second:
+        // the agent reads the go flag and deletes it before doing anything
+        // else. A guest that came back halted never deletes it, and no amount
+        // of waiting changes that. Asking the question with the command's
+        // timeout made every unlucky restore cost a minute before falling back.
+        //
+        // "Has the command finished?" is the user's question, and it gets the
+        // user's timeout, because a long build is a legitimate thing to wait
+        // for.
+        wait_until_gone(&mbox, mailbox::GO, &mut child, Instant::now() + FIRST_CONTACT)?;
+        let deadline = Instant::now() + ctx.timeout;
         wait_for(&mbox, mailbox::CODE_FILE, &mut child, deadline)?;
         let t_exec = t0.elapsed();
         let r = mailbox::read_results(&mbox)?;
