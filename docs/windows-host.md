@@ -9,17 +9,15 @@ developer on an Apple Silicon Mac gets.
 elevation, no mounted images and no exception asked of the endpoint security
 software.
 
-**With one vCPU the fast path now works there**: a prepared guest restores in
-about 100 ms and runs the queued command, 20 warm runs out of 20. That took
-finding a bug in WinQuick itself — it was freezing the guest half a step too
-early, mid-dismount — written up in [mailbox-freeze.md](mailbox-freeze.md).
-
-With **two or more** vCPUs a restored guest still resumes and then halts for
-good. That one is a QEMU/WHPX problem, and the missing state is now named: a
-restored application processor is left waiting for a startup message that was
-already delivered, because QEMU carries no per-processor activity state across
-a migration. See [whpx-resume.md](whpx-resume.md). Until it is solved, a Windows host either
-runs one processor warm or several cold.
+**The fast path now works there with more than one processor.** Getting that
+far meant a bug in WinQuick itself — it was freezing the guest half a step too
+early, mid-dismount ([mailbox-freeze.md](mailbox-freeze.md)) — and then three
+separate pieces of per-processor state that WHP owns and QEMU does not carry
+across a migration: the activity state that leaves an application processor
+parked in `StartupSuspend`, the Hyper-V hypercall page, and the synthetic
+interrupt controller with its timers. Each has its own patch in
+[`patches/`](../patches/); the investigation is
+[whpx-resume.md](whpx-resume.md).
 
 ## The rule that must not be broken
 
@@ -151,47 +149,51 @@ Microsoft Windows [Version 10.0.26100.8972]
 Setup takes 57 s and a cold run 16.5 s, repeatably, with no orphaned QEMU
 processes left behind.
 
-### The prepared guest restores, and then does nothing
+### The prepared guest restores — what it took
 
-This is the one that did not work, and it is worth stating precisely because
-the earlier measurements are all still true and all still insufficient.
+This is the one that did not work for a long time, and it is worth stating
+precisely, because the earlier measurements were all true and all insufficient.
 
 With the patched QEMU, WinQuick builds a prepared state on Windows exactly as it
 does on macOS: the guest boots, announces itself, is stopped, and is migrated to
-a file. That takes **25-32 s** and produces a **~341 MiB** state. A later run
+a file. That takes **25-45 s** and produces a **~350 MiB** state. A later run
 starts a fresh QEMU with `-incoming`, the load completes, `cont` succeeds, and
 QEMU reports a running guest.
 
-The guest then does nothing at all. It never reads the command, never writes
-`WQOUT.TXT`, never writes an exit code; the overlay does not grow by a single
-byte. Waiting longer does not help.
-
-What the earlier work proved was that the *state file* survives a round trip and
+What the early work proved was that the *state file* survives a round trip and
 can be loaded many times over — 20 fresh processes, hash unchanged. That is a
-statement about the file and about QEMU accepting it. It is not a statement
-about the guest resuming execution, and this is where the two part company.
-**This has since been investigated properly**, and the boundary turned out to be
-sharp: a **one-processor** guest restores and executes; **two or more** and
-every vCPU halts within fifty milliseconds and never runs again, with every
-`WHvRunVirtualProcessor` return being `Canceled`. A minimal hand-written guest
-restores fine, and `stop`/`cont` in the same process with four processors is
-fine, so neither the migration stream nor the run-state transition is at fault.
-Registers and the whole LAPIC register page come back byte-identical.
+statement about the file, and about QEMU accepting it. It is not a statement
+about the guest resuming execution, and this is exactly where the two part
+company: the guest then did nothing at all.
 
-The full write-up, with what was ruled out and how, is in
+Three separate pieces of per-processor state turned out to be missing, each
+hidden behind the last. WHP keeps state for a virtual processor that is not a
+register, and none of it is in QEMU's `whpx_register_names`:
+
+| Missing state | What it looked like |
+|---|---|
+| `InternalActivityState` | every application processor parked in `StartupSuspend` for ever |
+| the Hyper-V **hypercall page** | the guest bugchecks `0xD1` about three seconds in |
+| the **synthetic interrupt controller** and its timers | the guest halts and is never woken |
+
+Each has its own patch and its own evidence; the full account, including the
+crash dump that named the second one, is in
 [whpx-resume.md](whpx-resume.md).
 
-**So on Windows every run is a cold boot: ~16.5 s.** That is the honest number,
-and it is what the product does today.
+There is a fourth thing, and it is WinQuick's rather than QEMU's: *where* a
+prepared guest gets frozen is partly luck, because the agent's poll loop never
+goes quiet. A guest caught in the wrong part of it comes back unusable. That is
+a property of the state, not of the machine, so WinQuick builds another one
+rather than concluding the host cannot restore.
 
-WinQuick handles this rather than repeating it. The first run that hits it
-writes `~/.winquick/restore-unsupported`, keyed on the QEMU and the
-accelerator, and later runs skip the warm path entirely instead of rebuilding a
+WinQuick still handles a host that genuinely cannot restore, rather than
+repeating the discovery. After three silent prepared guests in a row it writes
+`~/.winquick/restore-unsupported`, keyed on the accelerator and on the QEMU
+binary's own identity, and later runs skip the warm path instead of rebuilding a
 prepared guest, restoring it, waiting and giving up — three boots to run one
-command. A prepared guest that has never actually run a command also gets a
-short budget rather than the user's whole timeout, because there is nothing to
-wait for. Install a QEMU that can restore and the note stops matching, on its
-own; `winquick doctor` says when it is in effect.
+command. Install a QEMU that can restore and the note stops matching, on its
+own; `winquick clean` forgets it outright, and `winquick doctor` says when it is
+in effect.
 
 The note is written **only** when the guest resumed and then said nothing.
 That distinction is load-bearing, and it was learned the hard way: an earlier

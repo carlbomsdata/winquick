@@ -4,6 +4,39 @@
 
 ### Fixed
 
+- **Windows x86_64: a prepared guest now restores with more than one
+  processor.** It used to resume and then stop, and the reason was three
+  separate pieces of per-processor state that the Windows Hypervisor Platform
+  owns and QEMU does not carry across a migration -- each hidden behind the
+  last, and none of them a register in `whpx_register_names`:
+
+  - `InternalActivityState`, which left every application processor parked in
+    `StartupSuspend` waiting for a startup message the guest had already sent
+    in another process;
+  - the **Hyper-V hypercall page**, an overlay the hypervisor projects over
+    guest memory rather than guest RAM. The migration stream carries the filler
+    underneath it, so the first enlightened remote TLB flush jumped into filler
+    and bugchecked `0xD1`. Only multiprocessor guests reached it, because
+    `nt!HvlFlushRangeListTb` is the *remote* flush and one processor has nobody
+    to flush;
+  - the **synthetic interrupt controller** and its timers, without which a
+    processor that went idle waiting for a synthetic timer was never woken.
+
+  Three QEMU patches, in [`patches/`](patches/), with the evidence in
+  [docs/whpx-resume.md](docs/whpx-resume.md) -- including the guest's own crash
+  dump, read with WinDbg against Microsoft's public symbols.
+- **One bad freeze no longer disables the fast path for good.** Where a
+  prepared guest gets frozen is partly luck: the agent's poll loop mounts the
+  mailbox, looks and dismounts again without ever going quiet, and a guest
+  caught in the wrong part of it comes back unable to poll. That is evidence
+  about the state, not about the machine, so WinQuick builds another one -- up
+  to three -- before writing `restore-unsupported`. The note is also keyed on
+  the QEMU binary's identity now, not just its version string, so a QEMU
+  rebuilt with a restore fix stops the note applying instead of leaving the
+  fast path switched off on a host where it works.
+- **`winquick clean` forgets the `restore-unsupported` note.** It is the
+  "forget what you worked out about this machine" command, and installing a
+  QEMU that can restore is exactly the kind of change a user runs it after.
 - **A prepared guest was frozen half a step too early.** WinQuick stopped the
   guest the instant `WQREADY.TXT` appeared, which is the moment its directory
   entry reaches the image — the middle of the agent's work, not the end of it:
