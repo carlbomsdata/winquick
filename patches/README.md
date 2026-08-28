@@ -15,6 +15,7 @@ if they want the fast path on Windows.
 | `whpx-stop-and-copy.patch` | nothing | no |
 | `whpx-resume-diagnostics.patch` | nothing | no |
 | `whpx-nmi-delivery.patch` | nothing | no |
+| `whpx-activity-state-migration.patch` | nothing | no |
 
 ## `ntfsprogs-windows.patch`
 
@@ -161,3 +162,37 @@ With both fixed, an NMI injected into a restored-and-frozen guest makes it
 execute again, which is how [../docs/whpx-resume.md](../docs/whpx-resume.md)
 establishes that the processors themselves are fine and only the wake-up is
 missing.
+
+## `whpx-activity-state-migration.patch`
+
+Against **QEMU v11.1.0**, on top of `whpx-stop-and-copy.patch`. 129 lines, one
+file. Not applied to anything WinQuick ships.
+
+`WHvRegisterInternalActivityState` holds a processor's `StartupSuspend`,
+`HaltSuspend` and `IdleSuspend` bits. It is absent from `whpx_register_names`,
+the only code that touches it is `whpx_vcpu_kick_out_of_hlt()`, and QEMU
+registers no vmstate for WHPX at all -- so it is not carried across a
+migration. A fresh partition parks every application processor in
+`StartupSuspend`, waiting for the INIT/SIPI that brings it up. Correct for a
+cold boot; wrong for a restore, where the guest sent that sequence long ago in
+another process and will never send it again. The processor waits for ever, and
+a multiprocessor guest deadlocks as soon as it needs the second one.
+
+This registers one vmstate section per processor that reads the register on
+save and writes it back on load.
+
+**The application matters as much as the value.** Doing it in the vmstate
+`post_load` is wrong: that runs while the stream is still being read, before
+`cpu_synchronize_post_init()` has pushed the processor's architectural state,
+so releasing it from `StartupSuspend` there starts it executing from whatever a
+fresh VP holds. The result is intermittent. The value is instead remembered at
+load and applied at the end of the full-state push.
+
+With this applied, the restored application processor starts every time. It is
+necessary and not sufficient -- see
+[../docs/whpx-resume.md](../docs/whpx-resume.md) for the bugcheck that follows.
+
+An unmerged 2022 upstream patch,
+[*whpx: Added support for saving/restoring VM state*](https://patchew.org/QEMU/004101d86732$0d33bd70$279b3850$@sysprogs.com/),
+saves the same single register for the same reason. It was never merged;
+review foundered on the XSAVE half of it.

@@ -82,6 +82,19 @@
   applied to anything WinQuick ships: `whpx_apic_external_nmi()` is an empty
   function, and a prepared interruption is only committed for one of the two
   APIC modes. Between them, `inject-nmi` did nothing at all on a WHPX guest.
+- **A restored application processor now starts.** WHP parks every application
+  processor in `StartupSuspend` on a fresh partition, waiting for the INIT/SIPI
+  that a cold boot supplies. QEMU carries no per-processor activity state
+  across a migration, so after a restore that processor waited for ever and
+  never executed a single instruction.
+  [`patches/whpx-activity-state-migration.patch`](patches/whpx-activity-state-migration.patch)
+  adds one vmstate section per processor; applying it after the architectural
+  state is pushed, rather than during load, is what makes it reliable.
+
+  Multiprocessor restore is still not usable: with the processor running, the
+  guest bugchecks `DRIVER_IRQL_NOT_LESS_OR_EQUAL` and writes a crash dump
+  instead of running the agent. It is a crash, not the hang the earlier notes
+  described. See [docs/whpx-resume.md](docs/whpx-resume.md).
 - **The multiprocessor restore failure is narrowed to a specific missing
   register.** A restored application processor is left in WHP's
   `StartupSuspend` -- waiting for a SIPI that was already sent, in another

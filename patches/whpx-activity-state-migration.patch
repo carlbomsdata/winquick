@@ -1,0 +1,129 @@
+--- a/target/i386/whpx/whpx-all.c
++++ b/target/i386/whpx/whpx-all.c
+@@ -49,6 +49,7 @@
+ #include "trace.h"
+ 
+ #include <winhvplatform.h>
++#include "migration/vmstate.h"
+ 
+ #define HYPERV_APIC_BUS_FREQUENCY      (200000000ULL)
+ /* for kernel-irqchip=off */
+@@ -513,6 +514,8 @@
+     }
+ }
+ 
++static void whpx_apply_pending_activity(CPUState *cpu);
++
+ void whpx_set_registers(CPUState *cpu, WHPXStateLevel level)
+ {
+     struct whpx_state *whpx = &whpx_global;
+@@ -665,6 +668,10 @@
+         apic_base.Reg64 = cpu_get_apic_base(X86_CPU(cpu)->apic_state);
+         whpx_set_reg(cpu, WHvX64RegisterApicBase, apic_base);
+     }
++
++    if (level >= WHPX_LEVEL_FULL_STATE) {
++        whpx_apply_pending_activity(cpu);
++    }
+ }
+ 
+ static int whpx_get_tsc(CPUState *cpu)
+@@ -1943,6 +1950,84 @@
+     }
+ }
+ 
++/*
++ * Per-processor state the hypervisor owns, which the migration stream does not
++ * otherwise carry.
++ *
++ * WHvRegisterInternalActivityState holds StartupSuspend, HaltSuspend and
++ * IdleSuspend. It is absent from whpx_register_names, and the only other code
++ * that touches it is whpx_vcpu_kick_out_of_hlt(). A brand new partition parks
++ * every application processor in StartupSuspend, waiting for the INIT/SIPI
++ * that brings it up. That is right for a cold boot and wrong for a restore:
++ * the guest sent that sequence long ago, in another process, and will never
++ * send it again, so the processor waits for ever and the guest deadlocks as
++ * soon as it needs more than one of them.
++ */
++typedef struct WhpxVpMigState {
++    CPUState *cpu;
++    uint64_t internal_activity;
++} WhpxVpMigState;
++
++/*
++ * The value arrives with the stream but must not be applied until the
++ * processor's architectural state has been pushed: releasing a processor from
++ * StartupSuspend is what makes it start executing, and it must not do that
++ * from a half-restored VP.
++ */
++#define WHPX_MAX_VCPUS 288
++static uint64_t whpx_pending_activity[WHPX_MAX_VCPUS];
++static bool whpx_pending_activity_valid[WHPX_MAX_VCPUS];
++
++static void whpx_apply_pending_activity(CPUState *cpu)
++{
++    WHV_REGISTER_VALUE reg;
++    int i = cpu->cpu_index;
++
++    if (i < 0 || i >= WHPX_MAX_VCPUS || !whpx_pending_activity_valid[i]) {
++        return;
++    }
++    whpx_pending_activity_valid[i] = false;
++
++    memset(&reg, 0, sizeof(reg));
++    reg.Reg64 = whpx_pending_activity[i];
++    whpx_set_reg(cpu, WHvRegisterInternalActivityState, reg);
++}
++
++static int whpx_vp_pre_save(void *opaque)
++{
++    WhpxVpMigState *s = opaque;
++    WHV_REGISTER_VALUE reg;
++
++    memset(&reg, 0, sizeof(reg));
++    whpx_get_reg(s->cpu, WHvRegisterInternalActivityState, &reg);
++    s->internal_activity = reg.Reg64;
++    return 0;
++}
++
++static int whpx_vp_post_load(void *opaque, int version_id)
++{
++    WhpxVpMigState *s = opaque;
++    int i = s->cpu->cpu_index;
++
++    if (i >= 0 && i < WHPX_MAX_VCPUS) {
++        whpx_pending_activity[i] = s->internal_activity;
++        whpx_pending_activity_valid[i] = true;
++    }
++    return 0;
++}
++
++static const VMStateDescription vmstate_whpx_vp = {
++    .name = "whpx-vp",
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .pre_save = whpx_vp_pre_save,
++    .post_load = whpx_vp_post_load,
++    .fields = (const VMStateField[]) {
++        VMSTATE_UINT64(internal_activity, WhpxVpMigState),
++        VMSTATE_END_OF_LIST()
++    },
++};
++
+ static void whpx_vcpu_pre_run(CPUState *cpu)
+ {
+     HRESULT hr;
+@@ -2827,6 +2912,13 @@
+         env->apic_bus_freq = 1000000000;
+     }
+ 
++    {
++        WhpxVpMigState *ms = g_new0(WhpxVpMigState, 1);
++
++        ms->cpu = cpu;
++        vmstate_register(NULL, cpu->cpu_index, &vmstate_whpx_vp, ms);
++    }
++
+     vcpu->interruptable = true;
+     cpu->vcpu_dirty = true;
+     cpu->accel = vcpu;

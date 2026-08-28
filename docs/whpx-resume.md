@@ -4,13 +4,15 @@ WinQuick is fast because it does not boot Windows: it restores a prepared state
 into a fresh QEMU process. On Windows that does not work, and this is the
 investigation into why.
 
-**Status: root cause identified, not fixed.** The failure is reproducible, the
-boundary is sharp, and the missing state has been named: a restored application
-processor is left in WHP's `StartupSuspend`, waiting for a SIPI that was
-delivered in another process minutes ago, because QEMU never saves or restores
-`WHvRegisterInternalActivityState`. An unmerged 2022 upstream patch reached the
-same conclusion from the other direction. Restoring that bit is necessary and
-is not by itself sufficient, so something beyond it is still missing.
+**Status: one root cause found and fixed, a second one named.** A restored
+application processor used to sit in WHP's `StartupSuspend` for ever, never
+executing an instruction, because QEMU carries no per-processor activity state
+across a migration. That is fixed, and the processor now starts. With it
+running, the guest gets far enough to **bugcheck** -- `DRIVER_IRQL_NOT_LESS_OR_EQUAL`,
+a near-null read at `DISPATCH_LEVEL` -- and writes a crash dump instead of
+running WinQuick's agent. Multiprocessor prepared-state restore is therefore
+still not usable, but it fails somewhere much later and much more specifically
+than it did.
 
 Measured on ROAD-WARRIOR01: Windows 11 Pro 25H2 (build 26200), Intel i5-8265U,
 Windows Hypervisor Platform enabled, QEMU 11.1.0 (`84f0721`) carrying
@@ -107,118 +109,101 @@ whpx-msi calls=11006 ok=11004 by vector: 80=4298 97=300 129=328 161=1991 177=373
 - **`warning: Ignoring request for interrupt vector 0`.** It appears once, from
   an unprogrammed MSI-X entry. Not the mechanism.
 
-## What is left
+## What was fixed: the application processor never started
 
-The processors are halted inside the hypervisor and nothing ever wakes them,
-only when there is more than one of them. A later session took that apart
-further, and the picture is now much sharper.
-
-### The restored AP is parked waiting for a SIPI
-
-`WHV_INTERNAL_ACTIVITY_REGISTER` bit 0 is `StartupSuspend` -- "this processor
-is waiting for a SIPI". Reading it on both sides of a migration, per vCPU:
+`WHV_INTERNAL_ACTIVITY_REGISTER` bit 0 is `StartupSuspend` -- "this processor is
+waiting for a SIPI". Reading it on both sides of a migration:
 
 | | cpu0 | cpu1 |
 |---|---|---|
-| source, at boot | `InternalActivity=0` | `InternalActivity=1` |
-| source, at the freeze | `InternalActivity=0` | **`InternalActivity=0`** |
-| destination, at resume | `InternalActivity=0` | **`InternalActivity=1`** |
+| source, at boot | `0` | `1` |
+| source, at the freeze | `0` | **`0`** |
+| destination, at resume | `0` | **`1`** |
 
-That is the state difference, in one line: the source's application processor
-had long since been started by Windows, and the destination's is parked waiting
-for a startup message that will never be sent again.
+The source's application processor had long since been started by Windows; the
+destination's was parked waiting for a startup message nobody would ever send
+again. Watching it live made this unambiguous -- for an entire run, cpu1 held
+`activity=1` and its RIP never moved by a single instruction.
 
-It is missing because **QEMU never saves or restores
-`WHvRegisterInternalActivityState`**. `whpx_register_names` does not list it;
-the only code that touches it is `whpx_vcpu_kick_out_of_hlt()`, which clears
-`HaltSuspend` by hand. A fresh WHP partition parks every AP in
-`StartupSuspend`, which is correct for a cold boot -- the guest's own INIT/SIPI
-clears it -- and wrong for a restore, where that sequence happened in another
-process, minutes ago.
+**QEMU never saves or restores `WHvRegisterInternalActivityState`.** It is
+absent from `whpx_register_names`, the only code that touches it is
+`whpx_vcpu_kick_out_of_hlt()`, and QEMU registers no vmstate for WHPX at all,
+so there was nowhere to put it.
 
-This confirms candidate 1 below, which was a hypothesis before and is now a
-measurement.
+[`patches/whpx-activity-state-migration.patch`](../patches/whpx-activity-state-migration.patch)
+adds one small vmstate section per processor that reads the register on save and
+writes it back on load.
 
-### Everything else WHP exposes is byte-identical
+**Ordering matters and cost a debugging cycle.** Applying the value in the
+vmstate `post_load` looks natural and is wrong: `post_load` runs while the
+stream is still being read, before `cpu_synchronize_post_init()` has pushed the
+processor's architectural state. Releasing a processor from `StartupSuspend`
+there lets it start executing from whatever a fresh VP happens to hold, and the
+result was intermittent -- sometimes the guest survived to the first real
+instruction, sometimes not. The value is now remembered at load and applied at
+the end of the full-state push, when RIP and the rest are already in place.
+After that change the application processor starts every time.
 
-Worth stating precisely, because it narrows the remaining search a lot. Source
-at the freeze versus destination at resume:
+## What is left: the guest bugchecks
 
-- all architectural registers: identical
-- `PendingInterruption`, `InterruptState`, `PendingEvent`,
-  `DeliverabilityNotifications`: all zero on both sides
-- **WHP's own LAPIC state, all 993 bytes** of
-  `WHvGetVirtualProcessorInterruptControllerState2`: **identical**, on both
-  processors
+With the processor starting, the two-processor guest still does not run
+WinQuick's agent. It is **not** frozen, which is what the earlier write-up
+assumed and what the RIP sampling suggested. It crashes.
 
-So this is not the APIC register page, and it is not the interrupt/event
-registers the code comments call skipped.
+Letting a restored guest run untouched for a minute and then searching its
+copy-on-write overlay finds a Windows crash dump -- `PAGEDU64`, a valid header
+reporting `NumberProcessors=2`:
 
-### Clearing StartupSuspend is necessary but not sufficient
+```
+BugCheckCode = 0xd1   DRIVER_IRQL_NOT_LESS_OR_EQUAL
+P1 = 0xa              the address referenced
+P2 = 0x2              IRQL at the time (DISPATCH_LEVEL)
+P3 = 0x0              a read
+P4 = 0xfffff800722b0000
+```
 
-Clearing the bit works -- cpu1 goes from `1` to `0`, and after that every piece
-of VP state matches the source exactly. The guest still does not run. Tried
-both at full-state restore and at the resume transition, with the same result.
+Something dereferences a near-null pointer at `DISPATCH_LEVEL` shortly after
+resume. The overlay grows by about 250 MB while Windows writes the dump, which
+is the "heavy activity" that a RIP sample mistakes for a live guest.
 
-So the parked AP is real and is certainly one thing that must be fixed, but
-something else is also missing. The most likely remaining place is
-hypervisor-internal scheduling that has no save/restore API at all, which is
-candidate 2.
+That reframes the remaining work: this is no longer "find the missing wake-up",
+it is "find the per-processor structure that comes back wrong". Address `0xa` is
+what a per-CPU lookup produces when its base is wrong, so the natural suspects
+are the structures reached that way -- though `Gs`, `KernelGsBase`, `Gdtr`,
+`Idtr` and `Ldtr` are all in `whpx_register_names` and are restored.
 
-### The 1-versus-2 boundary, measured
+### Ruled out along the way
 
-| | interrupts delivered after restore | outcome |
-|---|---|---|
-| `-smp 1` | **8,634** (vectors 80, 97, 129, 145, 161, 177, ...) | executes |
-| `-smp 2` | **2** | frozen |
+- **The APIC.** WHP's own LAPIC state, all 993 bytes of
+  `WHvGetVirtualProcessorInterruptControllerState2`, is byte-identical on both
+  sides for both processors.
+- **The interrupt/event registers** the code comments call skipped:
+  `PendingInterruption`, `InterruptState`, `PendingEvent`,
+  `DeliverabilityNotifications` -- all zero on both sides.
+- **The IOAPIC.** Its whole redirection table was dumped: the PIT and RTC pins
+  are masked by Windows, the only live pins are the keyboard, serial, ACPI and
+  mouse, and there is no periodic timer there at all. The PIT firing into a
+  masked pin was a red herring that cost time.
+- **`Canceled` exits.** Instrumenting the single place that issues one showed
+  them coming from ordinary `qemu_cpu_kick()`, ~2/s. Not a cause.
+- **A short settle before the freeze.** Raising it from 1.5 s to 6 s changes
+  nothing.
 
-Interrupt delivery after a restore is not broken in general -- a single-vCPU
-guest gets its ticks and its device completions and runs indefinitely. It is
-specifically the multiprocessor case that receives nothing.
+### One measurement worth keeping
 
-### A wake proves the processors are fine
+The guest's TSC jumps forward about 7.2 billion cycles -- roughly four seconds
+at this host's clock -- across the restore, despite `whpx_set_tsc()` being
+called on the full-state path. Whether that is a cause of the bugcheck or just
+another consequence is not established, and it is the first thing to measure
+next.
 
-Injecting an NMI into the frozen two-processor guest makes it run: 5,065
-`MemoryAccess` exits and MSI deliveries resuming, from a standing start. It
-then idles again, because whatever should have woken it still does not. So the
-restored processor state is sound and what is missing is purely a wake-up.
+### A trap in the diagnostics themselves
 
-That test needed two bug fixes before it meant anything; see below.
-
-### Somebody tried this upstream in 2022
-
-Searching after the fact turned up
-[*whpx: Added support for saving/restoring VM state*](https://patchew.org/QEMU/004101d86732$0d33bd70$279b3850$@sysprogs.com/)
-(Ivan Shcherbakov, May 2022), which saves exactly **one** register --
-`WHvRegisterInternalActivityState` -- and says why in its own comment:
-
-> Initially, all WHPX CPUs except #0 start suspended (with
-> `WHV_INTERNAL_ACTIVITY_REGISTER::StartupSuspend` set).
-
-That is the same conclusion reached here independently, from the other end, by
-reading the register on both sides of a migration. It registers the state
-per-CPU with `register_savevm_live("whpx/cpustate", cpu->cpu_index, ...)`,
-which is the missing piece: **QEMU 11.1 has no vmstate registration for WHPX at
-all**, so there is nowhere for this register to live in the stream today.
-
-The patch was **not merged**. Review foundered on a different part of it:
-Hyper-V uses the *compacted* XSAVE layout and QEMU expects the standard one,
-and the thread ended without that being resolved. So the activity-state half
-was never the objection -- it was carried along by the half that was.
-
-Worth noting for anyone picking this up: that patch also saves XSAVE state,
-which QEMU 11.1 does now handle (`whpx_set_xsave_state`/`whpx_get_xsave_state`).
-Only the activity state is still missing.
-
-### The two candidates, restated
-
-1. **Per-vCPU activity state** -- now confirmed, above. The fix needs
-   `WHvRegisterInternalActivityState` to be carried across migration rather
-   than left at whatever a fresh partition defaults to. That is more than a
-   one-line change: there is nowhere in the migration stream to put it today.
-2. **Hypervisor-internal timer state.** Still open, and now the leading
-   suspect for the residue: everything WHP *exposes* is restored correctly and
-   the guest still will not wake itself.
+Injecting NMIs periodically to see whether a wake-up revived the guest produced
+its own crash dump: `BugCheckCode = 0x80`, `NMI_HARDWARE_FAILURE`. Windows
+treats an unexpected NMI as a hardware fault. The first dump found was that one,
+and it very nearly became the reported root cause. Any dump recovered from a
+guest that has been poked has to be read with that in mind.
 
 ## Two separate bugs found along the way
 
