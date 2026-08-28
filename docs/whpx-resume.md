@@ -219,17 +219,43 @@ sides that WHP does not obviously expose.
 
 ### So what is the halting?
 
-Not established. What is known:
+Not established, but narrowed. A halted four-processor restore, poked with an
+NMI after fifteen seconds -- a **contaminated diagnostic run** by construction,
+since Windows treats an unexpected NMI as a hardware fault, and no dump from it
+should ever be read as a root cause:
 
-- it is not the LAPIC: `whpx_apic_post_load()` pushes the whole 993-byte
-  interrupt-controller state back through
+```
+  t+  0.0s  fffff80283605d47 fffff802837c6f8f fffff80283605d47 00007ffa772b73da
+  t+  2.2s  fffff80283605d47 fffff802837c6f8f fffff80283605d47 fffff80283605d47
+  ...      unchanged through t+15s
+  --- NMI injected ---
+  t+ 17.3s  fffff802836d14e9 fffff802834c597e fffff802836d14e9 fffff802836d14e9
+  ...      through t+54s, never answering
+```
+
+**Every processor moved.** So the interrupt path is intact end to end: an
+interrupt raised on a restored partition is delivered, taken, and executed. What
+is missing is not the ability to receive an interrupt but a *source* of one --
+whatever would have woken these processors on its own never fires again.
+
+So, of the candidates:
+
+- it is **not** the ability to deliver an interrupt (the NMI proves that);
+- it is **not** the LAPIC's saved state: `whpx_apic_post_load()` pushes the whole
+  993-byte interrupt-controller block back through
   `WHvSetVirtualProcessorInterruptControllerState2`, and the state compares
-  byte-identical either side;
-- it is not the SynIC, at least not in the form above;
+  byte-identical either side. Whether WHP *re-arms* the LAPIC timer from that
+  block, as opposed to merely storing its registers, is the obvious next thing
+  to measure and was not measured here;
+- it is **not** the SynIC, at least not in the form above;
 - the guest is genuinely halted, not spinning and not crashed;
-- it correlates with where the freeze landed, which is why WinQuick's answer for
-  now is to build another prepared guest rather than to conclude the host cannot
-  restore.
+- it gets worse with processor count -- one in three prepared guests at two
+  processors, all three tries at four -- which is what one would expect if each
+  idle processor is independently at risk of being frozen waiting for a tick
+  that never comes.
+
+WinQuick's answer for now is to build another prepared guest rather than
+conclude the host cannot restore.
 
 ## What was ruled out, with evidence
 
