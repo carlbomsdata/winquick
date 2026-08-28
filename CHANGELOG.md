@@ -45,6 +45,13 @@
   the QEMU binary's identity now, not just its version string, so a QEMU
   rebuilt with a restore fix stops the note applying instead of leaving the
   fast path switched off on a host where it works.
+- **A QEMU that has restored a prepared guest is no longer told it cannot.**
+  A hundred-run soak found one prepared guest serving twenty-five warm runs and
+  then failing; WinQuick rebuilt, three in a row were unlucky, and it wrote
+  `restore-unsupported` — after which every remaining run cold-booted on a
+  machine that had just proved twenty-five times that it restores. The note is a
+  claim about the QEMU, and one that has restored a guest refutes it, so the
+  demonstration is recorded and outranks any later run of silent guests.
 - **`winquick clean` forgets the `restore-unsupported` note.** It is the
   "forget what you worked out about this machine" command, and installing a
   QEMU that can restore is exactly the kind of change a user runs it after.

@@ -132,9 +132,15 @@ different signature:
 | One prepared state, restored and run 8 times at `-smp 2` | **8 warm runs of 8** |
 | A different prepared state, built the same way, run twice | **fails both times** |
 | The two states' mailbox images, compared entry by entry | **identical** |
+| Fresh prepared guests at `-smp 2` | about **one in three** unusable |
+| Fresh prepared guests at `-smp 4` | **three of three** unusable |
 
-So the restore machinery is reliable, and a prepared state is deterministically
-good or bad. What differs is where the guest happened to be frozen.
+Most of the risk is in the freeze, not the restore: a state that works tends to
+go on working. It is not a clean split, though. A hundred-run soak found one
+prepared guest serving twenty-five warm runs and then failing, so a restore from
+a good state carries a small independent risk of its own -- a few percent, on
+this evidence. What differs is where the guest happened to be frozen, and how
+many processors were idle when it was.
 
 Watching both kinds resume, with a real command already in the mailbox, says
 what "bad" means:
@@ -350,10 +356,18 @@ dominates the roundtrip is copying the two-gigabyte workspace and artifact
 volumes per run, which Windows has no APFS-style clone for; that is the next
 thing worth attacking and it is not this.
 
-The freeze lottery is what is left, and it is paid at prepare time rather than
-per run: a prepared guest is built once and reused. WinQuick builds up to three
-before concluding the machine cannot restore, so a bad freeze costs a rebuild
-rather than the fast path.
+The freeze lottery is what is left, and most of it is paid at prepare time: a
+prepared guest is built once and reused. WinQuick builds up to three before
+concluding the machine cannot restore, so a bad freeze costs a rebuild rather
+than the fast path.
+
+**The hundred-run soak found the sting in that.** One prepared guest served
+twenty-five warm runs, then a restore came back silent; WinQuick rebuilt, three
+in a row were unlucky, and it wrote `restore-unsupported`. Every remaining run
+cold-booted -- on a machine that had just demonstrated twenty-five times that it
+restores perfectly well. The note claims "this QEMU cannot restore a prepared
+guest", and a QEMU that has restored one refutes that claim, so WinQuick now
+records the demonstration and lets it outrank any later run of silent guests.
 
 ## Reproducing
 
