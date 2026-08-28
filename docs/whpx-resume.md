@@ -113,9 +113,14 @@ the end of the full-state push.
 
 `nt!HvlFlushRangeListTb` is the *remote* TLB flush. A one-processor guest has
 nobody to flush, never takes the enlightened path, and never touches the
-hypercall page -- so a missing overlay is invisible to it. Every enlightenment
-Windows enables here is a multiprocessor optimisation, which is why the fault
-tracked processor count so exactly and looked for so long like a wake-up bug.
+hypercall page -- so a missing overlay is invisible to it. That is why the
+crash tracked processor count so exactly, and why it looked for so long like a
+wake-up bug.
+
+It does not follow that the rest of the enlightenments are multiprocessor-only.
+The SynIC and the reference TSC page below are switched on whatever the
+processor count; a one-processor guest simply happened not to be caught by
+them.
 
 
 ## The second failure: a restored guest that halts and is never woken
