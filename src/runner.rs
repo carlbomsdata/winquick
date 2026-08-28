@@ -201,7 +201,10 @@ fn execute(command: &str, opts: &Options) -> Result<Outcome> {
             Ok(Some(ready)) => {
                 ctx.vlog("using existing ready state");
                 match warm_execute(&ctx, &ready, command, true) {
-                    Ok(o) => return Ok(o),
+                    Ok(o) => {
+                        let _ = state::mark_restore_works(&backend);
+                        return Ok(o);
+                    }
                     Err(e) if crate::interrupt::interrupted() => return Err(e),
                     Err(e) => {
                         ctx.vlog(format!("warm path failed: {e:#}"));
@@ -233,7 +236,10 @@ fn execute(command: &str, opts: &Options) -> Result<Outcome> {
                 if let Ok(Some(ready)) = state::load_valid(&want) {
                     ctx.vlog("another run prepared the guest while we waited");
                     match warm_execute(&ctx, &ready, command, true) {
-                        Ok(o) => return Ok(o),
+                        Ok(o) => {
+                            let _ = state::mark_restore_works(&backend);
+                            return Ok(o);
+                        }
                         Err(e) if crate::interrupt::interrupted() => return Err(e),
                         Err(e) => ctx.vlog(format!("that prepared guest did not work: {e:#}")),
                     }
@@ -249,7 +255,10 @@ fn execute(command: &str, opts: &Options) -> Result<Outcome> {
                     match build_ready_state(&ctx, &want) {
                         Ok(ready) => {
                             match warm_execute(&ctx, &ready, command, false) {
-                                Ok(o) => return Ok(o),
+                                Ok(o) => {
+                                    let _ = state::mark_restore_works(&backend);
+                                    return Ok(o);
+                                }
                                 Err(e) if crate::interrupt::interrupted() => return Err(e),
                                 Err(e) => {
                                     ctx.vlog(format!(
@@ -266,11 +275,28 @@ fn execute(command: &str, opts: &Options) -> Result<Outcome> {
                                         break;
                                     }
                                     if attempt == PREPARE_ATTEMPTS {
-                                        let _ = state::mark_restore_unsupported(&backend);
-                                        ctx.vlog(
-                                            "this QEMU cannot restore a prepared guest; \
-                                             later runs will boot cold without trying",
-                                        );
+                                        // The note means "this QEMU cannot
+                                        // restore a prepared guest". A QEMU
+                                        // that has already restored one
+                                        // demonstrably can, and a run of
+                                        // unlucky freezes is not evidence
+                                        // against it -- switching the fast
+                                        // path off for good on that basis is
+                                        // how a machine that works ends up
+                                        // cold-booting for ever.
+                                        if state::restore_works(&backend) {
+                                            ctx.vlog(
+                                                "three prepared guests in a row came back \
+                                                 silent, but this QEMU has restored one \
+                                                 before; leaving the fast path on",
+                                            );
+                                        } else {
+                                            let _ = state::mark_restore_unsupported(&backend);
+                                            ctx.vlog(
+                                                "this QEMU cannot restore a prepared guest; \
+                                                 later runs will boot cold without trying",
+                                            );
+                                        }
                                     }
                                 }
                             }

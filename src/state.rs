@@ -169,18 +169,51 @@ pub fn restore_note() -> Result<PathBuf> {
 /// The backend signature is written alongside, so installing a QEMU that *can*
 /// restore makes the note stop applying by itself.
 pub fn mark_restore_unsupported(signature: &str) -> Result<()> {
-    let p = restore_note()?;
+    write_note(&restore_note()?, signature)
+}
+
+/// Where the "a prepared guest has restored on this host" note lives.
+///
+/// Beside the other one, and for the same reason: whether restore works is a
+/// property of the QEMU and the accelerator, not of any particular image.
+pub fn restore_works_note() -> Result<PathBuf> {
+    Ok(crate::paths::root()?.join("restore-works"))
+}
+
+/// Write one of the two backend notes, if it does not already say this.
+fn write_note(p: &Path, signature: &str) -> Result<()> {
+    if note_says(p, signature) {
+        return Ok(());
+    }
     std::fs::create_dir_all(p.parent().unwrap())?;
     std::fs::write(p, signature)?;
     Ok(())
 }
 
+/// Whether a note exists and is about this backend.
+///
+/// A note left by a different QEMU is not about this one, and says nothing.
+fn note_says(p: &Path, signature: &str) -> bool {
+    std::fs::read_to_string(p).map(|s| s.trim() == signature).unwrap_or(false)
+}
+
+/// Record that a prepared guest restored here and ran a command.
+///
+/// This is the evidence that outranks a run of silent guests: where a prepared
+/// guest gets frozen is partly luck, and three unlucky ones in a row say
+/// nothing about a machine that has already done the thing.
+pub fn mark_restore_works(signature: &str) -> Result<()> {
+    write_note(&restore_works_note()?, signature)
+}
+
+/// Whether a prepared guest has ever restored here with this backend.
+pub fn restore_works(signature: &str) -> bool {
+    restore_works_note().map(|p| note_says(&p, signature)).unwrap_or(false)
+}
+
 /// Whether restoring is already known not to work with this backend.
 pub fn restore_unsupported(signature: &str) -> bool {
-    restore_note()
-        .and_then(|p| Ok(std::fs::read_to_string(p)?))
-        .map(|s| s.trim() == signature)
-        .unwrap_or(false)
+    restore_note().map(|p| note_says(&p, signature)).unwrap_or(false)
 }
 
 pub fn load_valid(want: &Fingerprint) -> Result<Option<ReadyState>> {
@@ -498,5 +531,36 @@ mod desktop_tests {
     #[test]
     fn an_identical_fingerprint_is_reusable() {
         assert_eq!(base(), base());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Evidence that a QEMU *can* restore outranks any amount of evidence that
+    /// it sometimes does not. Where a prepared guest gets frozen is partly
+    /// luck, so a run of silent ones says nothing about a machine that has
+    /// already restored one and run a command on it. Both notes are read the
+    /// same way, and both are about one backend rather than about any.
+    #[test]
+    fn a_note_is_about_the_backend_that_wrote_it() {
+        let dir = std::env::temp_dir().join(format!("wq-note-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let note = dir.join("restore-works");
+
+        assert!(!note_says(&note, "whpx|a"), "no note yet");
+        write_note(&note, "whpx|a").unwrap();
+        assert!(note_says(&note, "whpx|a"));
+        assert!(
+            !note_says(&note, "whpx|b"),
+            "a note left by a different QEMU is not about this one"
+        );
+
+        // Writing the same thing twice is not an error and does not change it.
+        write_note(&note, "whpx|a").unwrap();
+        assert_eq!(std::fs::read_to_string(&note).unwrap(), "whpx|a");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

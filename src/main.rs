@@ -982,6 +982,7 @@ fn clean(all: bool, dry_run: bool) -> Result<i32> {
         // command, and installing a QEMU that can restore a prepared guest is
         // exactly the kind of change a user runs it after.
         (state::restore_note()?, "restore-unsupported note"),
+        (state::restore_works_note()?, "restore-works note"),
     ];
     if all {
         targets.push((root.join("images"), "Windows runtime"));
