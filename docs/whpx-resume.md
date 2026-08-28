@@ -301,16 +301,23 @@ guest half a step too early, and the fix is one `sleep`.
 
 ## What this means for the product
 
-On ROAD-WARRIOR01, with the two patches applied, `winquick run --cpus 2 -- cmd /c ver`
+On ROAD-WARRIOR01, with the two patches applied, `winquick run --cpus N -- cmd /c ver`
 twenty times from one prepared guest:
 
-```
-warm=20 cold=0 wrong-output-or-exit=0 of 20
-n=20  min=13946  p50=24826  mean=22688  p95=28222  max=29177 ms
-prepared state   f1a348407298e6220f00d9373bc865e5  unchanged
-canonical image  992e0e08abe13cdd426fae7857007fa3  unchanged
-orphaned qemu processes: 0
-```
+| processors | result | min | p50 | mean | p95 | max |
+|---|---|---|---|---|---|---|
+| 1 | **20 warm of 20** | 13.3 s | 18.4 s | 18.7 s | 25.3 s | 26.0 s |
+| 2 | **20 warm of 20** | 13.9 s | 24.8 s | 22.7 s | 28.2 s | 29.2 s |
+| 4 | **0 warm of 20** | | | | | |
+
+Every run produced the right output and the right exit code, at every processor
+count; the prepared state and the canonical image were byte-identical
+afterwards, and no QEMU process was left behind.
+
+**Four processors is the honest failure.** All three prepared guests WinQuick
+built came back halted, so it wrote `restore-unsupported` and every run booted
+cold. The warm path is usable at one and two processors and is not usable at
+four.
 
 The restore itself is 92-180 ms and the guest answers in about 520 ms. What
 dominates the roundtrip is copying the two-gigabyte workspace and artifact
