@@ -124,8 +124,12 @@
  #define HYPERV_APIC_BUS_FREQUENCY      (200000000ULL)
  /* for kernel-irqchip=off */
  #define HV_X64_MSR_APIC_FREQUENCY       0x40000023
-@@ -515,6 +632,9 @@
+@@ -513,8 +630,13 @@
+     }
+ }
  
++static void whpx_clear_startup_suspend(CPUState *cpu);
++
  void whpx_set_registers(CPUState *cpu, WHPXStateLevel level)
  {
 +    if (whpx_diag_on() && cpu->cpu_index < 8) {
@@ -134,7 +138,18 @@
      struct whpx_state *whpx = &whpx_global;
      AccelCPUState *vcpu = cpu->accel;
      X86CPU *x86_cpu = X86_CPU(cpu);
-@@ -855,6 +975,9 @@
+@@ -665,6 +787,10 @@
+         apic_base.Reg64 = cpu_get_apic_base(X86_CPU(cpu)->apic_state);
+         whpx_set_reg(cpu, WHvX64RegisterApicBase, apic_base);
+     }
++
++    if (level >= WHPX_LEVEL_FULL_STATE) {
++        whpx_clear_startup_suspend(cpu);
++    }
+ }
+ 
+ static int whpx_get_tsc(CPUState *cpu)
+@@ -855,6 +981,9 @@
  
  void whpx_get_registers(CPUState *cpu, WHPXStateLevel level)
  {
@@ -144,17 +159,150 @@
      struct whpx_state *whpx = &whpx_global;
      AccelCPUState *vcpu = cpu->accel;
      X86CPU *x86_cpu = X86_CPU(cpu);
-@@ -2020,6 +2143,9 @@
+@@ -1943,6 +2072,131 @@
+     }
+ }
  
-         /* Setup interrupt state if new one was prepared */
-         if (new_int.InterruptionPending) {
-+            if (whpx_diag_on()) {
-+                whpx_diag_st.inj_interruption++;
-+            }
-             reg_values[reg_count].PendingInterruption = new_int;
-             reg_names[reg_count] = WHvRegisterPendingInterruption;
-             reg_count += 1;
-@@ -2029,6 +2155,9 @@
++
++/*
++ * WHPX_DIAG: the per-VP state the migration stream does not carry.
++ *
++ * whpx_register_names omits the interrupt/event registers by design, and
++ * nothing saves InternalActivityState at all -- that is where WHP keeps
++ * HaltSuspend, the flag whpx_vcpu_kick_out_of_hlt() clears by hand. If a
++ * restored processor differs from the one that was frozen, it shows up here.
++ */
++static void whpx_diag_lapic_raw(CPUState *cpu, const char *when)
++{
++    uint8_t buf[4096];
++    UINT32 written = 0;
++    HRESULT hr;
++    GString *g;
++    size_t i, last;
++
++    if (!whpx_diag_on()) {
++        return;
++    }
++    memset(buf, 0, sizeof(buf));
++    hr = whp_dispatch.WHvGetVirtualProcessorInterruptControllerState2(
++             whpx_global.partition, cpu->cpu_index, buf, sizeof(buf), &written);
++    if (FAILED(hr)) {
++        fprintf(stderr, "whpx-lapicraw [%s] cpu%d <hr %08lx>\n",
++                when, cpu->cpu_index, hr);
++        fflush(stderr);
++        return;
++    }
++    /* Trim the trailing zeroes so the line stays readable. */
++    last = written;
++    while (last > 0 && buf[last - 1] == 0) {
++        last--;
++    }
++    g = g_string_new(NULL);
++    g_string_append_printf(g, "whpx-lapicraw [%s] cpu%d size=%u used=%zu ",
++                           when, cpu->cpu_index, written, last);
++    for (i = 0; i < last && i < 1200; i++) {
++        g_string_append_printf(g, "%02x", buf[i]);
++    }
++    g_string_append_c(g, '\n');
++    fputs(g->str, stderr);
++    fflush(stderr);
++    g_string_free(g, TRUE);
++}
++
++static void whpx_diag_vp_state(CPUState *cpu, const char *when)
++{
++    static const struct {
++        WHV_REGISTER_NAME name;
++        const char *label;
++    } regs[] = {
++        { WHvRegisterInternalActivityState,          "InternalActivity" },
++        { WHvRegisterPendingInterruption,            "PendingInterruption" },
++        { WHvRegisterInterruptState,                 "InterruptState" },
++        { WHvRegisterPendingEvent,                   "PendingEvent" },
++        { WHvX64RegisterDeliverabilityNotifications, "Deliverability" },
++    };
++    GString *g;
++    size_t i;
++
++    if (!whpx_diag_on()) {
++        return;
++    }
++    g = g_string_new(NULL);
++    g_string_append_printf(g, "whpx-vp [%s] cpu%d halted=%d intreq=0x%x",
++                           when, cpu->cpu_index, cpu->halted,
++                           qatomic_read(&cpu->interrupt_request));
++    for (i = 0; i < ARRAY_SIZE(regs); i++) {
++        WHV_REGISTER_VALUE v;
++        HRESULT hr;
++
++        memset(&v, 0, sizeof(v));
++        hr = whp_dispatch.WHvGetVirtualProcessorRegisters(
++                 whpx_global.partition, cpu->cpu_index,
++                 &regs[i].name, 1, &v);
++        if (FAILED(hr)) {
++            g_string_append_printf(g, " %s=<hr %08lx>", regs[i].label, hr);
++        } else {
++            g_string_append_printf(g, " %s=%016llx:%016llx", regs[i].label,
++                                   (unsigned long long)v.Reg128.High64,
++                                   (unsigned long long)v.Reg128.Low64);
++        }
++    }
++    g_string_append_c(g, '\n');
++    fputs(g->str, stderr);
++    fflush(stderr);
++    g_string_free(g, TRUE);
++}
++
++
++static void whpx_clear_startup_suspend_always(CPUState *cpu)
++{
++    WHV_REGISTER_VALUE reg;
++
++    memset(&reg, 0, sizeof(reg));
++    whpx_get_reg(cpu, WHvRegisterInternalActivityState, &reg);
++    if (reg.InternalActivity.StartupSuspend) {
++        reg.InternalActivity.StartupSuspend = 0;
++        whpx_set_reg(cpu, WHvRegisterInternalActivityState, reg);
++        fprintf(stderr, "whpx-startup late-cleared StartupSuspend on cpu%d\n",
++                cpu->cpu_index);
++        fflush(stderr);
++    }
++}
++
++/* WHPX_DIAG: is a parked AP the whole story? */
++static void whpx_clear_startup_suspend(CPUState *cpu)
++{
++    WHV_REGISTER_VALUE reg;
++
++    if (!getenv("WHPX_CLEAR_STARTUP")) {
++        return;
++    }
++    memset(&reg, 0, sizeof(reg));
++    whpx_get_reg(cpu, WHvRegisterInternalActivityState, &reg);
++    if (reg.InternalActivity.StartupSuspend) {
++        reg.InternalActivity.StartupSuspend = 0;
++        whpx_set_reg(cpu, WHvRegisterInternalActivityState, reg);
++        fprintf(stderr, "whpx-startup cleared StartupSuspend on cpu%d\n",
++                cpu->cpu_index);
++        fflush(stderr);
++    }
++}
++
+ static void whpx_vcpu_pre_run(CPUState *cpu)
+ {
+     HRESULT hr;
+@@ -2018,17 +2272,14 @@
+             }
+         }
+ 
+-        /* Setup interrupt state if new one was prepared */
+-        if (new_int.InterruptionPending) {
+-            reg_values[reg_count].PendingInterruption = new_int;
+-            reg_names[reg_count] = WHvRegisterPendingInterruption;
+-            reg_count += 1;
+-        }
+     } else if (vcpu->ready_for_pic_interrupt &&
+                cpu_test_interrupt(cpu, CPU_INTERRUPT_HARD)) {
          cpu_reset_interrupt(cpu, CPU_INTERRUPT_HARD);
          irq = cpu_get_pic_interrupt(env);
          if (irq >= 0) {
@@ -164,7 +312,7 @@
              reg_names[reg_count] = WHvRegisterPendingEvent;
              reg_values[reg_count].ExtIntEvent = (WHV_X64_PENDING_EXT_INT_EVENT)
              {
-@@ -2046,6 +2175,9 @@
+@@ -2046,11 +2297,41 @@
               * instead of WHVRequestInterrupt, which does not reset the HLT state.
               */
              if (whpx_irqchip_in_kernel()) {
@@ -174,7 +322,39 @@
                  whpx_vcpu_kick_out_of_hlt(cpu);
              }
          }
-@@ -2071,12 +2203,33 @@
+      }
+ 
++    /*
++     * WHPX_NMI_FIX: commit a prepared interruption whichever APIC is in use.
++     *
++     * This used to live inside the userspace-APIC arm above, which meant an
++     * NMI -- built at the top of this function, and already taken off the CPU
++     * there -- was silently discarded whenever the in-hypervisor APIC was
++     * active. The NMI is the one wake-up that needs no APIC at all, so losing
++     * it costs more than it looks.
++     */
++    if (new_int.InterruptionPending) {
++        if (whpx_diag_on()) {
++            whpx_diag_st.inj_interruption++;
++        }
++        reg_values[reg_count].PendingInterruption = new_int;
++        reg_names[reg_count] = WHvRegisterPendingInterruption;
++        reg_count += 1;
++
++        /*
++         * A halted processor does not leave HLT for a pending interruption
++         * alone; the in-hypervisor APIC needs telling separately, the same way
++         * the external-interrupt path above does.
++         */
++        if (whpx_irqchip_in_kernel()) {
++            whpx_vcpu_kick_out_of_hlt(cpu);
++        }
++    }
++
+     /* Sync the TPR to the CR8 if was modified during the intercept */
+     tpr = cpu_get_apic_tpr(x86_cpu->apic_state);
+     if (!whpx_irqchip_in_kernel() && tpr != vcpu->tpr) {
+@@ -2071,12 +2352,33 @@
                  .InterruptNotification = 1,
                  .InterruptPriority = irr >> 4
              };
@@ -208,7 +388,7 @@
      bql_unlock();
      vcpu->ready_for_pic_interrupt = false;
  
-@@ -2262,6 +2415,9 @@
+@@ -2262,6 +2564,9 @@
  
              /* Corresponding store-release is in cpu_exit. */
              if (qatomic_load_acquire(&cpu->exit_request)) {
@@ -218,7 +398,7 @@
                  whpx_vcpu_kick(cpu);
              }
          }
-@@ -2272,6 +2428,10 @@
+@@ -2272,6 +2577,10 @@
  
          whpx_inject_exceptions(cpu);
  
@@ -229,7 +409,7 @@
          hr = whp_dispatch.WHvRunVirtualProcessor(
              whpx->partition, cpu->cpu_index,
              &vcpu->exit_ctx, sizeof(vcpu->exit_ctx));
-@@ -2289,6 +2449,18 @@
+@@ -2289,6 +2598,18 @@
                  &vcpu->exit_ctx.VpContext.Rflags);
          }
  
@@ -248,6 +428,25 @@
          whpx_vcpu_post_run(cpu);
  
          switch (vcpu->exit_ctx.ExitReason) {
+@@ -2726,6 +3047,18 @@
+     CPUX86State *env = opaque;
+     Error *blocker_error = NULL;
+ 
++    if (whpx_diag_on()) {
++        CPUState *cs = env_cpu(env);
++        whpx_diag_vp_state(cs, running ? "start" : "stop");
++        whpx_diag_lapic_raw(cs, running ? "start" : "stop");
++    }
++
++    /* WHPX_LATE_CLEAR: try clearing at the resume transition instead, after
++     * every register has been pushed, in case a later set overwrites it. */
++    if (running && getenv("WHPX_CLEAR_LATE")) {
++        whpx_clear_startup_suspend_always(env_cpu(env));
++    }
++
+     if (running) {
+         env->tsc_valid = false;
+ 
 --- a/target/i386/whpx/whpx-apic.c
 +++ b/target/i386/whpx/whpx-apic.c
 @@ -20,6 +20,58 @@
@@ -330,7 +529,7 @@
      HRESULT hr = whp_dispatch.WHvGetVirtualProcessorInterruptControllerState2(
          whpx_global.partition,
          cpu->cpu_index,
-@@ -244,6 +303,11 @@
+@@ -244,11 +303,29 @@
  
  static void whpx_apic_post_load(APICCommonState *s)
  {
@@ -342,7 +541,25 @@
      run_on_cpu(CPU(s->cpu), whpx_apic_put, RUN_ON_CPU_HOST_PTR(s));
  }
  
-@@ -261,8 +325,18 @@
+ static void whpx_apic_external_nmi(APICCommonState *s)
+ {
++    /*
++     * WHPX_EXTNMI_FIX: this was an empty function, so an NMI delivered through
++     * the APIC -- which is how x86_nmi() delivers whenever the APIC is enabled,
++     * and therefore how `inject-nmi` always arrives -- was silently dropped.
++     *
++     * LINT1 is the NMI pin: honour how the guest programmed it, then raise the
++     * interrupt on the CPU. whpx_vcpu_pre_run() turns that into a pending NMI.
++     */
++    uint32_t lvt = s->lvt[APIC_LVT_LINT1];
++
++    if (!(lvt & APIC_LVT_MASKED) && ((lvt >> 8) & 7) == APIC_DM_NMI) {
++        cpu_interrupt(CPU(s->cpu), CPU_INTERRUPT_NMI);
++    }
+ }
+ 
+ static void whpx_send_msi(MSIMessage *msg)
+@@ -261,8 +338,18 @@
      uint8_t trigger_mode = (data >> MSI_DATA_TRIGGER_SHIFT) & 0x1;
      uint8_t delivery = (data >> MSI_DATA_DELIVERY_MODE_SHIFT) & 0x7;
  
@@ -362,7 +579,7 @@
          return;
      }
  
-@@ -281,6 +355,13 @@
+@@ -281,6 +368,13 @@
      };
      HRESULT hr = whp_dispatch.WHvRequestInterrupt(whpx_global.partition,
                       &interrupt, sizeof(interrupt));
@@ -376,7 +593,7 @@
      if (FAILED(hr)) {
          fprintf(stderr, "whpx: injection failed, MSI (%llx, %x) delivery: %d, "
                  "dest_mode: %d, trigger mode: %d, vector: %d, lost (%08lx)\n",
-@@ -313,6 +394,9 @@
+@@ -313,6 +407,9 @@
  
  static void whpx_apic_reset(APICCommonState *s)
  {
@@ -386,3 +603,62 @@
      /* Not used by WHPX. */
      s->wait_for_sipi = 0;
  
+--- a/accel/whpx/whpx-common.c
++++ b/accel/whpx/whpx-common.c
+@@ -35,6 +35,48 @@
+ #include <winhvplatform.h>
+ #include <winhvplatformdefs.h>
+ 
++/* WHPX_DIAG: who cancels a running vCPU, and how often. */
++static uint64_t whpx_cancel_count[8];
++static uint64_t whpx_cancel_total;
++static int whpx_cancel_diag = -1;
++
++static void whpx_cancel_tick(CPUState *cpu)
++{
++    static int64_t next;
++    int64_t now;
++    int i;
++    GString *g;
++
++    if (whpx_cancel_diag < 0) {
++        whpx_cancel_diag = getenv("WHPX_DIAG") != NULL;
++    }
++    if (!whpx_cancel_diag) {
++        return;
++    }
++    whpx_cancel_total++;
++    if (cpu->cpu_index < 8) {
++        whpx_cancel_count[cpu->cpu_index]++;
++    }
++    now = g_get_monotonic_time();
++    if (now < next) {
++        return;
++    }
++    next = now + 1000000;
++    g = g_string_new(NULL);
++    g_string_append_printf(g, "whpx-cancel total=%" PRIu64 " per-vcpu:",
++                           whpx_cancel_total);
++    for (i = 0; i < 8; i++) {
++        if (whpx_cancel_count[i]) {
++            g_string_append_printf(g, " cpu%d=%" PRIu64, i, whpx_cancel_count[i]);
++        }
++    }
++    g_string_append_c(g, '\n');
++    fputs(g->str, stderr);
++    fflush(stderr);
++    g_string_free(g, TRUE);
++}
++
++
+ bool whpx_allowed;
+ bool whpx_irqchip_in_kernel;
+ static bool whp_dispatch_initialized;
+@@ -275,6 +317,7 @@
+ 
+ void whpx_vcpu_kick(CPUState *cpu)
+ {
++    whpx_cancel_tick(cpu);
+     struct whpx_state *whpx = &whpx_global;
+     whp_dispatch.WHvCancelRunVirtualProcessor(
+         whpx->partition, cpu->cpu_index, 0);

@@ -77,6 +77,19 @@
   disc, and mounting one needs `hdiutil` or `Mount-DiskImage`. `src/udf.rs` is
   the smallest reader that takes `ValidationOS.vhdx` off it: 1 GB in 0.48 s,
   identical on both hosts, no privileges, and no mount left behind.
+- **Two WHPX NMI bugs found and fixed** in
+  [`patches/whpx-nmi-delivery.patch`](patches/whpx-nmi-delivery.patch), not
+  applied to anything WinQuick ships: `whpx_apic_external_nmi()` is an empty
+  function, and a prepared interruption is only committed for one of the two
+  APIC modes. Between them, `inject-nmi` did nothing at all on a WHPX guest.
+- **The multiprocessor restore failure is narrowed to a specific missing
+  register.** A restored application processor is left in WHP's
+  `StartupSuspend` -- waiting for a SIPI that was already sent, in another
+  process, minutes ago -- because QEMU never saves or restores
+  `WHvRegisterInternalActivityState`. Everything else WHP exposes, including
+  all 993 bytes of its own LAPIC state, is byte-identical across the
+  migration. Clearing the bit is necessary but not sufficient. See
+  [docs/whpx-resume.md](docs/whpx-resume.md).
 - **The unit suite runs natively on Windows**: 125 tests, all passing. Fixing
   that turned up a real bug — giving a copied disk a fresh GPT identity read
   `/dev/urandom`, so the servicing path could not have worked there at all.

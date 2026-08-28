@@ -14,6 +14,7 @@ if they want the fast path on Windows.
 | `hivex-windows.patch` | `scripts/build-hivex-windows.sh` | yes, Windows only |
 | `whpx-stop-and-copy.patch` | nothing | no |
 | `whpx-resume-diagnostics.patch` | nothing | no |
+| `whpx-nmi-delivery.patch` | nothing | no |
 
 ## `ntfsprogs-windows.patch`
 
@@ -134,3 +135,29 @@ handed to the hypervisor, by vector.
 That accounting is what turned "the guest does not resume" into "every exit on
 every processor is `Canceled`, and only when the partition has more than one
 processor" — see [../docs/whpx-resume.md](../docs/whpx-resume.md).
+
+## `whpx-nmi-delivery.patch`
+
+Against **QEMU v11.1.0**, on top of `whpx-stop-and-copy.patch`. 69 lines across
+two files. Not applied to anything WinQuick ships -- it is here because it is a
+real bug worth reporting, and because the WHPX resume investigation could not
+proceed without it.
+
+`inject-nmi` does nothing at all on a WHPX guest, for two independent reasons:
+
+- **`whpx_apic_external_nmi()` is an empty function.** With an APIC enabled --
+  which is always -- `x86_nmi()` delivers through the APIC rather than raising
+  `CPU_INTERRUPT_NMI` directly, so every externally injected NMI reached that
+  stub and stopped. The fix honours how the guest programmed LINT1, as KVM's
+  equivalent does, then raises the interrupt.
+- **A prepared interruption is only committed for one APIC mode.** In
+  `whpx_vcpu_pre_run()` an NMI is built into `new_int` near the top -- taking
+  `CPU_INTERRUPT_NMI` off the CPU as it goes -- but the block that writes it
+  into `WHvRegisterPendingInterruption` sits inside the
+  `if (!whpx_irqchip_in_kernel())` arm. With the in-hypervisor APIC the work
+  was done and discarded.
+
+With both fixed, an NMI injected into a restored-and-frozen guest makes it
+execute again, which is how [../docs/whpx-resume.md](../docs/whpx-resume.md)
+establishes that the processors themselves are fine and only the wake-up is
+missing.

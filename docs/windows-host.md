@@ -15,8 +15,10 @@ finding a bug in WinQuick itself — it was freezing the guest half a step too
 early, mid-dismount — written up in [mailbox-freeze.md](mailbox-freeze.md).
 
 With **two or more** vCPUs a restored guest still resumes and then halts for
-good; that one is a QEMU/WHPX problem and is written up in
-[whpx-resume.md](whpx-resume.md). Until it is solved, a Windows host either
+good. That one is a QEMU/WHPX problem, and the missing state is now named: a
+restored application processor is left waiting for a startup message that was
+already delivered, because QEMU carries no per-processor activity state across
+a migration. See [whpx-resume.md](whpx-resume.md). Until it is solved, a Windows host either
 runs one processor warm or several cold.
 
 ## The rule that must not be broken
