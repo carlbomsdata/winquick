@@ -337,9 +337,23 @@ Validation OS x64 26100.8972.
 |---|---|
 | `winquick setup` from a VHDX | 57 s |
 | `winquick setup` from the ISO | + ~0.5 s to read the VHDX out of it |
-| `winquick run -- cmd /c ver` | 14.6-18.2 s, repeatable |
-| first run after a fresh setup | 112 s — it builds a prepared guest, finds it will not resume, records that, and boots cold |
+| `winquick run -- cmd /c ver`, cold | 14.6-18.2 s, repeatable |
 | orphaned QEMU processes | none |
+
+And with the warm path working, `winquick run --cpus N -- cmd /c ver` twenty
+times from one prepared guest:
+
+| processors | result | min | p50 | mean | p95 | max |
+|---|---|---|---|---|---|---|
+| 1 | **20 warm of 20** | 13.3 s | 18.4 s | 18.7 s | 25.3 s | 26.0 s |
+| 2 | **20 warm of 20** | 13.9 s | 24.8 s | 22.7 s | 28.2 s | 29.2 s |
+| 4 | **0 warm of 20** — every prepared guest came back halted | | | | | |
+
+Right output and right exit code at every processor count; prepared state and
+canonical image byte-identical afterwards; no QEMU left behind. The restore
+itself is 92-180 ms and the guest answers in about 520 ms — what dominates the
+roundtrip is copying the two-gigabyte workspace and artifact volumes per run,
+which Windows has no APFS-style clone for.
 
 The **unit suite runs natively there too: 127 tests, all passing**, built with
 the `x86_64-pc-windows-gnu` toolchain. Getting it to run turned up a real bug:
