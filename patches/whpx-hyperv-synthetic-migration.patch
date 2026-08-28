@@ -1,0 +1,230 @@
+--- a/target/i386/whpx/whpx-all.c
++++ b/target/i386/whpx/whpx-all.c
+@@ -514,7 +514,7 @@
+     }
+ }
+ 
+-static void whpx_apply_pending_activity(CPUState *cpu);
++static void whpx_apply_pending_hv_state(CPUState *cpu);
+ 
+ void whpx_set_registers(CPUState *cpu, WHPXStateLevel level)
+ {
+@@ -670,7 +670,7 @@
+     }
+ 
+     if (level >= WHPX_LEVEL_FULL_STATE) {
+-        whpx_apply_pending_activity(cpu);
++        whpx_apply_pending_hv_state(cpu);
+     }
+ }
+ 
+@@ -1962,45 +1962,132 @@
+  * the guest sent that sequence long ago, in another process, and will never
+  * send it again, so the processor waits for ever and the guest deadlocks as
+  * soon as it needs more than one of them.
++ *
++ * The Hyper-V synthetic registers are the same kind of problem. WHP always
++ * presents the Hyper-V hypervisor interface, and Windows takes it up: it
++ * writes GuestOsId and Hypercall, and the hypervisor overlays the page named
++ * by the latter with hypercall code. Thereafter the guest calls into that
++ * page instead of sending IPIs for remote TLB flushes. The overlay belongs to
++ * the partition, not to guest RAM -- the stream carries the page's underlying
++ * bytes, which are filler -- so a restored partition has no overlay and the
++ * first enlightened remote TLB flush jumps into filler and bugchecks 0xD1.
++ * Only SMP guests reach it, because nt!HvlFlushRangeListTb is the *remote*
++ * flush path and one processor has nobody to flush. VpAssistPage and
++ * ReferenceTsc are overlays with the same lifetime problem.
+  */
+ typedef struct WhpxVpMigState {
+     CPUState *cpu;
+     uint64_t internal_activity;
++    uint64_t guest_os_id;
++    uint64_t hypercall;
++    uint64_t vp_assist_page;
++    uint64_t reference_tsc;
+ } WhpxVpMigState;
+ 
++#define WHPX_MAX_VCPUS 288
++
++typedef struct WhpxVpPending {
++    bool valid;
++    uint64_t internal_activity;
++    uint64_t guest_os_id;
++    uint64_t hypercall;
++    uint64_t vp_assist_page;
++    uint64_t reference_tsc;
++} WhpxVpPending;
++
++static WhpxVpPending whpx_pending[WHPX_MAX_VCPUS];
++
+ /*
+- * The value arrives with the stream but must not be applied until the
++ * Neither register is in whpx_register_names, and a failed access is not an
++ * error: an older platform simply may not have the register, in which case
++ * there is nothing to carry and the restore behaves as it did before.
++ */
++static bool whpx_try_get_reg(CPUState *cpu, WHV_REGISTER_NAME name,
++                             uint64_t *out)
++{
++    struct whpx_state *whpx = &whpx_global;
++    WHV_REGISTER_VALUE val;
++    HRESULT hr;
++
++    memset(&val, 0, sizeof(val));
++    hr = whp_dispatch.WHvGetVirtualProcessorRegisters(
++        whpx->partition, cpu->cpu_index, &name, 1, &val);
++    if (FAILED(hr)) {
++        return false;
++    }
++
++    *out = val.Reg64;
++    return true;
++}
++
++static void whpx_try_set_reg(CPUState *cpu, WHV_REGISTER_NAME name,
++                             uint64_t value)
++{
++    struct whpx_state *whpx = &whpx_global;
++    WHV_REGISTER_VALUE val;
++
++    memset(&val, 0, sizeof(val));
++    val.Reg64 = value;
++    whp_dispatch.WHvSetVirtualProcessorRegisters(
++        whpx->partition, cpu->cpu_index, &name, 1, &val);
++}
++
++/*
++ * The values arrive with the stream but must not be applied until the
+  * processor's architectural state has been pushed: releasing a processor from
+  * StartupSuspend is what makes it start executing, and it must not do that
+  * from a half-restored VP.
+  */
+-#define WHPX_MAX_VCPUS 288
+-static uint64_t whpx_pending_activity[WHPX_MAX_VCPUS];
+-static bool whpx_pending_activity_valid[WHPX_MAX_VCPUS];
+-
+-static void whpx_apply_pending_activity(CPUState *cpu)
++static void whpx_apply_pending_hv_state(CPUState *cpu)
+ {
+-    WHV_REGISTER_VALUE reg;
+     int i = cpu->cpu_index;
++    WhpxVpPending *p;
+ 
+-    if (i < 0 || i >= WHPX_MAX_VCPUS || !whpx_pending_activity_valid[i]) {
++    if (i < 0 || i >= WHPX_MAX_VCPUS || !whpx_pending[i].valid) {
+         return;
+     }
+-    whpx_pending_activity_valid[i] = false;
+ 
+-    memset(&reg, 0, sizeof(reg));
+-    reg.Reg64 = whpx_pending_activity[i];
+-    whpx_set_reg(cpu, WHvRegisterInternalActivityState, reg);
++    p = &whpx_pending[i];
++    p->valid = false;
++
++    /*
++     * GuestOsId first: the hypervisor will not establish the hypercall
++     * overlay while it is zero. Windows writes both from the boot processor,
++     * which is restored before any application processor is released, so the
++     * overlay is back before anyone can call into it.
++     */
++    if (p->guest_os_id) {
++        whpx_try_set_reg(cpu, WHvRegisterGuestOsId, p->guest_os_id);
++        whpx_try_set_reg(cpu, WHvX64RegisterHypercall, p->hypercall);
++    }
++    if (p->vp_assist_page) {
++        whpx_try_set_reg(cpu, WHvRegisterVpAssistPage, p->vp_assist_page);
++    }
++    if (p->reference_tsc) {
++        whpx_try_set_reg(cpu, WHvRegisterReferenceTsc, p->reference_tsc);
++    }
++
++    /* Last: this is what starts the processor. */
++    whpx_try_set_reg(cpu, WHvRegisterInternalActivityState,
++                     p->internal_activity);
+ }
+ 
+ static int whpx_vp_pre_save(void *opaque)
+ {
+     WhpxVpMigState *s = opaque;
+-    WHV_REGISTER_VALUE reg;
+ 
+-    memset(&reg, 0, sizeof(reg));
+-    whpx_get_reg(s->cpu, WHvRegisterInternalActivityState, &reg);
+-    s->internal_activity = reg.Reg64;
++    s->internal_activity = 0;
++    s->guest_os_id = 0;
++    s->hypercall = 0;
++    s->vp_assist_page = 0;
++    s->reference_tsc = 0;
++
++    whpx_try_get_reg(s->cpu, WHvRegisterInternalActivityState,
++                     &s->internal_activity);
++    whpx_try_get_reg(s->cpu, WHvRegisterGuestOsId, &s->guest_os_id);
++    whpx_try_get_reg(s->cpu, WHvX64RegisterHypercall, &s->hypercall);
++    whpx_try_get_reg(s->cpu, WHvRegisterVpAssistPage, &s->vp_assist_page);
++    whpx_try_get_reg(s->cpu, WHvRegisterReferenceTsc, &s->reference_tsc);
+     return 0;
+ }
+ 
+@@ -2010,20 +2097,28 @@
+     int i = s->cpu->cpu_index;
+ 
+     if (i >= 0 && i < WHPX_MAX_VCPUS) {
+-        whpx_pending_activity[i] = s->internal_activity;
+-        whpx_pending_activity_valid[i] = true;
++        whpx_pending[i].internal_activity = s->internal_activity;
++        whpx_pending[i].guest_os_id = s->guest_os_id;
++        whpx_pending[i].hypercall = s->hypercall;
++        whpx_pending[i].vp_assist_page = s->vp_assist_page;
++        whpx_pending[i].reference_tsc = s->reference_tsc;
++        whpx_pending[i].valid = true;
+     }
+     return 0;
+ }
+ 
+ static const VMStateDescription vmstate_whpx_vp = {
+     .name = "whpx-vp",
+-    .version_id = 1,
++    .version_id = 2,
+     .minimum_version_id = 1,
+     .pre_save = whpx_vp_pre_save,
+     .post_load = whpx_vp_post_load,
+     .fields = (const VMStateField[]) {
+         VMSTATE_UINT64(internal_activity, WhpxVpMigState),
++        VMSTATE_UINT64_V(guest_os_id, WhpxVpMigState, 2),
++        VMSTATE_UINT64_V(hypercall, WhpxVpMigState, 2),
++        VMSTATE_UINT64_V(vp_assist_page, WhpxVpMigState, 2),
++        VMSTATE_UINT64_V(reference_tsc, WhpxVpMigState, 2),
+         VMSTATE_END_OF_LIST()
+     },
+ };
+@@ -2131,24 +2226,16 @@
+      }
+ 
+     /*
+-     * Commit a prepared interruption whichever APIC is in use.
+-     *
+-     * This used to sit inside the userspace-APIC arm above, which meant an NMI
+-     * -- built at the top of this function, and already taken off the CPU
+-     * there -- was silently discarded whenever the in-hypervisor APIC was
+-     * active. An NMI is the one wake-up that needs no APIC at all, so losing
+-     * it costs more than it looks.
++     * Commit a prepared interruption whichever APIC is in use. This used to sit
++     * inside the userspace-APIC arm above, which meant an NMI -- built at the
++     * top of this function, and already taken off the CPU there -- was
++     * discarded whenever the in-hypervisor APIC was active.
+      */
+     if (new_int.InterruptionPending) {
+         reg_values[reg_count].PendingInterruption = new_int;
+         reg_names[reg_count] = WHvRegisterPendingInterruption;
+         reg_count += 1;
+ 
+-        /*
+-         * A halted processor does not leave HLT for a pending interruption on
+-         * its own; the in-hypervisor APIC needs telling separately, the same
+-         * way the external-interrupt path above does.
+-         */
+         if (whpx_irqchip_in_kernel()) {
+             whpx_vcpu_kick_out_of_hlt(cpu);
+         }

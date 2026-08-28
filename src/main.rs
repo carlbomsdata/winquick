@@ -978,6 +978,10 @@ fn clean(all: bool, dry_run: bool) -> Result<i32> {
         (root.join("work"), "temporary build files"),
         (desktop::dir()?, "desktop session"),
         (paths::cache()?, "downloaded installers"),
+        // `clean` is the "forget what you worked out about this machine"
+        // command, and installing a QEMU that can restore a prepared guest is
+        // exactly the kind of change a user runs it after.
+        (state::restore_note()?, "restore-unsupported note"),
     ];
     if all {
         targets.push((root.join("images"), "Windows runtime"));
@@ -990,7 +994,7 @@ fn clean(all: bool, dry_run: bool) -> Result<i32> {
     let mut found = false;
     for (p, what) in &targets {
         if p.exists() {
-            let sz = facts::dir_size(p);
+            let sz = if p.is_dir() { facts::dir_size(p) } else { helpers::allocated(p) };
             total += sz;
             found = true;
             println!("  {:<28} {:>10}  {}", what, helpers::human(sz), p.display());
@@ -1009,6 +1013,7 @@ fn clean(all: bool, dry_run: bool) -> Result<i32> {
     let _guard = lock::acquire_blocking("clean")?;
     for (p, _) in &targets {
         let _ = std::fs::remove_dir_all(p);
+        let _ = std::fs::remove_file(p);
     }
     println!("\nRemoved {}.", helpers::human(total));
     if all {

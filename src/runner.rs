@@ -180,7 +180,17 @@ fn execute(command: &str, opts: &Options) -> Result<Outcome> {
     // Keyed on the accelerator and the QEMU that would do the restoring, not
     // on the guest topology: whether restore works at all is a property of
     // those two, and re-testing it for every memory size would be noise.
-    let backend = format!("{}|{}", want.qemu_version, crate::platform::backend_signature());
+    //
+    // The binary's own identity is part of the key, not just its version
+    // string: a QEMU rebuilt with a restore fix reports the same version as
+    // the one that could not restore, and a note that outlived the fix would
+    // keep the fast path switched off on a machine where it now works.
+    let backend = format!(
+        "{}|{}|{}",
+        want.qemu_version,
+        crate::platform::backend_signature(),
+        qemu_binary_identity(&ctx.q.system),
+    );
     let can_restore = !state::restore_unsupported(&backend);
     if !can_restore {
         ctx.vlog("prepared guests do not restore with this QEMU; booting cold");
@@ -377,6 +387,24 @@ fn emit(o: Outcome, t_start: Instant, verbose: bool) -> Result<i32> {
         );
     }
     Ok(o.exit_code)
+}
+
+/// Enough to tell one QEMU build from another without hashing 80 MB of it.
+///
+/// Size and modification time change together whenever the binary is replaced,
+/// which is all this needs to decide: the answer only gates whether to retry
+/// something cheap.
+fn qemu_binary_identity(p: &Path) -> String {
+    let Ok(m) = std::fs::metadata(p) else {
+        return "unknown".into();
+    };
+    let secs = m
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("{}@{}", m.len(), secs)
 }
 
 fn fingerprint(ctx: &Ctx) -> Result<state::Fingerprint> {

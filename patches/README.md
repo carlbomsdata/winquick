@@ -16,6 +16,7 @@ if they want the fast path on Windows.
 | `whpx-resume-diagnostics.patch` | nothing | no |
 | `whpx-nmi-delivery.patch` | nothing | no |
 | `whpx-activity-state-migration.patch` | nothing | no |
+| `whpx-hyperv-synthetic-migration.patch` | nothing | no |
 
 ## `ntfsprogs-windows.patch`
 
@@ -189,10 +190,61 @@ fresh VP holds. The result is intermittent. The value is instead remembered at
 load and applied at the end of the full-state push.
 
 With this applied, the restored application processor starts every time. It is
-necessary and not sufficient -- see
-[../docs/whpx-resume.md](../docs/whpx-resume.md) for the bugcheck that follows.
+necessary and not sufficient: what the started processor then runs into is the
+subject of `whpx-hyperv-synthetic-migration.patch` below.
 
 An unmerged 2022 upstream patch,
 [*whpx: Added support for saving/restoring VM state*](https://patchew.org/QEMU/004101d86732$0d33bd70$279b3850$@sysprogs.com/),
 saves the same single register for the same reason. It was never merged;
 review foundered on the XSAVE half of it.
+
+## `whpx-hyperv-synthetic-migration.patch`
+
+Against **QEMU v11.1.0**, on top of `whpx-activity-state-migration.patch`. 230
+lines, one file. Not applied to anything WinQuick ships.
+
+A WHP partition always presents the Hyper-V hypervisor interface to its guest,
+because the thing underneath really is Hyper-V's hypervisor. Windows takes the
+offer up. It writes `HV_X64_MSR_GUEST_OS_ID` and `HV_X64_MSR_HYPERCALL`, the
+hypervisor overlays the guest page named by the second one with hypercall code,
+and from then on the guest calls into that page instead of sending IPIs --
+`nt!HvlFlushRangeListTb`, the enlightened remote TLB flush, is the path that
+matters here.
+
+**That overlay belongs to the partition, not to guest RAM.** The migration
+stream faithfully carries the *underlying* bytes of the page, which are filler.
+A restored partition has `GuestOsId` zero and no overlay, so the first
+enlightened remote TLB flush jumps into the filler and executes it. In the dump
+recovered from ROAD-WARRIOR01 the filler is `0xAF` repeated, which decodes as
+`scas dword ptr [rdi]`, and `rdi` holds a leftover hypercall argument of `0xa`:
+
+```
+nt!MiFlushTbList -> nt!HvlFlushRangeListTb -> nt!HvcallFastExtended
+  -> nt!HvcallpExtendedFastHypercall+0x51
+  -> 0xfffff804`36390000            the hypercall page, now filler
+  -> nt!KiPageFault -> nt!KeBugCheckEx
+
+DRIVER_IRQL_NOT_LESS_OR_EQUAL (0xD1)
+  P1 = 0xa                 the address read
+  P2 = 0x2                 IRQL, DISPATCH_LEVEL
+  P3 = 0x0                 a read
+  P4 = 0xfffff804`36390000 the instruction that read it
+```
+
+**Only multiprocessor guests reach it**, which is why one vCPU restored happily
+for weeks while two never did: `HvlFlushRangeListTb` is the *remote* flush, and
+a single processor has nobody to flush.
+
+The patch extends the per-processor vmstate section added by
+`whpx-activity-state-migration.patch` to carry `GuestOsId`, `Hypercall`,
+`VpAssistPage` and `ReferenceTsc` -- the last two are overlays with the same
+lifetime problem. Order is load-bearing twice over: `GuestOsId` must be written
+before `Hypercall`, because the hypervisor will not establish the overlay while
+it is zero; and the activity state stays last, because clearing `StartupSuspend`
+is what makes a processor start executing and it must not do that before the
+overlay is back. Windows writes both MSRs from the boot processor, which is
+restored before any application processor is released.
+
+Reading and writing these registers is best-effort. A platform that does not
+have them fails the access, the fields come across zero, and the restore behaves
+exactly as it did before the patch.
