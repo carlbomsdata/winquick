@@ -1,0 +1,192 @@
+--- a/target/i386/whpx/whpx-all.c
++++ b/target/i386/whpx/whpx-all.c
+@@ -1975,6 +1975,10 @@
+  * flush path and one processor has nobody to flush. VpAssistPage and
+  * ReferenceTsc are overlays with the same lifetime problem.
+  */
++#define WHPX_SYNIC_SINTS      16
++#define WHPX_SYNIC_PAGE_SIZE   4096
++#define WHPX_SYNIC_TIMER_SIZE   256
++
+ typedef struct WhpxVpMigState {
+     CPUState *cpu;
+     uint64_t internal_activity;
+@@ -1982,6 +1986,15 @@
+     uint64_t hypercall;
+     uint64_t vp_assist_page;
+     uint64_t reference_tsc;
++    uint64_t scontrol;
++    uint64_t sversion;
++    uint64_t siefp;
++    uint64_t simp;
++    uint64_t sint[WHPX_SYNIC_SINTS];
++    uint8_t synic_message_page[WHPX_SYNIC_PAGE_SIZE];
++    uint8_t synic_event_flag_page[WHPX_SYNIC_PAGE_SIZE];
++    uint8_t synic_timer_state[WHPX_SYNIC_TIMER_SIZE];
++    uint32_t synic_timer_len;
+ } WhpxVpMigState;
+ 
+ #define WHPX_MAX_VCPUS 288
+@@ -1993,6 +2006,15 @@
+     uint64_t hypercall;
+     uint64_t vp_assist_page;
+     uint64_t reference_tsc;
++    uint64_t scontrol;
++    uint64_t sversion;
++    uint64_t siefp;
++    uint64_t simp;
++    uint64_t sint[WHPX_SYNIC_SINTS];
++    uint8_t synic_message_page[WHPX_SYNIC_PAGE_SIZE];
++    uint8_t synic_event_flag_page[WHPX_SYNIC_PAGE_SIZE];
++    uint8_t synic_timer_state[WHPX_SYNIC_TIMER_SIZE];
++    uint32_t synic_timer_len;
+ } WhpxVpPending;
+ 
+ static WhpxVpPending whpx_pending[WHPX_MAX_VCPUS];
+@@ -2032,6 +2054,34 @@
+         whpx->partition, cpu->cpu_index, &name, 1, &val);
+ }
+ 
++/* The SynIC's pages and timers are opaque blobs rather than registers. */
++static uint32_t whpx_try_get_vp_state(CPUState *cpu,
++                                      WHV_VIRTUAL_PROCESSOR_STATE_TYPE type,
++                                      void *buf, uint32_t len)
++{
++    struct whpx_state *whpx = &whpx_global;
++    UINT32 written = 0;
++    HRESULT hr;
++
++    memset(buf, 0, len);
++    hr = whp_dispatch.WHvGetVirtualProcessorState(
++        whpx->partition, cpu->cpu_index, type, buf, len, &written);
++    return FAILED(hr) ? 0 : written;
++}
++
++static void whpx_try_set_vp_state(CPUState *cpu,
++                                  WHV_VIRTUAL_PROCESSOR_STATE_TYPE type,
++                                  void *buf, uint32_t len)
++{
++    struct whpx_state *whpx = &whpx_global;
++
++    if (!len) {
++        return;
++    }
++    whp_dispatch.WHvSetVirtualProcessorState(
++        whpx->partition, cpu->cpu_index, type, buf, len);
++}
++
+ /*
+  * The values arrive with the stream but must not be applied until the
+  * processor's architectural state has been pushed: releasing a processor from
+@@ -2067,6 +2117,35 @@
+         whpx_try_set_reg(cpu, WHvRegisterReferenceTsc, p->reference_tsc);
+     }
+ 
++    /*
++     * The SynIC, if the guest turned it on. Simp and Siefp name the pages and
++     * carry the enable bit, so they go in before the page contents; the timers
++     * go in last, because arming a synthetic timer against a message page that
++     * is not there yet has nowhere to deliver.
++     */
++    if (p->scontrol & 1) {
++        int k;
++
++        whpx_try_set_reg(cpu, WHvRegisterScontrol, p->scontrol);
++        whpx_try_set_reg(cpu, WHvRegisterSversion, p->sversion);
++        whpx_try_set_reg(cpu, WHvRegisterSimp, p->simp);
++        whpx_try_set_reg(cpu, WHvRegisterSiefp, p->siefp);
++        for (k = 0; k < WHPX_SYNIC_SINTS; k++) {
++            whpx_try_set_reg(cpu, (WHV_REGISTER_NAME)(WHvRegisterSint0 + k),
++                             p->sint[k]);
++        }
++        if (p->simp & 1) {
++            whpx_try_set_vp_state(cpu, WHvVirtualProcessorStateTypeSynicMessagePage,
++                                  p->synic_message_page, WHPX_SYNIC_PAGE_SIZE);
++        }
++        if (p->siefp & 1) {
++            whpx_try_set_vp_state(cpu, WHvVirtualProcessorStateTypeSynicEventFlagPage,
++                                  p->synic_event_flag_page, WHPX_SYNIC_PAGE_SIZE);
++        }
++        whpx_try_set_vp_state(cpu, WHvVirtualProcessorStateTypeSynicTimerState,
++                              p->synic_timer_state, p->synic_timer_len);
++    }
++
+     /* Last: this is what starts the processor. */
+     whpx_try_set_reg(cpu, WHvRegisterInternalActivityState,
+                      p->internal_activity);
+@@ -2088,6 +2167,28 @@
+     whpx_try_get_reg(s->cpu, WHvX64RegisterHypercall, &s->hypercall);
+     whpx_try_get_reg(s->cpu, WHvRegisterVpAssistPage, &s->vp_assist_page);
+     whpx_try_get_reg(s->cpu, WHvRegisterReferenceTsc, &s->reference_tsc);
++
++    s->scontrol = 0;
++    whpx_try_get_reg(s->cpu, WHvRegisterScontrol, &s->scontrol);
++    if (s->scontrol & 1) {
++        int k;
++
++        whpx_try_get_reg(s->cpu, WHvRegisterSversion, &s->sversion);
++        whpx_try_get_reg(s->cpu, WHvRegisterSiefp, &s->siefp);
++        whpx_try_get_reg(s->cpu, WHvRegisterSimp, &s->simp);
++        for (k = 0; k < WHPX_SYNIC_SINTS; k++) {
++            s->sint[k] = 0;
++            whpx_try_get_reg(s->cpu, (WHV_REGISTER_NAME)(WHvRegisterSint0 + k),
++                             &s->sint[k]);
++        }
++        whpx_try_get_vp_state(s->cpu, WHvVirtualProcessorStateTypeSynicMessagePage,
++                              s->synic_message_page, WHPX_SYNIC_PAGE_SIZE);
++        whpx_try_get_vp_state(s->cpu, WHvVirtualProcessorStateTypeSynicEventFlagPage,
++                              s->synic_event_flag_page, WHPX_SYNIC_PAGE_SIZE);
++        s->synic_timer_len =
++            whpx_try_get_vp_state(s->cpu, WHvVirtualProcessorStateTypeSynicTimerState,
++                                  s->synic_timer_state, WHPX_SYNIC_TIMER_SIZE);
++    }
+     return 0;
+ }
+ 
+@@ -2102,6 +2203,18 @@
+         whpx_pending[i].hypercall = s->hypercall;
+         whpx_pending[i].vp_assist_page = s->vp_assist_page;
+         whpx_pending[i].reference_tsc = s->reference_tsc;
++        whpx_pending[i].scontrol = s->scontrol;
++        whpx_pending[i].sversion = s->sversion;
++        whpx_pending[i].siefp = s->siefp;
++        whpx_pending[i].simp = s->simp;
++        memcpy(whpx_pending[i].sint, s->sint, sizeof(s->sint));
++        memcpy(whpx_pending[i].synic_message_page, s->synic_message_page,
++               WHPX_SYNIC_PAGE_SIZE);
++        memcpy(whpx_pending[i].synic_event_flag_page, s->synic_event_flag_page,
++               WHPX_SYNIC_PAGE_SIZE);
++        memcpy(whpx_pending[i].synic_timer_state, s->synic_timer_state,
++               WHPX_SYNIC_TIMER_SIZE);
++        whpx_pending[i].synic_timer_len = s->synic_timer_len;
+         whpx_pending[i].valid = true;
+     }
+     return 0;
+@@ -2109,7 +2222,7 @@
+ 
+ static const VMStateDescription vmstate_whpx_vp = {
+     .name = "whpx-vp",
+-    .version_id = 2,
++    .version_id = 3,
+     .minimum_version_id = 1,
+     .pre_save = whpx_vp_pre_save,
+     .post_load = whpx_vp_post_load,
+@@ -2119,6 +2232,18 @@
+         VMSTATE_UINT64_V(hypercall, WhpxVpMigState, 2),
+         VMSTATE_UINT64_V(vp_assist_page, WhpxVpMigState, 2),
+         VMSTATE_UINT64_V(reference_tsc, WhpxVpMigState, 2),
++        VMSTATE_UINT64_V(scontrol, WhpxVpMigState, 3),
++        VMSTATE_UINT64_V(sversion, WhpxVpMigState, 3),
++        VMSTATE_UINT64_V(siefp, WhpxVpMigState, 3),
++        VMSTATE_UINT64_V(simp, WhpxVpMigState, 3),
++        VMSTATE_UINT64_ARRAY_V(sint, WhpxVpMigState, WHPX_SYNIC_SINTS, 3),
++        VMSTATE_UINT8_ARRAY_V(synic_message_page, WhpxVpMigState,
++                              WHPX_SYNIC_PAGE_SIZE, 3),
++        VMSTATE_UINT8_ARRAY_V(synic_event_flag_page, WhpxVpMigState,
++                              WHPX_SYNIC_PAGE_SIZE, 3),
++        VMSTATE_UINT8_ARRAY_V(synic_timer_state, WhpxVpMigState,
++                              WHPX_SYNIC_TIMER_SIZE, 3),
++        VMSTATE_UINT32_V(synic_timer_len, WhpxVpMigState, 3),
+         VMSTATE_END_OF_LIST()
+     },
+ };

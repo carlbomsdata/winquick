@@ -8,8 +8,14 @@ real code, and then ignored the command it was given. This is what that was.
 i5-8265U, WHPX, QEMU 11.1.0 with
 [`patches/whpx-stop-and-copy.patch`](../patches/whpx-stop-and-copy.patch)),
 Validation OS x64 26100.8972, `-cpu Nehalem`, **one vCPU** — multiprocessor
-restore is a separate, unsolved problem described in
+restore was a separate problem at the time, since solved; see
 [whpx-resume.md](whpx-resume.md).
+
+The last paragraph of "The actual answer" below turned out to be the more
+important half of this write-up, and it took the multiprocessor work to see
+why: the settle makes a good freeze *likely*, not certain, because the agent's
+poll loop never actually goes quiet. What WinQuick does about the residue is in
+that document.
 
 | | warm runs from a freshly prepared guest |
 |---|---|
