@@ -52,6 +52,11 @@
   machine that had just proved twenty-five times that it restores. The note is a
   claim about the QEMU, and one that has restored a guest refutes it, so the
   demonstration is recorded and outranks any later run of silent guests.
+
+  The integration suite had been doing the same thing to itself on macOS: its
+  own deliberate corrupt-prepared-state tests produced enough silent guests to
+  write the note, and every later run in that suite — and the next one — booted
+  cold on a Mac where the warm path works perfectly.
 - **`winquick clean` forgets the `restore-unsupported` note.** It is the
   "forget what you worked out about this machine" command, and installing a
   QEMU that can restore is exactly the kind of change a user runs it after.
