@@ -24,6 +24,13 @@
   [docs/whpx-resume.md](docs/whpx-resume.md) -- including the guest's own crash
   dump, read with WinDbg against Microsoft's public symbols.
 
+  Measured on ROAD-WARRIOR01, `winquick run --cpus 2 -- cmd /c ver` twenty
+  times from one prepared guest: **20 warm runs of 20**, p50 24.8 s, restore
+  92-180 ms, the guest answering in about 520 ms. The prepared state and the
+  canonical image were byte-identical afterwards and no QEMU was left behind.
+  The roundtrip is dominated by copying the workspace and artifact volumes per
+  run, which Windows has no APFS-style clone for.
+
   One failure mode is still open: some restored guests resume, run for about
   two seconds and then halt for good. Migrating the synthetic interrupt
   controller looked like the answer, was implemented, and made warm runs

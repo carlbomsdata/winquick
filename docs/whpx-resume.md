@@ -299,6 +299,29 @@ it just never acted on the command. That looked like mailbox cache coherency. It
 was not. See [mailbox-freeze.md](mailbox-freeze.md): WinQuick was freezing the
 guest half a step too early, and the fix is one `sleep`.
 
+## What this means for the product
+
+On ROAD-WARRIOR01, with the two patches applied, `winquick run --cpus 2 -- cmd /c ver`
+twenty times from one prepared guest:
+
+```
+warm=20 cold=0 wrong-output-or-exit=0 of 20
+n=20  min=13946  p50=24826  mean=22688  p95=28222  max=29177 ms
+prepared state   f1a348407298e6220f00d9373bc865e5  unchanged
+canonical image  992e0e08abe13cdd426fae7857007fa3  unchanged
+orphaned qemu processes: 0
+```
+
+The restore itself is 92-180 ms and the guest answers in about 520 ms. What
+dominates the roundtrip is copying the two-gigabyte workspace and artifact
+volumes per run, which Windows has no APFS-style clone for; that is the next
+thing worth attacking and it is not this.
+
+The freeze lottery is what is left, and it is paid at prepare time rather than
+per run: a prepared guest is built once and reused. WinQuick builds up to three
+before concluding the machine cannot restore, so a bad freeze costs a rebuild
+rather than the fast path.
+
 ## Reproducing
 
 [`experiments/whpx-resume/`](../experiments/whpx-resume/) holds the drivers.
