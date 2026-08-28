@@ -238,29 +238,49 @@ fn execute(command: &str, opts: &Options) -> Result<Outcome> {
                         Err(e) => ctx.vlog(format!("that prepared guest did not work: {e:#}")),
                     }
                 }
-                match build_ready_state(&ctx, &want) {
-                    Ok(ready) => match warm_execute(&ctx, &ready, command, false) {
-                        Ok(o) => return Ok(o),
-                        Err(e) if crate::interrupt::interrupted() => return Err(e),
-                        Err(e) => {
-                            ctx.vlog(format!("newly built ready state did not work: {e:#}"));
-                            let _ = state::discard();
-                            // Only a silent guest is evidence about the host.
-                            // Anything else -- QEMU dying, a disk error, a
-                            // killed process -- is an accident of this run, and
-                            // remembering it would disable the fast path
-                            // permanently on a machine where it works.
-                            if guest_was_silent(&e) {
-                                let _ = state::mark_restore_unsupported(&backend);
-                                ctx.vlog(
-                                    "this QEMU cannot restore a prepared guest; \
-                                     later runs will boot cold without trying",
-                                );
+                // Where a prepared guest gets frozen is partly luck. The
+                // agent's poll loop mounts the mailbox, looks and dismounts
+                // again without ever going quiet, and a guest caught in the
+                // wrong part of that comes back unable to poll at all. So a
+                // silent guest is evidence about *this state*, and only a
+                // string of them is evidence about the machine -- one bad
+                // freeze must not switch the fast path off for good.
+                for attempt in 1..=PREPARE_ATTEMPTS {
+                    match build_ready_state(&ctx, &want) {
+                        Ok(ready) => {
+                            match warm_execute(&ctx, &ready, command, false) {
+                                Ok(o) => return Ok(o),
+                                Err(e) if crate::interrupt::interrupted() => return Err(e),
+                                Err(e) => {
+                                    ctx.vlog(format!(
+                                        "newly built ready state did not work \
+                                         (attempt {attempt} of {PREPARE_ATTEMPTS}): {e:#}"
+                                    ));
+                                    let _ = state::discard();
+                                    // Only a silent guest is worth another go,
+                                    // and only then. Anything else -- QEMU
+                                    // dying, a disk error, a killed process --
+                                    // is an accident of this run, and neither
+                                    // rebuilding nor remembering it is right.
+                                    if !guest_was_silent(&e) {
+                                        break;
+                                    }
+                                    if attempt == PREPARE_ATTEMPTS {
+                                        let _ = state::mark_restore_unsupported(&backend);
+                                        ctx.vlog(
+                                            "this QEMU cannot restore a prepared guest; \
+                                             later runs will boot cold without trying",
+                                        );
+                                    }
+                                }
                             }
                         }
-                    },
-                    Err(e) if crate::interrupt::interrupted() => return Err(e),
-                    Err(e) => ctx.vlog(format!("could not build a ready state: {e:#}")),
+                        Err(e) if crate::interrupt::interrupted() => return Err(e),
+                        Err(e) => {
+                            ctx.vlog(format!("could not build a ready state: {e:#}"));
+                            break;
+                        }
+                    }
                 }
             }
             None => ctx.vlog("gave up waiting for another run to prepare the guest"),
@@ -594,6 +614,15 @@ fn kill(child: &mut Child) {
 /// which is what WHPX does today -- then waiting out a five-minute timeout
 /// before falling back is five minutes of nothing.
 const UNPROVEN_RESTORE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How many prepared guests to build before believing the machine cannot restore.
+///
+/// Each attempt costs one guest boot, and only a *silent* restored guest --
+/// one that came back and then never polled -- counts as an attempt at all.
+/// Three is enough that a run of bad freezes is a real signal rather than
+/// ordinary luck, and few enough that a host which genuinely cannot restore
+/// pays the price once.
+const PREPARE_ATTEMPTS: usize = 3;
 
 /// How long to let the guest settle after it announces itself, before freezing.
 ///
