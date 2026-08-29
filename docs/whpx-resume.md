@@ -251,6 +251,67 @@ state again after the full-state push does not help: three fresh prepared guests
 at `-smp 4` with it, three without, and all six came back silent, five discarded
 states each.
 
+### What the halted processors were actually waiting for
+
+The way to find out was to crash the guest deliberately and read the stacks. The
+bugcheck is self-inflicted and means nothing; the stacks are the evidence.
+
+```
+nt!KiIdleLoop+0x54
+ -> nt!PoIdle+0x1c0
+   -> nt!PpmIdleExecuteTransition
+     -> nt!PpmIdleGuestExecute+0x10:
+          mov  ecx, 400000F0h
+          rdwsr                      <- three of four parked one instruction on
+     -> nt!HalProcessorIdle+0xe:
+          hlt                        <- the fourth parked here
+```
+
+MSR `0x400000F0` is `HV_X64_MSR_GUEST_IDLE`, the **Hyper-V guest idle
+enlightenment**: the guest asks the hypervisor to park the processor and to wake
+it when something is due. That is why the masked local APIC timer never
+mattered, and why an NMI moved every processor -- they were asleep, not broken.
+
+WinQuick was carrying all three bits of `InternalActivityState`. Right for
+`StartupSuspend`; wrong for `HaltSuspend` and `IdleSuspend`, which describe a
+parked processor in terms of the partition that parked it. A fresh partition has
+nothing due, so the processor went straight back to sleep with no alarm set.
+Dropping those two bits
+([patch](../patches/whpx-idle-suspend-restore.patch)) is what made four
+processors produce a warm run at all.
+
+### What is left, and why it is hard
+
+One prepared guest in five is usable at four processors. The guest wakes, runs,
+and idles again -- and the second idle waits on a **synthetic timer** whose
+expiry is an absolute value in the partition's reference-time domain. The public
+WHP API gives no way to carry that:
+
+- there is no reference-count register, and no `Stimer*` register of any kind in
+  `WinHvPlatformDefs.h`;
+- the reference TSC page is a hypervisor overlay, so it reads back as zeroes
+  from guest memory -- measured, `seq=0 scale=0 offset=0` on both sides, exactly
+  as the hypercall page read back as filler;
+- the synthetic timers are reachable only as an opaque two-hundred-byte blob
+  through `WHvGetVirtualProcessorState`, with no documented layout and no time
+  base to rebase against.
+
+**Withdrawing the enlightenment was tried and is not the answer.** Clearing
+`AccessGuestIdleReg`, `AccessSyntheticTimerRegs` and `AccessSynicRegs` where
+QEMU sets them -- not where it first appears, which a second write later
+overrides -- does make the guest stop parking: it runs, and at four processors
+it answered a real command for the first time. But it answered in **53 seconds**
+rather than half a second, and it took the two-processor warm path from 98 runs
+in 100 to **zero**. Windows without its synthetic timers has no usable clock
+here. Reverted.
+
+For the record, two things that are no longer true: the TSC is now continuous
+across a restore -- source `37,871,134,926` against destination
+`37,866,230,758`, under three milliseconds apart -- so the ~7.2-billion-cycle
+jump reported earlier is gone; and pushing the interrupt controller state again
+after the full-state push changes nothing, three fresh guests with and three
+without.
+
 ### So what is the halting?
 
 Not established, but narrowed. A halted four-processor restore, poked with an
