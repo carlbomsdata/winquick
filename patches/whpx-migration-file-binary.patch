@@ -1,0 +1,25 @@
+--- a/io/channel-file.c
++++ b/io/channel-file.c
+@@ -68,6 +68,22 @@
+ 
+     ioc = QIO_CHANNEL_FILE(object_new(TYPE_QIO_CHANNEL_FILE));
+ 
++#ifdef O_BINARY
++    /*
++     * A channel is a byte stream, and Windows' CRT opens in text mode by
++     * default: it rewrites \n on the way out, rewrites \r\n on the way back,
++     * and stops reading at the first 0x1A. A migration stream is none of those
++     * things, so `migrate file:` wrote a file that `-incoming file:` then
++     * failed to read -- "Getting RAM address failed", from the first
++     * qemu_get_be64() that came back short.
++     *
++     * savevm.c already passes O_BINARY for the one path it opens itself.
++     * Doing it here covers migration/file.c and anything else that opens a
++     * file channel, none of which ever wants translation.
++     */
++    flags |= O_BINARY;
++#endif
++
+     if (flags & O_CREAT) {
+         ioc->fd = qemu_create(path, flags & ~O_CREAT, mode, errp);
+     } else {

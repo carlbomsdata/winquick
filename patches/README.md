@@ -19,8 +19,9 @@ if they want the fast path on Windows.
 | `whpx-hyperv-synthetic-migration.patch` | nothing | no |
 | `whpx-lapic-timer-migration.patch` | nothing | no |
 | `whpx-idle-suspend-restore.patch` | nothing | no |
+| `whpx-migration-file-binary.patch` | nothing | no |
 
-The six QEMU patches stack in this order, and
+The seven QEMU patches stack in this order, and
 applying them to a pristine **QEMU v11.1.0** (`84f0721`) reproduces the tree
 these measurements were taken on, byte for byte:
 
@@ -31,6 +32,7 @@ $ patch -p1 -i patches/whpx-activity-state-migration.patch
 $ patch -p1 -i patches/whpx-hyperv-synthetic-migration.patch
 $ patch -p1 -i patches/whpx-lapic-timer-migration.patch
 $ patch -p1 -i patches/whpx-idle-suspend-restore.patch
+$ patch -p1 -i patches/whpx-migration-file-binary.patch
 ```
 
 ## `ntfsprogs-windows.patch`
@@ -367,3 +369,34 @@ once produced a warm run before this; with it, they do.
 five is usable at four processors, because the guest wakes, runs, and idles again
 against a synthetic timer whose expiry is an absolute value in a partition
 reference-time domain that the public WHP API gives no way to read or to write.
+
+## `whpx-migration-file-binary.patch`
+
+Against **QEMU v11.1.0**. 25 lines, one file. Not applied to anything WinQuick
+ships.
+
+`QIOChannelFile` is a byte stream, and Windows' CRT opens a file in **text mode**
+unless told otherwise: it rewrites `\n` on the way out, rewrites `\r\n` on the
+way back, and stops reading at the first `0x1A`. A migration stream is none of
+those things.
+
+`savevm.c` already passes `O_BINARY` for the one path it opens itself.
+`migration/file.c` -- which is what `migrate file:` and `-incoming file:`
+actually use -- does not, so a prepared state was written translated and could
+not be read back:
+
+```
+Getting RAM address failed
+load of migration failed: Input/output error: Failed to load vmstate version_id: 4, ret: -5
+```
+
+`version_id: 4` is QEMU's RAM save handler, and the error comes from the first
+`qemu_get_be64()` returning short. The minimal guest in
+[`experiments/whpx-resume/tinyguest.py`](../experiments/whpx-resume/tinyguest.py)
+reproduces it in seconds and is the right thing to reach for first: it fails
+without this patch and round-trips with it, with no Windows guest involved at
+all.
+
+Setting the flag in `qio_channel_file_new_path()` rather than in
+`migration/file.c` covers everything that opens a file channel, none of which
+ever wants translation.
