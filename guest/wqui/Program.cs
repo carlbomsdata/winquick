@@ -93,6 +93,7 @@ public static class Program
         "wait-window" => WaitWindow(a),
         "focus" => Focus(a),
         "screenshot" => Screenshot(a),
+        "pull" => Pull(a),
         "tree" => Tree(a),
         "find" => Find(a),
         "get" => Get(a),
@@ -314,6 +315,47 @@ public static class Program
                 listing.Add(System.IO.Path.GetFileName(f));
         }
         return new JsonObject { ["drive"] = drive, ["files"] = listing.Count };
+    }
+
+    // ---- retrieval --------------------------------------------------------
+
+    /// <summary>
+    /// Hand a file the application produced back to the host.
+    ///
+    /// A session can already show you a picture of what happened; without this
+    /// it cannot give you the thing that happened. There is no shared
+    /// filesystem, so the bytes go back the way a screenshot does — base64
+    /// through the control channel.
+    /// </summary>
+    static JsonObject Pull(Args a)
+    {
+        string name = a.Rest.FirstOrDefault() ?? a.Get("path");
+        if (string.IsNullOrEmpty(name)) throw new ArgumentException("pull needs a file to fetch");
+        // Read exactly as `launch` reads a program name, so the same
+        // `app\...` path works for both.
+        string path = Volumes.ResolveProgram(name);
+        if (!System.IO.File.Exists(path))
+            throw new System.IO.FileNotFoundException($"no such file in this session: {name}");
+
+        var info = new System.IO.FileInfo(path);
+        // The control channel carries 8 MiB and base64 costs a third on top.
+        const long limit = 5 * 1024 * 1024;
+        if (info.Length > limit)
+            throw new ArgumentException(
+                $"{name} is {info.Length} bytes; the session channel carries {limit}");
+
+        byte[] bytes = System.IO.File.ReadAllBytes(path);
+        string hash;
+        using (var sha = System.Security.Cryptography.SHA256.Create())
+            hash = BitConverter.ToString(sha.ComputeHash(bytes)).Replace("-", "").ToLowerInvariant();
+
+        return new JsonObject
+        {
+            ["path"] = path,
+            ["bytes"] = bytes.Length,
+            ["sha256"] = hash,
+            ["contentBase64"] = Convert.ToBase64String(bytes),
+        };
     }
 
     // ---- capture ----------------------------------------------------------

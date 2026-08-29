@@ -628,8 +628,8 @@ pub struct CallResult {
 /// Kept here so an unrecognised verb is a syntax error the CLI can report
 /// immediately, without first requiring a session to exist.
 pub const VERBS: &[&str] = &[
-    "windows", "display", "launch", "wait-window", "focus", "screenshot", "tree", "find", "get",
-    "click", "type", "key", "select", "toggle", "mouse", "remount",
+    "windows", "display", "launch", "wait-window", "focus", "screenshot", "pull", "tree", "find",
+    "get", "click", "type", "key", "select", "toggle", "mouse", "remount",
 ];
 
 /// What each forwarded verb does, and the options it takes.
@@ -652,6 +652,7 @@ pub const VERB_HELP: &[(&str, &str, &str)] = &[
     ("tree", "Print the UI Automation tree", "[<selector>] [--depth <n>]"),
     ("find", "List every element matching a selector", "<selector> [--all]"),
     ("screenshot", "Capture the screen, or one window, as a PNG", "<file> [--title <text>] [--hwnd <n>] [--rect x,y,w,h]"),
+    ("pull", "Copy a file the application produced back to this Mac", "<guest-path> <local-file>   (e.g. app\\out\\page.png)"),
     ("get", "Read one element", "<selector>"),
     ("click", "Click one element", "<selector> [--right] [--settle <ms>]"),
     ("type", "Type text into one element", "<selector> --text <text>"),
@@ -787,6 +788,76 @@ pub fn screenshot(dest: &Path, extra: &[String], timeout: Duration) -> Result<Va
         obj.insert("bytes".into(), Value::from(png.len()));
     }
     Ok(json)
+}
+
+/// Bring a file the application produced back to this Mac.
+///
+/// A session could already show you a picture of what happened but not give you
+/// the thing that happened — the converted page, the exported report, the log
+/// the application wrote. There is no shared filesystem, so the bytes come back
+/// the way a screenshot does.
+///
+/// A relative guest path is read exactly as `launch` reads a program name, so
+/// `app\out\page.png` names a file the application wrote beside itself.
+pub fn pull(guest_path: &str, dest: &Path, timeout: Duration) -> Result<Value> {
+    let argv = vec!["pull".to_string(), guest_path.to_string()];
+    let r = call(&argv, timeout)?;
+
+    let mut json = r.json.clone().unwrap_or(Value::Null);
+    if r.exit_code != 0 || json.get("ok").and_then(Value::as_bool) != Some(true) {
+        bail!("{}", describe_failure(&r));
+    }
+    let encoded = json
+        .get("contentBase64")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("the guest reported the file but sent no contents"))?;
+    let bytes = base64_decode(encoded)?;
+
+    // The guest hashed what it read. Checking it here is the difference between
+    // "a file arrived" and "this file arrived intact".
+    if let Some(want) = json.get("sha256").and_then(Value::as_str) {
+        let got = sha256_hex(&bytes);
+        if got != want {
+            bail!(
+                "{guest_path} arrived corrupted: the guest hashed {want}, this Mac has {got}"
+            );
+        }
+    }
+
+    if let Some(parent) = dest.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    std::fs::write(dest, &bytes).with_context(|| format!("writing {}", dest.display()))?;
+
+    if let Some(obj) = json.as_object_mut() {
+        obj.remove("contentBase64");
+        obj.insert("local".into(), Value::String(dest.display().to_string()));
+    }
+    Ok(json)
+}
+
+/// SHA-256 of what came back, to compare against what the guest hashed.
+fn sha256_hex(data: &[u8]) -> String {
+    use std::io::Write as _;
+    let Ok(mut child) = std::process::Command::new("/usr/bin/shasum")
+        .args(["-a", "256"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+    else {
+        return String::new();
+    };
+    if let Some(mut si) = child.stdin.take() {
+        let _ = si.write_all(data);
+    }
+    let Ok(out) = child.wait_with_output() else { return String::new() };
+    String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_string()
 }
 
 /// Standard base64, which is how the bridge sends an image back.

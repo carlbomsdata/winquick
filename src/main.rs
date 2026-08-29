@@ -341,6 +341,15 @@ enum DesktopCmd {
         #[arg(long)]
         host: bool,
     },
+    /// Copy a file the application produced back to this Mac
+    Pull {
+        /// The file inside Windows, e.g. `app\out\page.png`
+        #[arg(value_name = "GUEST-PATH")]
+        guest_path: String,
+        /// Where to write it on this Mac
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+    },
     /// Any other verb, passed to the guest bridge unchanged
     #[command(external_subcommand)]
     Bridge(Vec<String>),
@@ -677,6 +686,16 @@ fn desktop_cmd(action: DesktopCmd, verbose: bool) -> Result<i32> {
             }
         },
 
+        DesktopCmd::Pull { guest_path, file } => {
+            let json = desktop::pull(&guest_path, &file, CALL_TIMEOUT)?;
+            println!(
+                "Wrote {} ({} bytes, sha256 {}).",
+                file.display(),
+                json.get("bytes").and_then(|v| v.as_i64()).unwrap_or(0),
+                json.get("sha256").and_then(|v| v.as_str()).unwrap_or("?")
+            );
+            Ok(0)
+        }
         DesktopCmd::Screenshot { file, title, hwnd, rect, host } => {
             if host {
                 let png = desktop::host_screenshot(&file)?;
@@ -753,6 +772,20 @@ fn capability_cmd(action: CapabilityCmd, verbose: bool) -> Result<i32> {
                 };
                 println!("{:<16} {:<10} {:<42} {}", sp.name, sp.version, sp.description, status);
             }
+            // Serviced into the Windows image rather than downloaded, so it is
+            // not in SPECS.
+            let netfx = paths::framework_image()?;
+            println!(
+                "{:<16} {:<10} {:<42} {}",
+                servicing::FRAMEWORK_CAPABILITY,
+                "serviced",
+                ".NET Framework: run and build classic projects",
+                if netfx.exists() {
+                    format!("installed, {}", helpers::human(helpers::allocated(&netfx)))
+                } else {
+                    "not installed".to_string()
+                }
+            );
             // Built rather than downloaded, so it is not in SPECS.
             let desk = desktop::base_image().map(|p| p.exists()).unwrap_or(false);
             println!(
@@ -788,6 +821,13 @@ fn capability_cmd(action: CapabilityCmd, verbose: bool) -> Result<i32> {
                 servicing::install(&servicing::Options { verbose, force, virtio })?;
                 return Ok(0);
             }
+            // Also not a downloadable archive: .NET Framework is part of
+            // Windows, and it arrives by servicing the image with Microsoft's
+            // own package rather than by unzipping something.
+            if name == servicing::FRAMEWORK_CAPABILITY {
+                servicing::install_framework(&servicing::Options { verbose, force, virtio })?;
+                return Ok(0);
+            }
             capability::install(&name, from, verbose)?;
             state::discard()?;
             println!("\nWindows will pick this up on the next run.");
@@ -795,6 +835,20 @@ fn capability_cmd(action: CapabilityCmd, verbose: bool) -> Result<i32> {
         }
         CapabilityCmd::Remove { name } => {
             let _guard = lock::acquire_blocking("capability remove")?;
+            if name == servicing::FRAMEWORK_CAPABILITY {
+                let img = paths::framework_image()?;
+                let dir = img.parent().unwrap().to_path_buf();
+                if img.exists() {
+                    // The whole directory: the image and the runtime metadata
+                    // beside it are one thing.
+                    std::fs::remove_dir_all(&dir)?;
+                    state::discard()?;
+                    println!("Removed {name}. `winquick run` is back on the plain image.");
+                } else {
+                    println!("{name} is not installed.");
+                }
+                return Ok(0);
+            }
             if capability::remove(&name)? {
                 state::discard()?;
                 println!("Removed {name}.");
@@ -892,6 +946,15 @@ fn info() -> Result<i32> {
     }
     if let Some(b) = i.package_cache_bytes {
         println!("packages     cached, {}", helpers::human(b));
+    }
+    {
+        let netfx = paths::framework_image()?;
+        if netfx.exists() {
+            println!(
+                "capability   dotnet-framework ({}), classic .NET Framework projects",
+                helpers::human(helpers::allocated(&netfx))
+            );
+        }
     }
     if i.desktop.installed {
         println!(

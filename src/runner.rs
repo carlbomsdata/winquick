@@ -200,7 +200,7 @@ pub fn run(command: &str, opts: &Options) -> Result<i32> {
 
 fn execute(command: &str, opts: &Options) -> Result<Outcome> {
     let t_start = Instant::now();
-    let base = paths::base_image()?;
+    let base = paths::run_image()?;
     if !base.exists() {
         bail!(
             "No Windows runtime is installed yet.\n\nSet one up with:\n    winquick setup"

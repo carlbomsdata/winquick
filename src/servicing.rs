@@ -57,16 +57,45 @@ const PACKAGES: &[&str] = &[
     "Connectivity",
     "WPF-Support",
     "DeveloperTools",
-    // .NET Framework. The name is historical -- the package carries the OS's
-    // inbox `C:\Windows\Microsoft.NET`, which on a 26100 image is 4.8.x, and
-    // 4.x is in-place, so one runtime serves every 4.x target.
-    //
-    // WinQuick's own notes used to say Validation OS "carries no .NET Framework
-    // runtime at all", which is true of the stock image and was read as meaning
-    // it could not have one. It is on the media, in `cabs/Common`, and it
-    // applies like every other package here. Without it a .NET Framework
-    // application builds correctly and then dies on launch with 0xC0000135 --
-    // measured, on a real WPF app, before this line existed.
+];
+
+/// .NET Framework.
+///
+/// The package name is historical: it carries the OS's inbox
+/// `C:\Windows\Microsoft.NET`, and 4.x is in-place, so one runtime serves every
+/// 4.x target. It brings the classic build toolchain with it — an ARM64
+/// `MSBuild.exe`, `Microsoft.Common.targets`, `Microsoft.CSharp.targets`,
+/// `Microsoft.WinFX.targets` and `PresentationBuildTasks.dll` — which is the
+/// only thing that can restore a `packages.config` project or markup-compile a
+/// classic WPF one.
+///
+/// WinQuick's own notes used to say Validation OS "carries no .NET Framework
+/// runtime at all". That is true of the stock image, and was read as meaning it
+/// could not have one. It is on the media, in `cabs/Common`, beside the
+/// graphics packages, and DISM takes it like any other. Without it a .NET
+/// Framework application builds correctly and then dies on launch with
+/// `0xC0000135` — measured, on a real WPF application.
+const FRAMEWORK_PACKAGES: &[&str] = &[
+    // `shell32.dll`, which `urlmon.dll` imports and the stock image does not
+    // have. Nothing loads urlmon without it, and the chain below ends there.
+    "Apps",
+    "Apps-WOW64",
+    // `System.Drawing` is not optional either: a .NET Framework without GDI+
+    // throws `TypeInitializationException` on `new Bitmap(...)`, which is where
+    // a great many Framework applications begin. Fonts come with it, because
+    // GDI+ wants one the moment anything draws text.
+    "Fonts",
+    "GDIPlus",
+    // COM next, and not optional. The Framework is built on it, and so are
+    // MSBuild's own tasks: `GenerateResource` asks the shell for a file's
+    // security zone before it will read a `.resx`, and without the COM package
+    // that fails with `REGDB_E_CLASSNOTREG` and takes the build down with it.
+    "COM",
+    "COM-WOW64",
+    // Carries `rasapi32.dll`, which `System.Net`'s proxy detection loads the
+    // first time anything resolves a URL. Without it NuGet dies before it reads
+    // a single package: "The type initializer for 'ProxyCache' threw".
+    "WLAN",
     "NetFx45",
     // The 32-bit half, for an x86 application under emulation.
     "NetFx45-WOW64",
@@ -81,11 +110,113 @@ const DRIVERS: &[(&str, &str)] = &[("viogpudo", "viogpudo.inf"), ("vioinput", "v
 /// hang forever.
 const SERVICING_TIMEOUT: Duration = Duration::from_secs(2400);
 
+/// The name this capability answers to on the command line.
+pub const FRAMEWORK_CAPABILITY: &str = "dotnet-framework";
+
 pub struct Options {
     pub verbose: bool,
     pub force: bool,
     /// Red Hat's virtio-win ISO, which carries the display driver.
     pub virtio: Option<PathBuf>,
+}
+
+/// Everything a desktop image needs: the graphics and WPF packages, plus the
+/// .NET Framework, so a session can run a .NET Framework application.
+fn desktop_packages() -> Vec<&'static str> {
+    // Deduplicated, in order. The two lists overlap on purpose -- a desktop
+    // needs GDI+ for its own reasons and .NET Framework needs it for
+    // `System.Drawing` -- and applying a package twice is not merely wasteful:
+    // the second copy lands on the read-only file the first one left behind,
+    // and the build stops with "Permission denied" before DISM has run at all.
+    let mut out: Vec<&'static str> = Vec::new();
+    for p in PACKAGES.iter().chain(FRAMEWORK_PACKAGES.iter()).copied() {
+        if !out.contains(&p) {
+            out.push(p);
+        }
+    }
+    out
+}
+
+/// Service the `run` image so it has a .NET Framework.
+///
+/// Written to a second image rather than over the pristine one: the base stays
+/// byte-identical, and removing this capability is deleting a file. The runner
+/// prefers it when it is there, and the ready-state fingerprint already carries
+/// the image's identity, so switching either way rebuilds the prepared guest by
+/// itself.
+///
+/// Unlike the desktop image this needs no drivers and no bridge — it is the
+/// same headless machine with more of Windows in it.
+pub fn install_framework(opts: &Options) -> Result<()> {
+    let base = paths::base_image()?;
+    if !base.exists() {
+        bail!(
+            "the Windows runtime is not installed yet.\n\n\
+             Run this first:\n    winquick setup --accept-microsoft-terms"
+        );
+    }
+    let out = paths::framework_image()?;
+    if out.exists() && !opts.force {
+        println!("The .NET Framework capability is already installed.");
+        println!("Rebuild it with:  winquick capability install dotnet-framework --force");
+        return Ok(());
+    }
+
+    let work = paths::root()?.join("work").join("framework");
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work)?;
+
+    println!("Adding the .NET Framework to the Windows image. This takes a few minutes.");
+
+    println!("  [1/4] collecting Microsoft packages");
+    let svc_img = work.join("servicing.img");
+    let payload = build_servicing_payload(&work, opts, FRAMEWORK_PACKAGES, &[])?;
+    capability::build_flat(&svc_img, &payload)?;
+    let _ = std::fs::remove_dir_all(&payload);
+
+    println!("  [2/4] preparing a copy of the Windows image to service");
+    let q = qemu::Qemu::locate()?;
+    let target_raw = work.join("target.raw");
+    q.convert(&base, &target_raw, "raw")
+        .context("making a raw copy of the Windows image to service")?;
+    let original = gpt::snapshot(&target_raw)?;
+    gpt::randomize(&target_raw)
+        .context("giving the servicing target its own disk identity")?;
+
+    println!("  [3/4] applying packages with DISM inside Windows");
+    service(&q, &work, &svc_img, &target_raw, opts, FRAMEWORK_PACKAGES, &[])?;
+
+    println!("  [4/4] restoring the boot identity");
+    gpt::restore(&target_raw, &original)?;
+    std::fs::create_dir_all(out.parent().unwrap())?;
+    let staged = work.join("base.qcow2");
+    q.convert(&target_raw, &staged, "qcow2")?;
+    let _ = std::fs::remove_file(&target_raw);
+    // The agent came along with the image, so its metadata comes along too.
+    // Without this every run reports "built by a different version of winquick".
+    std::fs::copy(
+        crate::state::base_meta_path(&base)?,
+        crate::state::base_meta_path(&staged)?,
+    )
+    .context("carrying the runtime metadata onto the serviced image")?;
+    std::fs::rename(
+        crate::state::base_meta_path(&staged)?,
+        crate::state::base_meta_path(&out)?,
+    )?;
+    // Renamed last, so an interrupted build never leaves a half-written image
+    // that looks installed.
+    std::fs::rename(&staged, &out)?;
+
+    // The prepared guest was frozen from the other image.
+    let _ = crate::state::discard();
+
+    let _ = std::fs::remove_dir_all(&work);
+    println!(
+        ".NET Framework ready ({:.1} GiB image).",
+        crate::helpers::allocated(&out) as f64 / (1024.0 * 1024.0 * 1024.0)
+    );
+    println!("`winquick run` uses it from now on.");
+    Ok(())
 }
 
 pub fn install(opts: &Options) -> Result<()> {
@@ -121,7 +252,7 @@ pub fn install(opts: &Options) -> Result<()> {
     // ---- 1. the servicing volume -----------------------------------------
     println!("  [1/5] collecting Microsoft packages and drivers");
     let svc_img = work.join("servicing.img");
-    let payload = build_servicing_payload(&work, opts)?;
+    let payload = build_servicing_payload(&work, opts, &desktop_packages(), DRIVERS)?;
     capability::build_flat(&svc_img, &payload)?;
     let _ = std::fs::remove_dir_all(&payload);
 
@@ -139,7 +270,7 @@ pub fn install(opts: &Options) -> Result<()> {
 
     // ---- 3. run DISM inside Windows --------------------------------------
     println!("  [3/5] applying packages with DISM inside Windows");
-    service(&q, &work, &svc_img, &target_raw, opts)?;
+    service(&q, &work, &svc_img, &target_raw, opts, &desktop_packages(), DRIVERS)?;
 
     // ---- 4. put the identity back ----------------------------------------
     println!("  [4/5] restoring the boot identity");
@@ -170,7 +301,12 @@ pub fn install(opts: &Options) -> Result<()> {
 }
 
 /// Assemble everything the servicing guest needs on one volume.
-fn build_servicing_payload(work: &Path, opts: &Options) -> Result<PathBuf> {
+fn build_servicing_payload(
+    work: &Path,
+    opts: &Options,
+    packages: &[&str],
+    drivers: &[(&str, &str)],
+) -> Result<PathBuf> {
     let payload = work.join("payload");
     std::fs::create_dir_all(payload.join("cabs"))?;
 
@@ -187,18 +323,16 @@ fn build_servicing_payload(work: &Path, opts: &Options) -> Result<PathBuf> {
 
     let cabs = media.join("cabs");
     let mut missing = Vec::new();
-    for pkg in PACKAGES {
+    for pkg in packages {
         let file = format!("Microsoft-WinVOS-{pkg}-Package.cab");
         match find_cab(&cabs, &file, "neutral") {
-            Some(p) => {
-                std::fs::copy(&p, payload.join("cabs").join(&file))?;
-            }
+            Some(p) => stage_cab(&p, &payload.join("cabs").join(&file))?,
             None => missing.push(*pkg),
         }
         // The en-us companion carries the localised resources. It is optional:
         // the neutral package alone is enough for the API surface.
         if let Some(p) = find_cab(&cabs, &file, "en-us") {
-            std::fs::copy(&p, payload.join("cabs").join(format!("en-us-{file}")))?;
+            stage_cab(&p, &payload.join("cabs").join(format!("en-us-{file}")))?;
         }
     }
     if !missing.is_empty() {
@@ -209,8 +343,11 @@ fn build_servicing_payload(work: &Path, opts: &Options) -> Result<PathBuf> {
         );
     }
 
+    if drivers.is_empty() {
+        return Ok(payload);
+    }
     let virtio = mount_virtio(opts)?;
-    for (name, inf) in DRIVERS {
+    for (name, inf) in drivers {
         let src = find_driver(&virtio, name, inf).ok_or_else(|| {
             anyhow!(
                 "no ARM64 `{name}` driver on {}.\n\n\
@@ -222,6 +359,17 @@ fn build_servicing_payload(work: &Path, opts: &Options) -> Result<PathBuf> {
         desktop::copy_tree(&src, &payload.join("drivers").join(name))?;
     }
     Ok(payload)
+}
+
+/// Copy one package onto the servicing volume.
+///
+/// The destination is removed first. Files on the mounted ISO are read-only and
+/// `std::fs::copy` carries the mode across, so writing the same name twice
+/// fails with `Permission denied` rather than overwriting.
+fn stage_cab(src: &Path, dst: &Path) -> Result<()> {
+    let _ = std::fs::remove_file(dst);
+    std::fs::copy(src, dst).with_context(|| format!("staging {}", src.display()))?;
+    Ok(())
 }
 
 /// Packages live under `cabs/<set>/<language>/`, and which set a package is in
@@ -295,13 +443,15 @@ fn service(
     svc_img: &Path,
     target: &Path,
     opts: &Options,
+    packages: &[&str],
+    drivers: &[(&str, &str)],
 ) -> Result<()> {
     let root = work.join("servicing-root.qcow2");
     q.create_overlay(&paths::base_image()?, &root)?;
 
     let mbox = work.join("mailbox.img");
     mailbox::create_template(&mbox)?;
-    mailbox::inject_command(&mbox, &servicing_script(), None, "servicing")?;
+    mailbox::inject_command(&mbox, &servicing_script(packages, drivers), None, "servicing")?;
 
     let vars = work.join("vars.fd");
     crate::helpers::fresh_uefi_vars(&vars)?;
@@ -375,7 +525,7 @@ fn service(
 /// It finds both volumes by content rather than by drive letter, because
 /// Windows assigns those in an order that depends on how many volumes are
 /// attached.
-fn servicing_script() -> String {
+fn servicing_script(packages: &[&str], drivers: &[(&str, &str)]) -> String {
     let mut s = String::from(
         "setlocal enabledelayedexpansion\r\n\
          set S=\r\n\
@@ -386,7 +536,7 @@ fn servicing_script() -> String {
          if not defined T (echo NO-TARGET & exit /b 9)\r\n\
          set DI=%S%\\dism\\dism.exe\r\n",
     );
-    for pkg in PACKAGES {
+    for pkg in packages {
         s.push_str(&format!(
             "%DI% /Image:%T%\\ /Add-Package /PackagePath:%S%\\cabs\\Microsoft-WinVOS-{pkg}-Package.cab >nul 2>&1\r\n\
              echo pkg {pkg} rc=!errorlevel!\r\n\
@@ -394,7 +544,7 @@ fn servicing_script() -> String {
              %DI% /Image:%T%\\ /Add-Package /PackagePath:%S%\\cabs\\en-us-Microsoft-WinVOS-{pkg}-Package.cab >nul 2>&1\r\n"
         ));
     }
-    for (name, inf) in DRIVERS {
+    for (name, inf) in drivers {
         s.push_str(&format!(
             "%DI% /Image:%T%\\ /Add-Driver /Driver:%S%\\drivers\\{name}\\{inf} >nul 2>&1\r\n\
              echo driver {name} rc=!errorlevel!\r\n"
@@ -475,4 +625,50 @@ pub fn bridge_source() -> Result<PathBuf> {
         }
     }
     bail!("cannot find the guest bridge sources (guest/wqui)")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The desktop list and the .NET Framework list overlap on purpose. Staging
+    /// the same package twice copies a read-only file from the mounted ISO onto
+    /// itself, and the whole build stops with "Permission denied" before DISM
+    /// has run — which is a maddening way to learn that two lists share an
+    /// entry.
+    #[test]
+    fn a_package_is_staged_once_even_when_two_lists_want_it() {
+        let all = desktop_packages();
+        let mut seen: Vec<&str> = Vec::new();
+        for p in &all {
+            assert!(!seen.contains(p), "{p} appears twice in the desktop package set");
+            seen.push(p);
+        }
+        // Everything either list asks for is still there.
+        for p in PACKAGES.iter().chain(FRAMEWORK_PACKAGES.iter()) {
+            assert!(all.contains(p), "{p} was dropped");
+        }
+    }
+
+    /// A desktop is a superset: it services everything a `run` image does, plus
+    /// what it needs for a screen. Losing that would mean an application that
+    /// runs headlessly and then dies in a session, which is exactly the failure
+    /// this pairing exists to prevent.
+    #[test]
+    fn a_desktop_gets_everything_the_framework_image_gets() {
+        let desk = desktop_packages();
+        for p in FRAMEWORK_PACKAGES {
+            assert!(desk.contains(p), "the desktop image would not have {p}");
+        }
+    }
+
+    /// The order matters to DISM, and the first list has to stay first.
+    #[test]
+    fn the_desktop_packages_keep_their_order() {
+        let all = desktop_packages();
+        assert_eq!(all[0], PACKAGES[0]);
+        let com = all.iter().position(|p| *p == "COM").unwrap();
+        let wpf = all.iter().position(|p| *p == "WPF-Support").unwrap();
+        assert!(com < wpf, "COM must be applied before what depends on it");
+    }
 }

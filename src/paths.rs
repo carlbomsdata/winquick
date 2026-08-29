@@ -33,6 +33,31 @@ pub fn base_image() -> Result<PathBuf> {
     Ok(root()?.join("images").join(IMAGE_NAME).join("base.qcow2"))
 }
 
+/// The runtime name for the same guest with a .NET Framework serviced into it.
+pub const FRAMEWORK_IMAGE_NAME: &str =
+    if cfg!(target_arch = "aarch64") { "netfx-arm64" } else { "netfx-x64" };
+
+/// The base image with a .NET Framework in it, whether or not it exists.
+///
+/// A second image rather than a modified one: the pristine base stays
+/// byte-identical, and removing the capability is deleting a directory.
+pub fn framework_image() -> Result<PathBuf> {
+    Ok(root()?.join("images").join(FRAMEWORK_IMAGE_NAME).join("base.qcow2"))
+}
+
+/// The image `winquick run` should boot.
+///
+/// The serviced image when it is installed, the pristine one otherwise. The
+/// ready-state fingerprint carries the image's identity, so switching either
+/// way rebuilds the prepared guest without anything else having to notice.
+pub fn run_image() -> Result<PathBuf> {
+    let netfx = framework_image()?;
+    if netfx.exists() {
+        return Ok(netfx);
+    }
+    base_image()
+}
+
 /// User-obtained Microsoft media and other downloads.
 pub fn cache() -> Result<PathBuf> {
     Ok(root()?.join("cache"))

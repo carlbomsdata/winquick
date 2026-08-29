@@ -139,6 +139,22 @@
   this it built correctly and died on launch with `0xC0000135`.
   `winquick capability install desktop --force` picks it up; the image grows
   from 1.8 to 2.5 GiB.
+- **`winquick capability install dotnet-framework`** services a .NET Framework
+  into the image `winquick run` boots, written to a second image so the
+  pristine one stays byte-identical. It brings the classic build toolchain with
+  it — an `MSBuild.exe`, `Microsoft.Common.targets`, `Microsoft.CSharp.targets`,
+  `Microsoft.WinFX.targets` and `PresentationBuildTasks.dll` — which is the only
+  thing that can restore a `packages.config` project or markup-compile a classic
+  WPF one. A 2015-era WPF application with `packages.config`,
+  `ToolsVersion="15.0"`, net472, `PlatformTarget=x64` and a native x64 Pdfium,
+  historically built by Visual Studio, now restores with its own bundled
+  `nuget.exe` and builds to an x64 `.exe` inside WinQuick. `capability remove
+  dotnet-framework` puts `run` back on the plain image.
+- **`winquick desktop pull <guest-path> <file>`** brings a file the application
+  produced back to this Mac — the converted page, the exported report, the log
+  it wrote. A session could already show you a picture of what happened but not
+  give you the thing that happened. The bytes come back the way a screenshot
+  does, and the guest's hash is checked against the file that arrives.
 - **`winquick cache add <Name>[@<Version>]`** puts named packages in the offline
   cache without touching any project. `cache sync` can only fetch what a project
   declares, and a `.csproj` targeting .NET Framework declares no reference
