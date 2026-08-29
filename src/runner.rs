@@ -97,6 +97,36 @@ pub struct Outcome {
     pub command: String,
 }
 
+/// Total bytes QEMU has moved for this guest, across every block device.
+///
+/// Asked of QEMU rather than of the guest, on purpose: the question is whether
+/// the guest is doing anything at all, and a guest that cannot answer is
+/// exactly the case being diagnosed. `None` when the monitor will not say, in
+/// which case the caller must not read anything into it.
+fn guest_io(q: &mut qmp::Qmp) -> Option<u64> {
+    let v = q.command("query-blockstats", serde_json::json!({})).ok()?;
+    let mut total = 0u64;
+    for dev in v.as_array()? {
+        let Some(s) = dev.get("stats") else { continue };
+        for field in ["rd_bytes", "wr_bytes"] {
+            total = total.saturating_add(s.get(field).and_then(|n| n.as_u64()).unwrap_or(0));
+        }
+    }
+    Some(total)
+}
+
+/// How much the guest moved between two readings.
+///
+/// Zero unless both readings exist and the second is the larger, so a monitor
+/// that would not answer, or answered oddly, can never be mistaken for proof
+/// that a halted guest is alive.
+fn io_since(before: Option<u64>, after: Option<u64>) -> u64 {
+    match (before, after) {
+        (Some(a), Some(b)) => b.saturating_sub(a),
+        _ => 0,
+    }
+}
+
 /// The patterns the guest reported as matching nothing, in the order it tried
 /// them.
 ///
@@ -691,7 +721,30 @@ fn kill(child: &mut Child) {
 /// over in tens of milliseconds -- so this is twenty times the margin it needs,
 /// and a guest that came back halted is recognised as such in seconds rather
 /// than in whatever the user set `--timeout` to.
+///
+/// It is not a verdict on its own, though. See `PROOF_OF_LIFE_BYTES`.
 const FIRST_CONTACT: Duration = Duration::from_secs(10);
+
+/// How much guest I/O counts as "this guest is working, not halted".
+///
+/// The go flag disappearing is a FAT directory write, and the agent starts the
+/// user's command the moment it has read the token -- so the acknowledgement
+/// and the workload race, on the same volume, and the workload can win. A
+/// build heavy enough to saturate the guest keeps that one directory write
+/// from reaching the image for far longer than `FIRST_CONTACT`, and WinQuick
+/// then threw away a perfectly good prepared guest and cold-booted.
+///
+/// Measured on `dotnet build` of a three-project solution: **122 s** every
+/// time, five discarded prepared guests per run, against **11 s** for the same
+/// build when the flag was simply waited for longer. The guest was never
+/// halted; it was busy.
+///
+/// So when the deadline passes, ask a question the guest cannot lie about:
+/// QEMU's own byte counters. A restored guest that came back halted moves
+/// essentially nothing -- its poll loop is a few sectors of FAT metadata per
+/// turn. One that is building moves tens of megabytes in the same window.
+/// Sixteen megabytes sits well clear of both.
+const PROOF_OF_LIFE_BYTES: u64 = 16 * 1024 * 1024;
 
 /// How many prepared guests to build before believing the machine cannot restore.
 ///
@@ -769,7 +822,25 @@ fn warm_execute(ctx: &Ctx, ready: &state::ReadyState, command: &str) -> Result<O
         // "Has the command finished?" is the user's question, and it gets the
         // user's timeout, because a long build is a legitimate thing to wait
         // for.
-        wait_until_gone(&mbox, mailbox::GO, &mut child, Instant::now() + FIRST_CONTACT)?;
+        //
+        // The first question has a second half. The flag disappearing is a FAT
+        // directory write on the same volume the workload is about to hammer,
+        // and the agent starts the workload the instant it has the token -- so
+        // a busy guest can leave that write unflushed for a minute. QEMU's own
+        // byte counters tell a busy guest from a halted one without asking the
+        // guest anything.
+        let io_at_resume = guest_io(&mut q);
+        if let Err(e) = wait_until_gone(&mbox, mailbox::GO, &mut child, Instant::now() + FIRST_CONTACT) {
+            let moved = io_since(io_at_resume, guest_io(&mut q));
+            if !guest_was_silent(&e) || moved < PROOF_OF_LIFE_BYTES {
+                return Err(e);
+            }
+            ctx.vlog(format!(
+                "the guest has not acknowledged the command yet but has moved {:.0} MiB — \
+                 it is working, not halted; waiting for the command instead",
+                moved as f64 / (1024.0 * 1024.0)
+            ));
+        }
         let deadline = Instant::now() + ctx.timeout;
         wait_for(&mbox, mailbox::CODE_FILE, &mut child, deadline)?;
         let t_exec = t0.elapsed();
@@ -1019,6 +1090,30 @@ winquick-artifact-status=0\r\n";
             unmatched_patterns(log),
             vec!["*/bin/Release/*.dll", "TestResults/**"]
         );
+    }
+
+    /// A guest that is building moves hundreds of megabytes while the host is
+    /// still waiting for one directory write. Measured on a three-project
+    /// solution: 210 MiB inside the first-contact window.
+    #[test]
+    fn a_busy_guest_is_told_from_a_halted_one_by_what_it_moved() {
+        let mib = 1024 * 1024;
+        assert!(io_since(Some(100 * mib), Some(310 * mib)) >= PROOF_OF_LIFE_BYTES);
+        // A halted guest's poll loop is a few sectors of FAT metadata.
+        assert!(io_since(Some(100 * mib), Some(100 * mib + 40_000)) < PROOF_OF_LIFE_BYTES);
+        assert_eq!(io_since(Some(7), Some(7)), 0);
+    }
+
+    /// A monitor that would not answer, or answered oddly, must never be read
+    /// as proof that a halted guest is alive -- that would trade a ten-second
+    /// fallback for the whole command timeout.
+    #[test]
+    fn an_unanswered_monitor_is_never_proof_of_life() {
+        assert_eq!(io_since(None, Some(u64::MAX)), 0);
+        assert_eq!(io_since(Some(0), None), 0);
+        assert_eq!(io_since(None, None), 0);
+        // Counters that went backwards say nothing either.
+        assert_eq!(io_since(Some(900), Some(10)), 0);
     }
 
     /// A run that matched everything says nothing extra.

@@ -89,6 +89,17 @@
   the volume. It now compares the cache against what the volume was built from.
   Packages are also counted per *version* rather than per id, so a second
   version of a package already present is noticed.
+- **A build big enough to be worth caching never got a warm run.** Measured on
+  a three-project solution: `dotnet build OpcLogger.sln` took **122 s** and
+  discarded five prepared guests, every single time, while `dotnet build` of
+  one project in the same workspace took 8 s warm. The go flag disappearing is
+  a FAT directory write, and the agent starts the workload the instant it has
+  the token — so the acknowledgement and the workload race on the same volume,
+  and a solution build wins. The host read "busy" as "halted". It now asks
+  QEMU's own byte counters when the deadline passes: a halted guest has moved
+  nothing, a building one had moved 210 MiB. **122 s to 11 s**, and the
+  prepared guest survives. A monitor that will not answer still falls back in
+  ten seconds. Evidence in [docs/research.md](docs/research.md).
 - **`winquick cache sync` could not restore a `net*-windows` project at all.**
   The host is macOS, every project WinQuick exists to build targets Windows,
   and the SDK refused each one with `NETSDK1100: To build a project targeting

@@ -1754,3 +1754,92 @@ Installing the desktop capability invalidated the *command* prepared guest,
 because the internal bridge build ran at 2048 MiB while `winquick run` defaults
 to 1024. The next ordinary command after every desktop install silently paid for
 a 12-second rebuild. Both now use the same shared defaults.
+
+## A busy guest looked exactly like a halted one
+
+Three real projects — a WPF app, a three-project OPC solution and a classic
+`packages.config` MSBuild app — were run through WinQuick unmodified. The
+solution build never took the warm path. Not sometimes: never.
+
+```
+sln-1     122s  cold run  prepared guests discarded=5
+sln-2     121s  cold run  prepared guests discarded=5
+sln-3     121s  cold run  prepared guests discarded=5
+sln-4     122s  cold run  prepared guests discarded=5
+csproj-1   19s  warm run  discarded=0
+csproj-2    8s  warm run  discarded=0
+csproj-3    9s  warm run  discarded=0
+csproj-4    8s  warm run  discarded=0
+```
+
+Same workspace, same prepared guest, same machine. The only difference was the
+command: `dotnet build OpcLogger.sln` against `dotnet build
+OpcLogger.Core/OpcLogger.Core.csproj`. Every failure was reported as `timed out
+waiting for WQGO.TXT from the guest` — a *restored* guest that never picked the
+command up.
+
+Which made no sense, because the go flag is consumed before the command runs.
+A command cannot decide whether the guest that is about to receive it is alive.
+
+### It could, though
+
+`FIRST_CONTACT` was raised from 10 s to 120 s and nothing else changed:
+
+```
+winquick: using existing ready state
+winquick: warm phases: prep 83ms | qemu spawn 42ms | state restore 97ms
+        | guest exec + mailbox sync 10867ms
+Build succeeded.
+winquick: warm run, total 11103ms
+```
+
+Eleven seconds, warm, first try. The guest had never been halted.
+
+The go flag disappearing is a **FAT directory write on the mailbox volume**,
+and `guest/agent.cmd` deletes the flag and then immediately starts the
+workload — on that same guest, hammering that same disk. The acknowledgement
+and the workload race each other, and a solution build wins: three projects,
+several MSBuild worker processes, and the one directory entry the host is
+polling for stays in the guest's cache well past ten seconds. A single-project
+build is light enough that it does not.
+
+So the host was discarding a perfectly good prepared guest, five times per run,
+because the guest was too busy to say "got it".
+
+### The fix asks QEMU, not the guest
+
+The deadline is still ten seconds, because a genuinely halted restore should
+still be recognised in seconds. When it passes, the question becomes one the
+guest cannot fail to answer, because it is not asked of the guest at all:
+`query-blockstats` over the QMP monitor, summed across every block device.
+
+- a guest that came back halted moves essentially nothing — its poll loop is a
+  few sectors of FAT metadata per turn;
+- a guest that is building moved **210 MiB** inside that same window, measured.
+
+Sixteen megabytes is the line, and it sits two orders of magnitude clear of the
+first case and one clear of the second. A monitor that will not answer counts
+as no evidence, never as proof of life, so an unreadable monitor still falls
+back in ten seconds.
+
+Result on the same solution, unchanged:
+
+```
+winquick: the guest has not acknowledged the command yet but has moved 210 MiB
+        — it is working, not halted; waiting for the command instead
+Build succeeded.
+winquick: warm run, total 11249ms
+```
+
+**122 s to 11 s, and the prepared guest survives.**
+
+### The guest-side half, not shipped here
+
+The deeper fix is one line in `guest/agent.cmd`: dismount and remount the
+mailbox immediately after deleting the go flag, exactly as the agent already
+does after writing `WQREADY.TXT`, so the acknowledgement is on the host's disk
+before the workload starts. It is not shipped in this change because the agent
+is baked into the base image, and changing its hash makes every existing
+runtime report "built by a different version of winquick" until the user runs
+`winquick setup --force`. Worth doing at the next runtime rebuild; the
+host-side check stands on its own either way.
