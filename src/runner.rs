@@ -33,7 +33,11 @@ const ARTIFACT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// behalf. They are part of the prepared guest's fingerprint, so a caller that
 /// picks different ones silently forces a rebuild for everyone else.
 pub const DEFAULT_MEMORY_MB: u32 = 1024;
-pub const DEFAULT_CPUS: u32 = 4;
+/// Four processors is what a prepared guest restores reliably on Apple Silicon
+/// and is meaningfully faster for builds. Windows defaults to two because that
+/// is the most its prepared-state restore supports — see
+/// `platform::MAX_PREPARED_CPUS` for why.
+pub const DEFAULT_CPUS: u32 = if cfg!(target_os = "windows") { 2 } else { 4 };
 
 pub struct Options {
     pub memory_mb: u32,
@@ -226,6 +230,13 @@ fn execute(command: &str, opts: &Options) -> Result<Outcome> {
         crate::artifact::prepare_dest(&ctx.artifacts_dir, opts.artifact_overwrite)?;
     }
     state::check_base_meta(&ctx.base, crate::setup::AGENT)?;
+    // A fast run resumes a prepared guest. Some hosts cannot rebuild a partition
+    // of any size from one, and saying so is better than restoring something
+    // that hangs -- or than quietly cold-booting and letting the user believe
+    // the fast path worked.
+    if !opts.force_cold {
+        crate::platform::check_prepared_cpus(ctx.opts_cpus)?;
+    }
     let want = fingerprint(&ctx)?;
     ctx.vlog(format!("host startup {:.0}ms", t_start.elapsed().as_secs_f64() * 1000.0));
 

@@ -189,6 +189,10 @@ pub fn start(opts: &StartOptions) -> Result<()> {
         );
     }
 
+    // A desktop session always resumes a prepared state -- there is no cold
+    // path here -- so the host's restore limit applies unconditionally.
+    crate::platform::check_prepared_cpus(opts.cpus)?;
+
     let ctx = Ctx::new(opts, &base, &installed)?;
     let want = ctx.fingerprint()?;
 
