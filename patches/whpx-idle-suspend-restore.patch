@@ -1,0 +1,45 @@
+--- a/target/i386/whpx/whpx-all.c
++++ b/target/i386/whpx/whpx-all.c
+@@ -1986,6 +1986,11 @@
+ 
+ #define WHPX_MAX_VCPUS 288
+ 
++/* WHV_INTERNAL_ACTIVITY_REGISTER, which the headers do not name. */
++#define WHPX_ACTIVITY_STARTUP_SUSPEND  (1u << 0)
++#define WHPX_ACTIVITY_HALT_SUSPEND     (1u << 1)
++#define WHPX_ACTIVITY_IDLE_SUSPEND     (1u << 2)
++
+ typedef struct WhpxVpPending {
+     bool valid;
+     uint64_t internal_activity;
+@@ -2067,7 +2072,29 @@
+         whpx_try_set_reg(cpu, WHvRegisterReferenceTsc, p->reference_tsc);
+     }
+ 
+-    /* Last: this is what starts the processor. */
++    /*
++     * Last: this is what starts the processor -- but not every suspend bit
++     * survives the journey.
++     *
++     * StartupSuspend is about the guest's own INIT/SIPI sequence, so the source
++     * value is the right one and carrying it is the whole point.
++     *
++     * HaltSuspend and IdleSuspend are not. They say "this processor is parked
++     * until the hypervisor wakes it", and they are only meaningful to the
++     * partition that parked it. Windows idles an enlightened processor by
++     * reading HV_X64_MSR_GUEST_IDLE (0x400000F0) -- nt!PpmIdleGuestExecute --
++     * and the hypervisor is then responsible for waking it when something is
++     * due. A fresh partition has nothing due. Restoring the bit faithfully puts
++     * the processor straight back to sleep with no alarm set, and it never
++     * wakes: measured, three of four processors parked one instruction past
++     * that rdmsr and the fourth on the HLT in nt!HalProcessorIdle.
++     *
++     * Waking early is always legal -- an idle may end whenever the hypervisor
++     * likes -- so drop those two and let the guest decide to idle again once it
++     * is running in a partition that can wake it.
++     */
++    p->internal_activity &= ~(uint64_t)(WHPX_ACTIVITY_HALT_SUSPEND |
++                                        WHPX_ACTIVITY_IDLE_SUSPEND);
+     whpx_try_set_reg(cpu, WHvRegisterInternalActivityState,
+                      p->internal_activity);
+ }

@@ -18,8 +18,9 @@ if they want the fast path on Windows.
 | `whpx-activity-state-migration.patch` | nothing | no |
 | `whpx-hyperv-synthetic-migration.patch` | nothing | no |
 | `whpx-lapic-timer-migration.patch` | nothing | no |
+| `whpx-idle-suspend-restore.patch` | nothing | no |
 
-The five QEMU patches stack in this order, and
+The six QEMU patches stack in this order, and
 applying them to a pristine **QEMU v11.1.0** (`84f0721`) reproduces the tree
 these measurements were taken on, byte for byte:
 
@@ -29,6 +30,7 @@ $ patch -p1 -i patches/whpx-stop-and-copy.patch
 $ patch -p1 -i patches/whpx-activity-state-migration.patch
 $ patch -p1 -i patches/whpx-hyperv-synthetic-migration.patch
 $ patch -p1 -i patches/whpx-lapic-timer-migration.patch
+$ patch -p1 -i patches/whpx-idle-suspend-restore.patch
 ```
 
 ## `ntfsprogs-windows.patch`
@@ -324,3 +326,44 @@ vector `0xd8` and set the LVT's mask bit -- `lvt_timer=0x000300d8` -- so the
 local APIC timer delivers nothing however well it counts. The patch is here
 because dropping the state was wrong, and because measuring it is what ruled the
 timer out.
+
+## `whpx-idle-suspend-restore.patch`
+
+Against **QEMU v11.1.0**, on top of `whpx-lapic-timer-migration.patch`. 45
+lines, one file. Not applied to anything WinQuick ships.
+
+`WHvRegisterInternalActivityState` holds three suspend bits, and
+`whpx-activity-state-migration.patch` carries all three because the first one
+matters: `StartupSuspend` is about the guest's own INIT/SIPI sequence, and a
+restored application processor that keeps it waits for ever.
+
+The other two are not like that. `HaltSuspend` and `IdleSuspend` say "this
+processor is parked until the hypervisor wakes it", which is a statement about
+the partition that parked it and means nothing in a new one.
+
+What Windows does with them, read out of a deliberately crashed guest:
+
+```
+nt!KiIdleLoop+0x54 -> nt!PoIdle -> nt!PpmIdleExecuteTransition
+  -> nt!PpmIdleGuestExecute+0x10:
+       mov ecx, 400000F0h      ; HV_X64_MSR_GUEST_IDLE
+       rdmsr                   ; three of four processors parked here
+  -> nt!HalProcessorIdle+0xe:
+       hlt                     ; the fourth parked here
+```
+
+That is the Hyper-V guest idle enlightenment: the guest asks the hypervisor to
+park the processor and to wake it when something is due. A restored partition
+has nothing due, so restoring the bit faithfully puts the processor straight
+back to sleep with no alarm set. Measured, all four stayed there for ninety
+seconds; an injected NMI moved every one of them, which is what proves they were
+merely asleep rather than broken.
+
+Waking early is always legal, so drop those two bits. Four processors had never
+once produced a warm run before this; with it, they do.
+
+**It is a partial fix, and the rest is written up in
+[../docs/whpx-resume.md](../docs/whpx-resume.md).** Roughly one prepared guest in
+five is usable at four processors, because the guest wakes, runs, and idles again
+against a synthetic timer whose expiry is an absolute value in a partition
+reference-time domain that the public WHP API gives no way to read or to write.
