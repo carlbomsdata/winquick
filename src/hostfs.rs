@@ -93,6 +93,96 @@ pub fn set_sparse_len(f: &File, len: u64) -> std::io::Result<()> {
     f.set_len(len)
 }
 
+/// Which parts of a file actually hold data.
+///
+/// The volume images WinQuick copies per run are sparse and almost entirely
+/// hole: about a quarter of one percent of a two-gigabyte workspace is a FAT
+/// boot sector, two allocation tables and a nearly empty root directory. The
+/// fast way to copy one is to ask the filesystem where the content is, rather
+/// than to read two gigabytes looking for it -- reading was itself most of what
+/// a "warm" run spent its time on once the writing had been dealt with.
+///
+/// A filesystem that cannot answer gets the whole file back, which is correct
+/// and merely slower.
+pub fn allocated_ranges(f: &File, len: u64) -> Vec<(u64, u64)> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        const FSCTL_QUERY_ALLOCATED_RANGES: u32 = 0x0009_40CF;
+        const ERROR_MORE_DATA: u32 = 234;
+
+        #[repr(C)]
+        #[derive(Clone, Copy, Default)]
+        struct Range {
+            offset: i64,
+            length: i64,
+        }
+
+        extern "system" {
+            fn DeviceIoControl(
+                handle: *mut std::ffi::c_void,
+                control_code: u32,
+                in_buffer: *const std::ffi::c_void,
+                in_size: u32,
+                out_buffer: *mut std::ffi::c_void,
+                out_size: u32,
+                returned: *mut u32,
+                overlapped: *mut std::ffi::c_void,
+            ) -> i32;
+            fn GetLastError() -> u32;
+        }
+
+        let whole = vec![(0u64, len)];
+        let entry = std::mem::size_of::<Range>();
+        let mut out: Vec<(u64, u64)> = Vec::new();
+        let mut buf = vec![Range::default(); 512];
+        let mut start: i64 = 0;
+
+        while (start as u64) < len {
+            let input = Range { offset: start, length: len as i64 - start };
+            let mut returned: u32 = 0;
+            let ok = unsafe {
+                DeviceIoControl(
+                    f.as_raw_handle(),
+                    FSCTL_QUERY_ALLOCATED_RANGES,
+                    &input as *const Range as *const std::ffi::c_void,
+                    entry as u32,
+                    buf.as_mut_ptr() as *mut std::ffi::c_void,
+                    (buf.len() * entry) as u32,
+                    &mut returned,
+                    std::ptr::null_mut(),
+                )
+            };
+            // A full output buffer is not a failure, it is a continuation.
+            let more = ok == 0 && unsafe { GetLastError() } == ERROR_MORE_DATA;
+            if ok == 0 && !more {
+                return whole;
+            }
+            let n = returned as usize / entry;
+            if n == 0 {
+                break;
+            }
+            for r in &buf[..n] {
+                if r.length > 0 {
+                    out.push((r.offset as u64, r.length as u64));
+                }
+            }
+            let last = buf[n - 1];
+            start = last.offset + last.length;
+            if !more {
+                break;
+            }
+        }
+        return out;
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = f;
+        vec![(0, len)]
+    }
+}
+
 /// Fill a buffer with randomness from the operating system.
 ///
 /// WinQuick needs this in exactly one place — giving a copied disk a fresh GPT

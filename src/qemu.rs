@@ -261,11 +261,69 @@ pub fn clone_file(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Copy a volume image, skipping the parts of it that are nothing.
+///
+/// The workspace and artifact volumes are two gigabytes each, and about a
+/// quarter of one percent of that is real: a FAT boot sector, two allocation
+/// tables and a nearly empty root directory. macOS gets the copy for free from
+/// APFS cloning. Everywhere else WinQuick was moving 4.3 GB per run to deliver
+/// ten megabytes, and that -- not the restore, which is under two hundred
+/// milliseconds -- was where a "warm" run spent its time.
+///
+/// The destination is fresh and sparse, so a run of zeroes is already there;
+/// writing it again would only allocate it.
 #[cfg(not(target_os = "macos"))]
 pub fn clone_file(src: &Path, dst: &Path) -> Result<()> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+
     let _ = std::fs::remove_file(dst);
-    std::fs::copy(src, dst)
-        .with_context(|| format!("copying {} to {}", src.display(), dst.display()))?;
+    let mut r = std::fs::File::open(src)
+        .with_context(|| format!("opening {}", src.display()))?;
+    let len = r.metadata()?.len();
+    let w = std::fs::File::create(dst)
+        .with_context(|| format!("creating {}", dst.display()))?;
+    crate::hostfs::set_sparse_len(&w, len)
+        .with_context(|| format!("sizing {}", dst.display()))?;
+    let mut w = w;
+
+    const BLOCK: usize = 1 << 20;
+    let mut buf = vec![0u8; BLOCK];
+
+    for (start, length) in crate::hostfs::allocated_ranges(&r, len) {
+        let mut off = start;
+        let end = (start + length).min(len);
+        r.seek(SeekFrom::Start(start))
+            .with_context(|| format!("seeking {}", src.display()))?;
+        while off < end {
+            let want = ((end - off) as usize).min(BLOCK);
+            // Short reads are ordinary, and a block that is only partly filled
+            // would otherwise be judged on stale bytes from the last one.
+            let mut filled = 0;
+            while filled < want {
+                match r.read(&mut buf[filled..want]) {
+                    Ok(0) => break,
+                    Ok(n) => filled += n,
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(e) => {
+                        return Err(e)
+                            .with_context(|| format!("reading {}", src.display()))
+                    }
+                }
+            }
+            if filled == 0 {
+                break;
+            }
+            // A filesystem that could not name its holes hands back the whole
+            // file, so still skip what is plainly nothing.
+            if buf[..filled].iter().any(|b| *b != 0) {
+                w.seek(SeekFrom::Start(off))?;
+                w.write_all(&buf[..filled])
+                    .with_context(|| format!("writing {}", dst.display()))?;
+            }
+            off += filled as u64;
+        }
+    }
+    w.flush()?;
     Ok(())
 }
 
@@ -453,5 +511,47 @@ impl Qemu {
             .arg(format!("file:{}", cfg.serial_log.display()));
         c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
         c.spawn().context("spawning the servicing guest")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A clone is a copy. The whole point of the fast paths -- APFS cloning on
+    /// macOS, skipping runs of zeroes everywhere else -- is that they are not
+    /// visible in the result, and a volume image that came back subtly
+    /// different would corrupt a guest filesystem rather than fail loudly.
+    #[test]
+    fn a_cloned_volume_is_byte_for_byte_its_source() {
+        let dir = std::env::temp_dir().join(format!("wq-clone-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("src.img");
+        let dst = dir.join("dst.img");
+
+        // Shaped like the volumes this actually copies: a little content at the
+        // front, a long run of nothing, a little more at the end, and a tail
+        // that is not a whole block.
+        let mut content = vec![0u8; 5 << 20];
+        for (i, b) in content[..4096].iter_mut().enumerate() {
+            *b = (i % 251) as u8;
+        }
+        content[(3 << 20) + 17] = 0xAB;
+        let n = content.len();
+        content[n - 3..].copy_from_slice(&[1, 2, 3]);
+        std::fs::write(&src, &content).unwrap();
+
+        clone_file(&src, &dst).unwrap();
+        assert_eq!(std::fs::read(&dst).unwrap(), content);
+        assert_eq!(std::fs::metadata(&dst).unwrap().len(), content.len() as u64);
+
+        // Cloning over an existing file replaces it rather than merging into
+        // it, which is what every caller assumes.
+        std::fs::write(&dst, vec![0xFFu8; 9 << 20]).unwrap();
+        clone_file(&src, &dst).unwrap();
+        assert_eq!(std::fs::read(&dst).unwrap(), content);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
