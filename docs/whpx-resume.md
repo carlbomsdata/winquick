@@ -262,7 +262,7 @@ nt!KiIdleLoop+0x54
    -> nt!PpmIdleExecuteTransition
      -> nt!PpmIdleGuestExecute+0x10:
           mov  ecx, 400000F0h
-          rdwsr                      <- three of four parked one instruction on
+          rdmsr                      <- three of four parked one instruction on
      -> nt!HalProcessorIdle+0xe:
           hlt                        <- the fourth parked here
 ```
