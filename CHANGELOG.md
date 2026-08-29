@@ -127,6 +127,26 @@
 
 ### Added
 
+- **The desktop can run .NET Framework applications.** WinQuick's notes said
+  Validation OS "carries no .NET Framework runtime at all", which is true of the
+  stock image and had been read as meaning it could not have one. It is on
+  Microsoft's own media as `Microsoft-WinVOS-NetFx45-Package.cab`, in
+  `cabs/Common` beside the graphics and WPF packages WinQuick already applies,
+  and DISM takes it without complaint. A real .NET Framework 4.7.2 WPF
+  application — 3,200 lines, `System.Management`, an embedded resource — now
+  builds in WinQuick, launches in a desktop session, renders, answers UI
+  Automation, and runs all thirteen of its own diagnostics to a result. Before
+  this it built correctly and died on launch with `0xC0000135`.
+  `winquick capability install desktop --force` picks it up; the image grows
+  from 1.8 to 2.5 GiB.
+- **`winquick cache add <Name>[@<Version>]`** puts named packages in the offline
+  cache without touching any project. `cache sync` can only fetch what a project
+  declares, and a `.csproj` targeting .NET Framework declares no reference
+  assemblies — on Windows they come from a developer pack, not from NuGet — so
+  a project you are not allowed to edit could not be built offline at all.
+  A pinned version is fetched with `PackageDownload`, which skips the
+  target-framework compatibility check that rejects build-only and native
+  packages.
 - **Windows host: the shared core now compiles.** `cargo check --target
   x86_64-pc-windows-msvc` passes with no errors, down from 16. The platform
   seam is isolated in `src/hostfs.rs` — allocated size, file identity, advisory

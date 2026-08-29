@@ -705,7 +705,132 @@ pub fn nuget_sync(project: &Path, rid: &str, verbose: bool) -> Result<SyncResult
         );
     }
     drop(staged);
+    finish_sync(before, verbose)
+}
 
+/// One named package, as written on the command line: `id` or `id@version`.
+struct PackageSpec {
+    id: String,
+    version: Option<String>,
+}
+
+fn parse_spec(raw: &str) -> Result<PackageSpec> {
+    let (id, version) = match raw.rsplit_once('@') {
+        Some((id, v)) if !id.is_empty() && !v.is_empty() => (id, Some(v.to_string())),
+        Some(_) => bail!("{raw:?} is not a package: write it as `Name` or `Name@1.2.3`"),
+        None => (raw, None),
+    };
+    if id.contains(['<', '>', '&', '"', '\'', '/', '\\', ' ']) {
+        bail!("{id:?} is not a package name");
+    }
+    if let Some(v) = &version {
+        if v.contains(['<', '>', '&', '"', '\'', ' ']) {
+            bail!("{v:?} is not a version");
+        }
+    }
+    Ok(PackageSpec { id: id.to_string(), version })
+}
+
+/// The project a `cache add` restores.
+///
+/// `PackageDownload` and not `PackageReference`: the ask is "put this package
+/// in the cache", not "compile against it", and `PackageDownload` skips the
+/// target-framework compatibility check that would otherwise reject a
+/// build-only package, a native package or one that predates the target. It
+/// needs an exact version, which is why a bare name falls back to a reference.
+fn add_project(specs: &[PackageSpec]) -> String {
+    let mut s = String::from(
+        "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    \
+         <TargetFramework>netstandard2.0</TargetFramework>\n    \
+         <EnableWindowsTargeting>true</EnableWindowsTargeting>\n    \
+         <NoWarn>NU1701;NU1702</NoWarn>\n  </PropertyGroup>\n  <ItemGroup>\n",
+    );
+    for p in specs {
+        match &p.version {
+            Some(v) => s.push_str(&format!(
+                "    <PackageDownload Include=\"{}\" Version=\"[{}]\" />\n",
+                p.id, v
+            )),
+            None => s.push_str(&format!(
+                "    <PackageReference Include=\"{}\" Version=\"*\" />\n",
+                p.id
+            )),
+        }
+    }
+    s.push_str("  </ItemGroup>\n</Project>\n");
+    s
+}
+
+/// Put named packages into the cache without touching any project.
+///
+/// `cache sync` answers "what does this project need", which is the common
+/// case. It cannot answer "this project needs something its author never
+/// declared" — and a `.csproj` that targets .NET Framework declares no
+/// reference assemblies, because on Windows they come from a developer pack
+/// rather than from NuGet. Building one offline therefore needs a package the
+/// project does not mention, and editing the project to say so is not always
+/// something the person building it is allowed to do.
+pub fn nuget_add(raw_specs: &[String], verbose: bool) -> Result<SyncResult> {
+    if raw_specs.is_empty() {
+        bail!("name at least one package, as `Name` or `Name@1.2.3`");
+    }
+    let specs: Vec<PackageSpec> =
+        raw_specs.iter().map(|s| parse_spec(s)).collect::<Result<_>>()?;
+    let cache = nuget_dir()?;
+    std::fs::create_dir_all(&cache)?;
+    if which("dotnet").is_none() {
+        bail!(
+            "The .NET SDK is not installed on this Mac, so packages cannot be restored here.\n\n\
+             Install it from https://dotnet.microsoft.com/download, or `brew install dotnet-sdk`."
+        );
+    }
+    let before = count_packages(&cache);
+
+    let work = paths::root()?.join("work").join(format!("add-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work)?;
+    let scratch = Scratch(work.clone());
+    let proj = work.join("winquick-cache-add.csproj");
+    std::fs::write(&proj, add_project(&specs))?;
+    if verbose {
+        eprintln!("winquick: fetching {} into {}", raw_specs.join(", "), cache.display());
+    }
+    let out = std::process::Command::new("dotnet")
+        .arg("restore")
+        .arg(&proj)
+        .arg("--packages")
+        .arg(&cache)
+        .args(["-v", "q", "--nologo"])
+        .output()
+        .context("running `dotnet restore` on the host — is the .NET SDK installed?")?;
+    if !out.status.success() {
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        bail!(
+            "fetching {} failed:\n{}",
+            raw_specs.join(", "),
+            text.replace(&work.to_string_lossy().to_string(), "").trim()
+        );
+    }
+    drop(scratch);
+    finish_sync(before, verbose)
+}
+
+/// A directory that is deleted when it goes out of scope.
+struct Scratch(PathBuf);
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Rebuild the volume the guest sees, unless it already holds what the cache
+/// holds.
+fn finish_sync(before: usize, verbose: bool) -> Result<SyncResult> {
+    let cache = nuget_dir()?;
     let after = count_packages(&cache);
     let image = nuget_image()?;
     // Rebuilding the volume changes its identity, which invalidates the prepared
@@ -911,6 +1036,60 @@ mod tests {
         assert!(shown.starts_with(&format!("{}/App/App.csproj", root.display())), "{shown}");
         assert!(!shown.contains("restore-"), "no trace of the copy: {shown}");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A package is named the way a person would write it on a command line.
+    #[test]
+    fn a_package_is_a_name_and_an_optional_version() {
+        let p = parse_spec("Newtonsoft.Json").unwrap();
+        assert_eq!(p.id, "Newtonsoft.Json");
+        assert_eq!(p.version, None);
+
+        let p = parse_spec("Microsoft.NETFramework.ReferenceAssemblies.net472@1.0.3").unwrap();
+        assert_eq!(p.id, "Microsoft.NETFramework.ReferenceAssemblies.net472");
+        assert_eq!(p.version.as_deref(), Some("1.0.3"));
+
+        // Prerelease versions carry their own dashes and dots.
+        let p = parse_spec("Some.Package@2.0.0-preview.3").unwrap();
+        assert_eq!(p.version.as_deref(), Some("2.0.0-preview.3"));
+    }
+
+    /// The name goes into generated XML, so anything that could close a tag or
+    /// name a path is refused before it gets there.
+    #[test]
+    fn a_package_name_cannot_smuggle_xml_or_a_path() {
+        for bad in [
+            "Foo\" /><Exec Command=\"rm",
+            "../../etc/passwd",
+            "Foo<Bar",
+            "Foo Bar",
+            "Foo@",
+            "@1.0.0",
+            "Foo@1.0 0",
+        ] {
+            assert!(parse_spec(bad).is_err(), "{bad} was accepted");
+        }
+    }
+
+    /// A version pins exactly what is fetched, and skips the compatibility
+    /// check that would reject a build-only or native package. Without one
+    /// there is nothing to pin, so it has to be an ordinary reference.
+    #[test]
+    fn a_pinned_package_is_downloaded_and_a_bare_one_referenced() {
+        let pinned = add_project(&[parse_spec("A.B@1.0.3").unwrap()]);
+        assert!(pinned.contains("<PackageDownload Include=\"A.B\" Version=\"[1.0.3]\" />"), "{pinned}");
+        assert!(!pinned.contains("PackageReference"), "{pinned}");
+
+        let bare = add_project(&[parse_spec("A.B").unwrap()]);
+        assert!(bare.contains("<PackageReference Include=\"A.B\" Version=\"*\" />"), "{bare}");
+
+        // Several at once, in one restore.
+        let both = add_project(&[
+            parse_spec("A@1.0.0").unwrap(),
+            parse_spec("B").unwrap(),
+        ]);
+        assert!(both.contains("Include=\"A\""), "{both}");
+        assert!(both.contains("Include=\"B\""), "{both}");
     }
 
     fn listing(root: &Path) -> Vec<String> {

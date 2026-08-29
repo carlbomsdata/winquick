@@ -57,6 +57,19 @@ const PACKAGES: &[&str] = &[
     "Connectivity",
     "WPF-Support",
     "DeveloperTools",
+    // .NET Framework. The name is historical -- the package carries the OS's
+    // inbox `C:\Windows\Microsoft.NET`, which on a 26100 image is 4.8.x, and
+    // 4.x is in-place, so one runtime serves every 4.x target.
+    //
+    // WinQuick's own notes used to say Validation OS "carries no .NET Framework
+    // runtime at all", which is true of the stock image and was read as meaning
+    // it could not have one. It is on the media, in `cabs/Common`, and it
+    // applies like every other package here. Without it a .NET Framework
+    // application builds correctly and then dies on launch with 0xC0000135 --
+    // measured, on a real WPF app, before this line existed.
+    "NetFx45",
+    // The 32-bit half, for an x86 application under emulation.
+    "NetFx45-WOW64",
 ];
 
 /// VirtIO drivers staged into the image. `viogpudo` is the display adapter;

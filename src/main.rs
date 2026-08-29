@@ -246,6 +246,11 @@ Windows through a cache that persists between runs.
   winquick cache sync            restore this project's packages
   winquick run -w . -- dotnet test
 
+A project that targets .NET Framework needs reference assemblies its `.csproj`
+does not mention, because on Windows they come from a developer pack:
+
+  winquick cache add Microsoft.NETFramework.ReferenceAssemblies.net472@1.0.3
+
 Windows sees a throwaway copy of the cache, so a build cannot change it.")]
     Cache {
         #[command(subcommand)]
@@ -372,6 +377,22 @@ enum CacheCmd {
         /// Runtime identifier to restore for
         #[arg(long, default_value = "win-arm64")]
         rid: String,
+    },
+    /// Add named packages to the cache, without touching any project
+    #[command(after_help = "\
+`sync` answers \"what does this project need\". This answers \"this project
+needs something its author never declared\" — which is the normal situation for
+a .NET Framework project, because on Windows its reference assemblies come from
+a developer pack rather than from NuGet.
+
+  winquick cache add Microsoft.NETFramework.ReferenceAssemblies.net472@1.0.3
+  winquick cache add Newtonsoft.Json
+
+A version pins exactly what is fetched; without one you get the latest.")]
+    Add {
+        /// Package names, as `Name` or `Name@1.2.3`
+        #[arg(required = true)]
+        packages: Vec<String>,
     },
     /// Show what the cache holds
     Info,
@@ -791,6 +812,20 @@ fn cache_cmd(action: CacheCmd, verbose: bool) -> Result<i32> {
             let _guard = lock::acquire_blocking("cache sync")?;
             let p = path.unwrap_or_else(|| PathBuf::from("."));
             let r = capability::nuget_sync(&p, &rid, verbose)?;
+            if r.added == 0 && !r.rebuilt {
+                println!("Package cache already up to date ({} packages).", r.packages);
+            } else {
+                println!(
+                    "Package cache updated: {} packages, {}.",
+                    r.packages,
+                    helpers::human(r.bytes)
+                );
+            }
+            Ok(0)
+        }
+        CacheCmd::Add { packages } => {
+            let _guard = lock::acquire_blocking("cache add")?;
+            let r = capability::nuget_add(&packages, verbose)?;
             if r.added == 0 && !r.rebuilt {
                 println!("Package cache already up to date ({} packages).", r.packages);
             } else {
