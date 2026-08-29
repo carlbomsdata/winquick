@@ -89,6 +89,30 @@
   the volume. It now compares the cache against what the volume was built from.
   Packages are also counted per *version* rather than per id, so a second
   version of a package already present is noticed.
+- **`winquick cache sync` could not restore a `net*-windows` project at all.**
+  The host is macOS, every project WinQuick exists to build targets Windows,
+  and the SDK refused each one with `NETSDK1100: To build a project targeting
+  Windows on this operating system, set the EnableWindowsTargeting property to
+  true` before resolving a single package. The host restore sets it. Found
+  against a real WPF/Worker solution targeting `net9.0-windows`, which could
+  not be cached and therefore could not be built offline.
+- **`winquick cache sync` wrote into your project.** `dotnet restore` is not
+  read-only: it drops `obj/project.assets.json` and two generated MSBuild files
+  beside every project file it touches. WinQuick promises your source is never
+  written to, and that now holds on the Mac as well as in the guest — the
+  restore runs on a throwaway copy, which is deleted whether it succeeds or
+  fails. Errors still name your own paths.
+- **`--artifact "**/App.dll"` retrieved nothing, silently.** `xcopy` recurses
+  with `/S` only for a *wildcard*: given a literal name it answers "File not
+  found" with the file one directory down. Naming a file under `**` now walks
+  the tree, preserving the directories it was found in.
+- **A pattern that matched nothing is now reported.** Only the all-or-nothing
+  case was, so four `--artifact` patterns with one mistake among them produced
+  a plausible "retrieved 1 file" and a missing artifact nobody noticed.
+- **A wildcard in a directory name is refused rather than ignored.**
+  `*/bin/Release/*.dll` reads as if it should work; neither `xcopy` nor `for`
+  expands it, so it matched nothing and said nothing. It is now an error that
+  names `**/*.dll` as the pattern that does what was meant.
 
 ### Added
 

@@ -17,12 +17,15 @@
 //! | `bin/Release/**` | that directory, recursively, hierarchy preserved |
 //! | `**/*.dll` | every `.dll` anywhere under the workspace |
 //! | `bin/**/*.exe` | every `.exe` anywhere under `bin` |
+//! | `**/App.dll` | that file wherever it is, hierarchy preserved |
 //! | `*.log` / `logs/*.txt` | wildcard within one directory |
 //! | `foo?.txt` | `?` matches exactly one character |
 //! | `out/report.txt` | one named file or directory |
 //!
 //! Slashes may lean either way, so a pattern copied from a Windows script works
-//! unchanged.
+//! unchanged. A wildcard belongs in the file name; `**` is the only way to
+//! cross directories, and a `*` in a directory name is refused rather than
+//! quietly matching nothing.
 
 use anyhow::{bail, Result};
 
@@ -62,6 +65,20 @@ pub fn parse(raw: &str) -> Result<Pattern> {
     let parts: Vec<&str> = norm.split('\\').filter(|p| !p.is_empty()).collect();
     if parts.is_empty() {
         bail!("an artifact pattern cannot be empty");
+    }
+
+    // Everything below compiles to `xcopy` and `for`, and neither expands a
+    // wildcard in a *directory* component — `*\bin\*.dll` walks nothing and
+    // says nothing. Saying so here beats a run that quietly hands back an
+    // empty directory. `**` is the one directory wildcard there is.
+    let dir_parts = &parts[..parts.len() - 1];
+    if let Some(bad) = dir_parts.iter().find(|p| **p != "**" && p.contains(['*', '?'])) {
+        bail!(
+            "artifact pattern {raw:?}: `{bad}` puts a wildcard in a directory name, \
+             which Windows will not expand.\nUse `**` to cross directories: \
+             `**/{}`.",
+            parts[parts.len() - 1]
+        );
     }
 
     // `**` decides the shape, wherever it appears. A trailing `**` is the tree
@@ -127,8 +144,28 @@ pub fn script(patterns: &[String]) -> String {
         }
     }
     s.push_str("echo winquick-artifact-status=%WQ_ART_FAIL%\r\n");
+    s.push_str("goto :eof\r\n");
+    s.push_str(SUBROUTINES);
     s
 }
+
+/// Copy one file found deep in the tree, rebuilding the directories it sat in.
+///
+/// `call set` is the way to expand a variable inside a substring replacement
+/// without `setlocal enabledelayedexpansion`, which would change how every
+/// other line in this script is parsed. Reached only by `call`; normal flow
+/// stops at the `goto :eof` above.
+const SUBROUTINES: &str = concat!(
+    "\r\n:wqdeep\r\n",
+    "rem %1 the file, %2 the directory the search started from, %3 where it goes\r\n",
+    "set \"WQ_D_DIR=%~dp1\"\r\n",
+    "call set \"WQ_D_DIR=%%WQ_D_DIR:%~2\\=%%\"\r\n",
+    "if not exist \"%~3%WQ_D_DIR%\" mkdir \"%~3%WQ_D_DIR%\" 2>nul\r\n",
+    "copy /Y \"%~1\" \"%~3%WQ_D_DIR%\" >nul\r\n",
+    "if errorlevel 1 set WQ_ART_FAIL=1\r\n",
+    "set WQ_ART_ANY=1\r\n",
+    "exit /b\r\n",
+);
 
 fn emit(p: &Pattern, raw: &str) -> String {
     match p {
@@ -141,16 +178,31 @@ fn emit(p: &Pattern, raw: &str) -> String {
                  ) else (\r\n  echo winquick: no match for {raw}\r\n)\r\n"
             )
         }
-        // xcopy given a wildcard source with /S walks every subdirectory and
+        // xcopy given a *wildcard* source with /S walks every subdirectory and
         // keeps the hierarchy, which is precisely `**/<glob>`.
+        //
+        // Given a literal name it does not: `xcopy sub\thing.dll out\ /S`
+        // reports "File not found - thing.dll" and copies nothing, even with
+        // the file one directory down. `**/OpcLogger.Core.dll` is a perfectly
+        // reasonable thing to ask for, so that case walks the tree itself.
         Pattern::Recursive { dir, glob } => {
             let (src, dst) = (src_of(dir), dst_of(dir));
-            format!(
-                "if exist \"{src}\" (\r\n  \
-                 xcopy \"{src}\\{glob}\" \"{dst}\" /S /I /Y /Q >nul 2>&1\r\n  \
-                 if errorlevel 1 echo winquick: no match for {raw}\r\n\
-                 ) else (\r\n  echo winquick: no match for {raw}\r\n)\r\n"
-            )
+            if glob.contains(['*', '?']) {
+                format!(
+                    "if exist \"{src}\" (\r\n  \
+                     xcopy \"{src}\\{glob}\" \"{dst}\" /S /I /Y /Q >nul 2>&1\r\n  \
+                     if errorlevel 1 echo winquick: no match for {raw}\r\n\
+                     ) else (\r\n  echo winquick: no match for {raw}\r\n)\r\n"
+                )
+            } else {
+                format!(
+                    "set WQ_ART_ANY=0\r\n\
+                     if exist \"{src}\" for /r \"{src}\" %%f in ({glob}) do @(\r\n  \
+                     if exist \"%%f\" call :wqdeep \"%%f\" \"{src}\" \"{dst}\"\r\n\
+                     )\r\n\
+                     if \"%WQ_ART_ANY%\"==\"0\" echo winquick: no match for {raw}\r\n"
+                )
+            }
         }
         Pattern::Shallow { dir, glob } => {
             let (src, dst) = (src_of(dir), dst_of(dir));
@@ -233,6 +285,25 @@ mod tests {
         assert_eq!(p("foo?.txt"), Pattern::Shallow { dir: String::new(), glob: "foo?.txt".into() });
     }
 
+    /// `xcopy` and `for` expand a wildcard in the file name only. A pattern
+    /// like `*/bin/Release/*.dll` looks reasonable, walks nothing, and used to
+    /// hand back an empty directory without a word. It is refused instead, and
+    /// the message names the pattern that does work.
+    #[test]
+    fn a_wildcard_in_a_directory_name_is_refused() {
+        for bad in ["*/bin/Release/*.dll", "src/*/bin/app.exe", "?/out/*.txt", "*/**/*.dll"] {
+            let err = parse(bad).expect_err(&format!("{bad} was accepted"));
+            let msg = err.to_string();
+            assert!(msg.contains("directory name"), "{bad}: {msg}");
+            assert!(msg.contains("**"), "{bad} should point at `**`: {msg}");
+        }
+        // The final element is where a wildcard belongs, and `**` is still the
+        // one directory wildcard there is.
+        for good in ["bin/**/*.dll", "**/*.dll", "logs/*.txt", "bin/Release/**"] {
+            assert!(parse(good).is_ok(), "{good} was refused");
+        }
+    }
+
     #[test]
     fn a_named_file() {
         assert_eq!(p("out/report.txt"), Pattern::Exact { path: "out\\report.txt".into() });
@@ -308,9 +379,51 @@ mod tests {
 
     #[test]
     fn every_pattern_shape_produces_a_guarded_block() {
-        for pat in ["bin/**", "**/*.dll", "logs/*.txt", "out/report.txt"] {
+        for pat in ["bin/**", "**/*.dll", "**/App.dll", "logs/*.txt", "out/report.txt"] {
             let s = script(&[pat.to_string()]);
             assert!(s.contains("no match for"), "{pat} has no not-found branch");
         }
+    }
+
+    /// `xcopy src\App.dll dst /S` does not recurse — measured in the guest, it
+    /// answers "File not found - App.dll" with the file one directory down.
+    /// Naming a file under `**` has to walk the tree instead, or the run hands
+    /// back nothing and the build looks fine.
+    #[test]
+    fn a_named_file_under_a_recursive_wildcard_walks_the_tree() {
+        let s = script(&["**/OpcLogger.Core.dll".to_string()]);
+        assert!(s.contains("for /r"), "a literal name must be searched for:\n{s}");
+        assert!(
+            !s.contains("xcopy \"C:\\workspace\\OpcLogger.Core.dll\""),
+            "xcopy cannot do this:\n{s}"
+        );
+        assert!(s.contains(":wqdeep"), "the copy helper must be reachable:\n{s}");
+
+        // A real glob keeps the xcopy path, which does recurse and is what the
+        // existing behaviour rests on.
+        let s = script(&["bin/**/*.dll".to_string()]);
+        assert!(s.contains("xcopy \"C:\\workspace\\bin\\*.dll\""), "{s}");
+        assert!(!s.contains("for /r"), "a glob needs no tree walk:\n{s}");
+    }
+
+    /// The helper sits after `goto :eof`, so an ordinary run never falls into
+    /// it, and the status line is still the last thing the host reads.
+    #[test]
+    fn the_copy_helper_is_only_reachable_by_call() {
+        let s = script(&["**/App.dll".to_string()]);
+        let status = s.find("winquick-artifact-status").expect("status line");
+        let eof = s.find("goto :eof").expect("guard");
+        let helper = s.find("\r\n:wqdeep").expect("helper");
+        assert!(status < eof && eof < helper, "helper must come last:\n{s}");
+    }
+
+    /// The helper rebuilds the directories a file was found in, under the
+    /// artifact directory and nowhere else.
+    #[test]
+    fn the_copy_helper_stays_inside_the_artifact_directory() {
+        let s = script(&["bin/**/App.dll".to_string()]);
+        assert!(!s.contains(".."), "script contains a traversal:\n{s}");
+        assert!(s.contains("call :wqdeep \"%%f\" \"C:\\workspace\\bin\""), "{s}");
+        assert!(s.contains(&format!("%WQART%\\{DIR}\\bin\\")), "{s}");
     }
 }

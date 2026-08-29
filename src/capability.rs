@@ -552,6 +552,119 @@ pub struct SyncResult {
     pub rebuilt: bool,
 }
 
+/// A throwaway copy of a project tree, used so that host-side tooling never
+/// writes into the user's source.
+///
+/// `dotnet restore` is not read-only: it drops `obj/project.assets.json` and
+/// two generated MSBuild files beside every project file it touches. WinQuick
+/// tells users their source is never written to, and that has to hold on the
+/// Mac as well as inside the guest.
+///
+/// The copy skips `.git`, `bin` and `obj`, which restore never reads. What is
+/// left is what restore needs: solution and project files, `Directory.Build.*`,
+/// `NuGet.config`, `global.json`, `packages.config` and any imported props.
+struct ProjectCopy {
+    /// Root of the copy; deleted on drop.
+    root: PathBuf,
+    /// The path to hand to `dotnet restore` — the copy of what the user named.
+    target: PathBuf,
+    /// Absolute forms of the copy root, longest first, and the user's original
+    /// directory, so error text can be put back into their terms.
+    from: Vec<String>,
+    to: String,
+}
+
+impl ProjectCopy {
+    fn new(project: &Path) -> Result<Self> {
+        if !project.exists() {
+            bail!("no such project or directory: {}", project.display());
+        }
+        // The user may name a directory, a `.sln` or a `.csproj`. Whatever they
+        // named, the directory holding it is the unit that gets copied: sibling
+        // projects reached by `ProjectReference` have to come along.
+        let (src_dir, leaf) = if project.is_dir() {
+            (project.to_path_buf(), None)
+        } else {
+            let parent = project.parent().filter(|p| !p.as_os_str().is_empty());
+            (
+                parent.unwrap_or(Path::new(".")).to_path_buf(),
+                project.file_name().map(|n| n.to_os_string()),
+            )
+        };
+        let work = paths::root()?.join("work");
+        std::fs::create_dir_all(&work)?;
+        // Unique per call, not just per process: nothing stops two syncs, or two
+        // tests, from staging at once, and one deleting the other's copy would
+        // be a maddening way to fail.
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let root = work.join(format!("restore-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root)?;
+        copy_for_restore(&src_dir, &root)
+            .with_context(|| format!("staging {} for restore", src_dir.display()))?;
+        let target = match &leaf {
+            Some(name) => root.join(name),
+            None => root.clone(),
+        };
+        let mut from = vec![root.to_string_lossy().into_owned()];
+        if let Ok(c) = root.canonicalize() {
+            let c = c.to_string_lossy().into_owned();
+            if !from.contains(&c) {
+                from.push(c);
+            }
+        }
+        // Longest first, so `/private/tmp/...` is not half-replaced by `/tmp/...`.
+        from.sort_by_key(|s| std::cmp::Reverse(s.len()));
+        Ok(Self { root, target, from, to: src_dir.to_string_lossy().into_owned() })
+    }
+
+    fn path(&self) -> &Path {
+        &self.target
+    }
+
+    /// Put the user's own paths back into a message written about the copy.
+    fn unstage(&self, text: &str) -> String {
+        let mut out = text.to_string();
+        for f in &self.from {
+            out = out.replace(f.as_str(), &self.to);
+        }
+        out
+    }
+}
+
+impl Drop for ProjectCopy {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+/// Copy a project tree for a restore, skipping what restore never reads.
+fn copy_for_restore(src: &Path, dst: &Path) -> Result<()> {
+    for e in std::fs::read_dir(src)? {
+        let e = e?;
+        let name = e.file_name();
+        // `file_type` does not follow links, which is the point: a link out of
+        // the tree would let restore write back into the source it is meant to
+        // be shielded from.
+        let md = e.file_type()?;
+        if md.is_dir() {
+            let n = name.to_string_lossy();
+            // Build output and history are large and restore reads neither. A
+            // copied `obj` would also make restore think it is already done.
+            if n == ".git" || n == "bin" || n == "obj" || n == "node_modules" {
+                continue;
+            }
+            let sub = dst.join(&name);
+            std::fs::create_dir_all(&sub)?;
+            copy_for_restore(&e.path(), &sub)?;
+        } else if md.is_file() {
+            std::fs::copy(e.path(), dst.join(&name))?;
+        }
+    }
+    Ok(())
+}
+
 pub fn nuget_sync(project: &Path, rid: &str, verbose: bool) -> Result<SyncResult> {
     let cache = nuget_dir()?;
     std::fs::create_dir_all(&cache)?;
@@ -565,22 +678,33 @@ pub fn nuget_sync(project: &Path, rid: &str, verbose: bool) -> Result<SyncResult
     if verbose {
         eprintln!("winquick: restoring {} into {}", project.display(), cache.display());
     }
+    // The restore happens on a throwaway copy of the project, never on the
+    // project itself. `dotnet restore` writes `obj/project.assets.json` and the
+    // generated `.nuget.g.props`/`.targets` next to every project file, and
+    // WinQuick's whole promise is that it does not touch your source. Doing it
+    // in a copy also means a half-finished sync leaves nothing behind.
+    let staged = ProjectCopy::new(project)?;
     let out = std::process::Command::new("dotnet")
         .arg("restore")
-        .arg(project)
+        .arg(staged.path())
         .args(["-r", rid])
         .arg("--packages")
         .arg(&cache)
+        // The host is macOS and every project WinQuick exists to build targets
+        // Windows. Without this the SDK refuses any `net*-windows` target with
+        // NETSDK1100 before it resolves a single package.
+        .arg("-p:EnableWindowsTargeting=true")
         .args(["-v", "q", "--nologo"])
         .output()
         .context("running `dotnet restore` on the host — is the .NET SDK installed?")?;
     if !out.status.success() {
         bail!(
             "restoring packages on this Mac failed:\n{}{}",
-            String::from_utf8_lossy(&out.stdout).trim(),
-            String::from_utf8_lossy(&out.stderr).trim()
+            staged.unstage(&String::from_utf8_lossy(&out.stdout)).trim(),
+            staged.unstage(&String::from_utf8_lossy(&out.stderr)).trim()
         );
     }
+    drop(staged);
 
     let after = count_packages(&cache);
     let image = nuget_image()?;
@@ -701,5 +825,107 @@ mod tests {
         std::fs::write(image_stamp(&img), "42").unwrap();
         assert_eq!(image_package_count(&img), Some(42));
         let _ = std::fs::remove_file(image_stamp(&img));
+    }
+
+    /// A sandbox that looks like a real repository: a solution, two projects,
+    /// build output that must not be carried over, and a git directory.
+    fn sample_repo(tag: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("wq-copy-{}-{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        touch_dir(&root.join("App"));
+        touch_dir(&root.join("Lib"));
+        touch_dir(&root.join("App/bin/Release"));
+        touch_dir(&root.join("App/obj"));
+        touch_dir(&root.join(".git"));
+        std::fs::write(root.join("App.sln"), "sln").unwrap();
+        std::fs::write(root.join("NuGet.config"), "<configuration/>").unwrap();
+        std::fs::write(root.join("App/App.csproj"), "<Project/>").unwrap();
+        std::fs::write(root.join("Lib/Lib.csproj"), "<Project/>").unwrap();
+        std::fs::write(root.join("App/bin/Release/App.exe"), "stale").unwrap();
+        std::fs::write(root.join("App/obj/project.assets.json"), "stale").unwrap();
+        std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/main").unwrap();
+        root
+    }
+
+    /// `dotnet restore` writes `obj/` beside every project it touches, so it is
+    /// pointed at a copy. The copy has to carry the sibling projects a solution
+    /// reaches through `ProjectReference`, and the imported files beside them.
+    #[test]
+    fn a_restore_copy_carries_the_whole_solution() {
+        let root = sample_repo("whole");
+        let staged = ProjectCopy::new(&root).unwrap();
+        let c = staged.path().to_path_buf();
+        assert!(c.join("App.sln").is_file());
+        assert!(c.join("NuGet.config").is_file(), "restore reads NuGet.config");
+        assert!(c.join("App/App.csproj").is_file());
+        assert!(c.join("Lib/Lib.csproj").is_file(), "a sibling project must come along");
+        // Build output is large, is never read by restore, and a copied `obj`
+        // would make restore believe it had already run.
+        assert!(!c.join("App/bin").exists(), "bin must not be copied");
+        assert!(!c.join("App/obj").exists(), "obj must not be copied");
+        assert!(!c.join(".git").exists(), ".git must not be copied");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The copy is deleted when the sync ends, and — the point of the whole
+    /// exercise — the user's own tree is left exactly as it was.
+    #[test]
+    fn a_restore_copy_leaves_the_source_untouched_and_cleans_up() {
+        let root = sample_repo("clean");
+        let before = listing(&root);
+        let copy_root = {
+            let staged = ProjectCopy::new(&root).unwrap();
+            // Stand in for what restore does to whatever it is pointed at.
+            std::fs::create_dir_all(staged.path().join("App/obj")).unwrap();
+            std::fs::write(staged.path().join("App/obj/project.assets.json"), "{}").unwrap();
+            staged.root.clone()
+        };
+        assert!(!copy_root.exists(), "the copy is thrown away with the sync");
+        assert_eq!(before, listing(&root), "the user's project must not gain a file");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Naming a project file rather than a directory still copies the whole
+    /// directory, because that is where its neighbours live.
+    #[test]
+    fn naming_a_project_file_still_stages_its_directory() {
+        let root = sample_repo("leaf");
+        let staged = ProjectCopy::new(&root.join("App/App.csproj")).unwrap();
+        assert!(staged.path().is_file());
+        assert_eq!(staged.path().file_name().unwrap(), "App.csproj");
+        assert!(
+            staged.path().parent().unwrap().join("bin").exists() == false,
+            "bin is skipped here too"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Restore failures are reported about the copy, which the user has never
+    /// heard of. Their own path goes back into the message.
+    #[test]
+    fn restore_errors_name_the_users_path_not_the_copy() {
+        let root = sample_repo("msg");
+        let staged = ProjectCopy::new(&root).unwrap();
+        let raw = format!("{}/App/App.csproj(1,1): error NU1101", staged.path().display());
+        let shown = staged.unstage(&raw);
+        assert!(shown.starts_with(&format!("{}/App/App.csproj", root.display())), "{shown}");
+        assert!(!shown.contains("restore-"), "no trace of the copy: {shown}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn listing(root: &Path) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).unwrap() {
+                let p = e.unwrap().path();
+                out.push(p.strip_prefix(root).unwrap().to_string_lossy().into_owned());
+                if p.is_dir() {
+                    stack.push(p);
+                }
+            }
+        }
+        out.sort();
+        out
     }
 }

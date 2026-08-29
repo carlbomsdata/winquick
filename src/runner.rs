@@ -97,6 +97,19 @@ pub struct Outcome {
     pub command: String,
 }
 
+/// The patterns the guest reported as matching nothing, in the order it tried
+/// them.
+///
+/// The guest is the only side that can answer this: matching happens in
+/// Windows, over a tree the host never sees.
+fn unmatched_patterns(log: &str) -> Vec<&str> {
+    log.lines()
+        .filter_map(|l| l.trim().strip_prefix("winquick: no match for "))
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .collect()
+}
+
 /// Pull requested files off the artifact volume. Runs whether or not the command
 /// succeeded — a failed build's logs are usually exactly what is wanted — and
 /// before the run directory is deleted.
@@ -111,6 +124,15 @@ fn collect_artifacts(ctx: &Ctx, image: &Path) -> Result<()> {
             "the guest could not copy some requested artifacts:\n{}",
             got.log.trim()
         );
+    }
+    // The guest reports each pattern that matched nothing. Only reporting the
+    // all-or-nothing case hid the more common mistake: several patterns, one of
+    // them wrong, a plausible "retrieved 1 file" and a missing artifact nobody
+    // noticed until much later.
+    if got.files > 0 {
+        for pat in unmatched_patterns(&got.log) {
+            eprintln!("winquick: nothing matched {pat}");
+        }
     }
     if got.files == 0 {
         eprintln!(
@@ -982,5 +1004,27 @@ mod tests {
     fn a_silent_guest_says_what_it_was_waiting_for() {
         let e = GuestSilent("WQCODE.TXT".into()).to_string();
         assert!(e.contains("WQCODE.TXT"), "{e}");
+    }
+
+    /// Ask for four things, get two, and the run used to look like a success.
+    /// Every pattern the guest could not match has to be named.
+    #[test]
+    fn a_pattern_that_matched_nothing_is_named() {
+        let log = "\
+winquick: no match for */bin/Release/*.dll\r\n\
+2 File(s) copied\r\n\
+winquick: no match for TestResults/**\r\n\
+winquick-artifact-status=0\r\n";
+        assert_eq!(
+            unmatched_patterns(log),
+            vec!["*/bin/Release/*.dll", "TestResults/**"]
+        );
+    }
+
+    /// A run that matched everything says nothing extra.
+    #[test]
+    fn a_clean_extraction_reports_no_unmatched_patterns() {
+        let log = "12 File(s) copied\r\nwinquick-artifact-status=0\r\n";
+        assert!(unmatched_patterns(log).is_empty());
     }
 }
