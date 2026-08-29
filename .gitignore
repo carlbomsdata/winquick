@@ -27,3 +27,6 @@ obj/
 
 # Local working instructions, not published
 CLAUDE.md
+
+# Isolated worktrees created for background agents.
+.claude/worktrees/
