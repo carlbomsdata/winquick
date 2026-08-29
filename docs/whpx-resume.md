@@ -356,10 +356,31 @@ built came back halted, so it wrote `restore-unsupported` and every run booted
 cold. The warm path is usable at one and two processors and is not usable at
 four.
 
-The restore itself is 92-180 ms and the guest answers in about 520 ms. What
-dominates the roundtrip is copying the two-gigabyte workspace and artifact
-volumes per run, which Windows has no APFS-style clone for; that is the next
-thing worth attacking and it is not this.
+### Where a warm run's time went
+
+The restore is a couple of hundred milliseconds and the guest answers in about
+half a second, and yet a warm run took seventeen to twenty-five seconds. All of
+the difference was in one line: cloning the workspace and artifact volumes.
+They are two gigabytes each, macOS gets them free from APFS cloning, and
+everywhere else this was `std::fs::copy` twice.
+
+Those volumes are **0.244% non-zero** -- 5.2 MB of FAT boot sector, allocation
+tables and a nearly empty root directory in 2147.5 MB. WinQuick was moving
+4.3 GB per run to deliver ten. Writing only what is there, into a sparse
+destination, halved a warm run; asking the filesystem where the data is, rather
+than reading four gigabytes to find out, did the rest.
+
+Twenty steady-state runs at `-smp 2`, reusing one prepared guest:
+
+| phase | before | min | p50 | mean | p95 | max |
+|---|---|---|---|---|---|---|
+| prep | 15,839 ms | 183 | **204** | 213 | 224 | 417 ms |
+| qemu spawn | | 758 | 830 | 836 | 910 | 945 ms |
+| state restore | | 116 | 273 | 267 | 377 | 444 ms |
+| guest exec + mailbox | | 491 | 593 | 590 | 695 | 703 ms |
+| **full `winquick run`** | 24,826 ms | 1,874 | **2,115** | 2,115 | 2,366 | 2,367 ms |
+
+What is left is dominated by starting a QEMU process, which is what it costs.
 
 The freeze lottery is what is left, and most of it is paid at prepare time: a
 prepared guest is built once and reused. WinQuick builds up to three before
