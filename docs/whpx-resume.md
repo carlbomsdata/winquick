@@ -223,6 +223,34 @@ Carrying this state correctly would mean translating every expiry into the
 destination partition's timeline, which needs a reference-time reading on both
 sides that WHP does not obviously expose.
 
+### What QEMU does and does not carry about the timer
+
+`whpx_put_apic_state()` and `whpx_get_apic_state()` move the local APIC through
+WHP as a flat array of registers. They handle field `0x38`, the timer's initial
+count, and `0x3e`, its divide configuration. They never touch field `0x39`, the
+**current count**, in either direction: on save the source timer's remaining
+time is discarded and QEMU reconstructs its own model as though the count had
+just been loaded, and on restore WHP is handed an initial count and nothing
+else.
+
+The WHPX APIC class registers no timer callback either, so QEMU drives nothing
+itself. The guest's local APIC timer lives entirely inside WHP, and whether it
+is *armed* after a restore is WHP's business.
+
+That gives a model which fits every observation: the lottery is whether any
+processor was idle waiting on a timer when the guest was frozen. One processor
+is nearly always the one running the agent; two are idle about half the time;
+four almost always are. Which is 20 of 20, about half of prepared states, and 0
+of 20.
+
+**One hypothesis has already been refuted.** `whpx_apic_post_load()` pushes the
+interrupt controller state while the migration stream is still being read, and
+`whpx_set_registers()` then writes `WHvX64RegisterApicBase` afterwards -- which
+could plausibly re-initialise the APIC that was just restored. Pushing the same
+state again after the full-state push does not help: three fresh prepared guests
+at `-smp 4` with it, three without, and all six came back silent, five discarded
+states each.
+
 ### So what is the halting?
 
 Not established, but narrowed. A halted four-processor restore, poked with an
