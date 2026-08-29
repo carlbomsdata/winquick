@@ -219,6 +219,20 @@ pub fn doctor() -> Result<Doctor> {
             b.fail("Runtime", "runtime version",
                    "runtime is from a different WinQuick version", format!("{e:#}"));
         }
+        // Which image a command actually boots is the first thing to know when
+        // a build behaves differently from the one you remember.
+        let netfx = paths::framework_image()?;
+        if netfx.exists() {
+            b.ok(
+                "Runtime",
+                ".NET Framework",
+                format!("{}, and `run` boots it", helpers::human(helpers::allocated(&netfx))),
+            );
+            if let Err(e) = state::check_base_meta(&netfx, setup::AGENT) {
+                b.fail("Runtime", ".NET Framework image",
+                       "serviced from a different WinQuick version", format!("{e:#}"));
+            }
+        }
     } else {
         b.fail("Runtime", "windows runtime", "not installed",
                "No Windows runtime. Run `winquick setup`.");
