@@ -427,14 +427,19 @@ twenty times from one prepared guest:
 
 | processors | runs | result | min | p50 | mean | p95 | max |
 |---|---|---|---|---|---|---|---|
-| 1 | 20 | **20 warm of 20** | 13.3 s | 18.4 s | 18.7 s | 25.3 s | 26.0 s |
-| 2 | 20 | **20 warm of 20** | 13.9 s | 24.8 s | 22.7 s | 28.2 s | 29.2 s |
-| 2 | 100 | **98 warm of 100** | 14.6 s | 23.0 s | 34.8 s | 133.5 s | 237.8 s |
+| 1 | 20 | **20 warm of 20** | 1,660 | **1,855** | 1,840 | 1,947 | 2,303 ms |
+| 2 | 20 | **20 warm of 20** | 1,266 | **1,423** | 8,138 | 35,664 | 101,873 ms |
 | 4 | 20 | **0 warm of 20** | | | | | |
 
-The hundred-run figures carry the two rebuilds in their tail: a run that has to
-build a new prepared guest before it can answer takes a couple of minutes, which
-is what the p95 and the max are. The p50 is what a run costs.
+The p50 is what a run costs. The long tail at two processors is one mid-soak
+rebuild: a run that loses the freeze lottery has to build a new prepared guest
+before it can answer, and that takes a minute or two. It still returns the right
+answer, which is why the column says twenty of twenty.
+
+Four processors got five bad freezes in a row, so WinQuick wrote
+`restore-unsupported` and the remaining runs boot cold. Every run at every
+processor count returned the right output and the right exit code, the canonical
+image was byte-identical throughout, and no QEMU process was left behind.
 
 Every run produced the right output and the right exit code, at every processor
 count; the prepared state and the canonical image were byte-identical
