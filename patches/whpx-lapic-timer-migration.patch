@@ -1,0 +1,87 @@
+--- a/target/i386/whpx/whpx-apic.c
++++ b/target/i386/whpx/whpx-apic.c
+@@ -27,6 +27,32 @@
+     } fields[256];
+ };
+ 
++/*
++ * How much of the timer is left to run.
++ *
++ * This is QEMU's own apic_get_current_count(), which is static to apic.c and
++ * therefore not reachable from here. It is needed because the local APIC timer
++ * is per-processor state that WHP owns, that nothing else carries, and that
++ * WinQuick was dropping on the floor -- see whpx_put_apic_state() below.
++ */
++static uint32_t whpx_apic_current_count(APICCommonState *s)
++{
++    int64_t d;
++
++    d = (qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - s->initial_count_load_time) >>
++        s->count_shift;
++    if (s->lvt[APIC_LVT_TIMER] & APIC_LVT_TIMER_PERIODIC) {
++        if (!s->initial_count) {
++            return 0;
++        }
++        return s->initial_count - (d % ((uint64_t)s->initial_count + 1));
++    }
++    if (d >= s->initial_count) {
++        return 0;
++    }
++    return s->initial_count - d;
++}
++
+ static void whpx_put_apic_state(APICCommonState *s,
+                                 struct whpx_lapic_state *kapic)
+ {
+@@ -57,6 +83,25 @@
+     }
+ 
+     kapic->fields[0x38].data = s->initial_count;
++    /*
++     * Field 0x39 is the current count, and leaving it zero is what kills a
++     * restored multiprocessor guest.
++     *
++     * WHvSetVirtualProcessorInterruptControllerState2 restores the timer's
++     * registers; measured on a restored guest, it does not start a countdown
++     * on its own. The block is memset to zero here, so the destination was
++     * being told the timer had already run out, and its current count then sat
++     * at zero for as long as anyone cared to watch while a cold-booted guest's
++     * counts down visibly.
++     *
++     * A guest with a processor still executing survives that, because it
++     * reaches its own clock code and rewrites the count, and a guest write is
++     * an ordinary APIC access that WHP does honour. A guest frozen with every
++     * processor halted has nobody to do that and waits for ever -- which is why
++     * one processor always worked, two worked about half the time, and four
++     * never did.
++     */
++    kapic->fields[0x39].data = whpx_apic_current_count(s);
+     kapic->fields[0x3e].data = s->divide_conf;
+ }
+ 
+@@ -94,7 +139,24 @@
+     v = (s->divide_conf & 3) | ((s->divide_conf >> 1) & 4);
+     s->count_shift = (v + 1) & 7;
+ 
+-    s->initial_count_load_time = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++    /*
++     * Read the countdown back rather than pretending it has just been loaded.
++     *
++     * QEMU carries the timer across a migration as an initial count and the
++     * time that count was loaded, so back-dating the load time by however much
++     * has already elapsed is enough to preserve what is left of it -- no new
++     * migration state, and the destination puts a real current count back into
++     * field 0x39.
++     */
++    {
++        uint32_t current = kapic->fields[0x39].data;
++        int64_t elapsed = 0;
++
++        if (s->initial_count > current) {
++            elapsed = (int64_t)(s->initial_count - current) << s->count_shift;
++        }
++        s->initial_count_load_time = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - elapsed;
++    }
+     apic_next_timer(s, s->initial_count_load_time);
+ }
+ 

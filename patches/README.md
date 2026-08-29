@@ -17,8 +17,9 @@ if they want the fast path on Windows.
 | `whpx-nmi-delivery.patch` | nothing | no |
 | `whpx-activity-state-migration.patch` | nothing | no |
 | `whpx-hyperv-synthetic-migration.patch` | nothing | no |
+| `whpx-lapic-timer-migration.patch` | nothing | no |
 
-The four QEMU patches stack in this order, and
+The five QEMU patches stack in this order, and
 applying them to a pristine **QEMU v11.1.0** (`84f0721`) reproduces the tree
 these measurements were taken on, byte for byte:
 
@@ -27,6 +28,7 @@ $ patch -p1 -i patches/whpx-nmi-delivery.patch
 $ patch -p1 -i patches/whpx-stop-and-copy.patch
 $ patch -p1 -i patches/whpx-activity-state-migration.patch
 $ patch -p1 -i patches/whpx-hyperv-synthetic-migration.patch
+$ patch -p1 -i patches/whpx-lapic-timer-migration.patch
 ```
 
 ## `ntfsprogs-windows.patch`
@@ -285,3 +287,40 @@ a restored expiry lands an arbitrary distance into the new partition's future.
 Carrying it correctly would mean translating every expiry into the destination's
 timeline, which needs a reference-time reading on both sides that WHP does not
 obviously expose. See [../docs/whpx-resume.md](../docs/whpx-resume.md).
+
+## `whpx-lapic-timer-migration.patch`
+
+Against **QEMU v11.1.0**, on top of `whpx-hyperv-synthetic-migration.patch`.
+87 lines, one file. Not applied to anything WinQuick ships.
+
+`whpx_put_apic_state()` moves the local APIC through WHP as a flat array of
+registers. It `memset`s the block and then fills in field `0x38`, the timer's
+initial count, and `0x3e`, its divide configuration. It never fills in field
+`0x39`, **the current count** -- so every restored processor was told its timer
+had already run out. `whpx_get_apic_state()` is the same story in reverse: it
+reads the initial count back and then sets `initial_count_load_time` to *now*,
+throwing away however much of the countdown was left.
+
+Measured on a restored guest, against a cold-booted one:
+
+```
+restored  vp0  initial=10000000  current=0        <- and it never moves
+cold boot vp0  initial=10000000  current=7093960 -> 6290540 -> 4981920 ...
+```
+
+With the current count written, `WHvSetVirtualProcessorInterruptControllerState2`
+does arm the countdown -- a restored `vp0` was watched decrementing for thirty
+nine seconds. So this is real per-processor state that WHP owns and nothing was
+carrying, of exactly the same kind as the hypercall page.
+
+The remaining time is preserved without adding any migration state: QEMU already
+carries the timer as an initial count plus the time that count was loaded, so
+back-dating the load time by however much has elapsed is enough, and the
+destination puts a real current count back into field `0x39`.
+
+**It is not, on its own, the fix for a halted multiprocessor restore.** By the
+time Windows has taken up the Hyper-V enlightenments it has moved its clock to
+vector `0xd8` and set the LVT's mask bit -- `lvt_timer=0x000300d8` -- so the
+local APIC timer delivers nothing however well it counts. The patch is here
+because dropping the state was wrong, and because measuring it is what ruled the
+timer out.
