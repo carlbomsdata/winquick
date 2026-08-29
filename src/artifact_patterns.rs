@@ -183,7 +183,7 @@ fn emit(p: &Pattern, raw: &str) -> String {
         //
         // Given a literal name it does not: `xcopy sub\thing.dll out\ /S`
         // reports "File not found - thing.dll" and copies nothing, even with
-        // the file one directory down. `**/OpcLogger.Core.dll` is a perfectly
+        // the file one directory down. `**/App.Core.dll` is a perfectly
         // reasonable thing to ask for, so that case walks the tree itself.
         Pattern::Recursive { dir, glob } => {
             let (src, dst) = (src_of(dir), dst_of(dir));
@@ -391,10 +391,10 @@ mod tests {
     /// back nothing and the build looks fine.
     #[test]
     fn a_named_file_under_a_recursive_wildcard_walks_the_tree() {
-        let s = script(&["**/OpcLogger.Core.dll".to_string()]);
+        let s = script(&["**/App.Core.dll".to_string()]);
         assert!(s.contains("for /r"), "a literal name must be searched for:\n{s}");
         assert!(
-            !s.contains("xcopy \"C:\\workspace\\OpcLogger.Core.dll\""),
+            !s.contains("xcopy \"C:\\workspace\\App.Core.dll\""),
             "xcopy cannot do this:\n{s}"
         );
         assert!(s.contains(":wqdeep"), "the copy helper must be reachable:\n{s}");

@@ -77,16 +77,23 @@ services that copy offline. No Windows machine is involved, nothing is
 downloaded from Microsoft, and no Microsoft-licensed bytes are redistributed:
 the CABs come from the ISO the user already supplied to `winquick setup`.
 
-Twelve packages are applied: `COM`, `Windows-Runtime-Metadata`, `Fonts`,
-`GDIPlus`, `Graphics`, `Graphics-UXTheme`, `Apps`, `PnP`, `Driver-Support`,
-`Connectivity`, `WPF-Support` and `DeveloperTools`.
+Twelve packages make the screen work: `COM`, `Windows-Runtime-Metadata`,
+`Fonts`, `GDIPlus`, `Graphics`, `Graphics-UXTheme`, `Apps`, `PnP`,
+`Driver-Support`, `Connectivity`, `WPF-Support` and `DeveloperTools`.
+
+A desktop also gets everything the `dotnet-framework` capability applies, so a
+session can run a .NET Framework application rather than only build one:
+`Apps-WOW64`, `COM-WOW64`, `WLAN`, `NetFx45` and `NetFx45-WOW64`. The two
+lists overlap and are deduplicated before staging — copying the same read-only
+CAB off the mounted ISO twice fails with "Permission denied" before DISM has
+run at all. Seventeen packages in total.
 
 Three things about this are not obvious, and each one failed silently before it
 was understood.
 
 **`/Online` does not work.** Applying any of these to the running Validation OS
 returns `0x80070032` (`ERROR_NOT_SUPPORTED`). Offline servicing of a mounted
-image works for all twelve.
+image works for every one of them.
 
 **The copy needs its own disk identity.** Windows will not mount two disks with
 the same GPT disk GUID and partition GUIDs read-write. It mounts the duplicate

@@ -105,9 +105,9 @@ const FRAMEWORK_PACKAGES: &[&str] = &[
 /// `vioinput` is staged so the topology can grow input devices later.
 const DRIVERS: &[(&str, &str)] = &[("viogpudo", "viogpudo.inf"), ("vioinput", "vioinput.inf")];
 
-/// How long the DISM pass is allowed to take. Twelve packages against a cold
-/// image is a few minutes; the ceiling is only there so a wedged guest does not
-/// hang forever.
+/// How long the DISM pass is allowed to take. A dozen or two packages against
+/// a cold image is a few minutes; the ceiling is only there so a wedged guest
+/// does not hang forever.
 const SERVICING_TIMEOUT: Duration = Duration::from_secs(2400);
 
 /// The name this capability answers to on the command line.
@@ -659,6 +659,30 @@ mod tests {
         let desk = desktop_packages();
         for p in FRAMEWORK_PACKAGES {
             assert!(desk.contains(p), "the desktop image would not have {p}");
+        }
+    }
+
+    /// Each of these was added because a real build or launch failed without
+    /// it, and each cost a full servicing pass to find. The list looks longer
+    /// than "install .NET Framework" ought to be, which is exactly why someone
+    /// will eventually try to trim it — so the reasons are asserted here
+    /// rather than only written in a comment.
+    #[test]
+    fn the_framework_image_keeps_its_hard_won_prerequisites() {
+        for (pkg, why) in [
+            ("NetFx45", "the runtime itself; without it: 0xC0000135 on launch"),
+            ("Apps", "shell32, which urlmon imports; GenerateResource needs it"),
+            ("GDIPlus", "System.Drawing; `new Bitmap` throws without it"),
+            ("Fonts", "GDI+ wants one the moment anything draws text"),
+            ("COM", "MSBuild's own tasks; REGDB_E_CLASSNOTREG without it"),
+            ("WLAN", "rasapi32, which NuGet's ProxyCache loads"),
+        ] {
+            assert!(FRAMEWORK_PACKAGES.contains(&pkg), "{pkg} was dropped — {why}");
+        }
+        // The 32-bit halves let an x86 application run under emulation. They
+        // are not decoration either.
+        for pkg in ["Apps-WOW64", "COM-WOW64", "NetFx45-WOW64"] {
+            assert!(FRAMEWORK_PACKAGES.contains(&pkg), "{pkg} was dropped");
         }
     }
 

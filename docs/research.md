@@ -99,9 +99,15 @@ Measured by reading the NTFS partition directly:
 Most of the missing pieces are available as optional `.cab` packages on the ISO
 (`Microsoft-WinVOS-PowerShell-Package`, `Microsoft-WinVOS-NetFx45-Package`,
 `Microsoft-WinVOS-Driver-Support-Package`, `Microsoft-WinVOS-PnP-Package`, …),
-but adding them requires Microsoft's `GenImage.cmd`, **which needs a Windows 11
-host with DISM**. There is no macOS path to it. This is the single biggest open
-problem for anything beyond `cmd.exe` workloads.
+and Microsoft's own `GenImage.cmd` applies them only on a Windows 11 host with
+DISM. That read as "no macOS path" for a long time, and was the single biggest
+open problem for anything beyond `cmd.exe` workloads.
+
+**Solved.** WinQuick runs DISM *inside WinQuick*, against an offline copy of
+its own image (`src/servicing.rs`), which needs no Windows host at all. That is
+how the `desktop` and `dotnet-framework` capabilities are built. `/Online`
+servicing of the running Validation OS still returns `0x80070032` and never
+works; offline is the only route. See [desktop.md](desktop.md).
 
 ## Boot configuration that works
 
@@ -1773,8 +1779,8 @@ csproj-4    8s  warm run  discarded=0
 ```
 
 Same workspace, same prepared guest, same machine. The only difference was the
-command: `dotnet build OpcLogger.sln` against `dotnet build
-OpcLogger.Core/OpcLogger.Core.csproj`. Every failure was reported as `timed out
+command: `dotnet build App.sln` — three projects — against `dotnet build
+App.Core/App.Core.csproj`, one of them. Every failure was reported as `timed out
 waiting for WQGO.TXT from the guest` — a *restored* guest that never picked the
 command up.
 
@@ -1843,3 +1849,163 @@ is baked into the base image, and changing its hash makes every existing
 runtime report "built by a different version of winquick" until the user runs
 `winquick setup --force`. Worth doing at the next runtime rebuild; the
 host-side check stands on its own either way.
+
+
+## Validation OS can have a .NET Framework, and which one
+
+The note that said Validation OS "carries no .NET Framework runtime at all" was
+true, and was read for a long time as a property of the product rather than of
+the stock image. It is on Microsoft's own media as
+`Microsoft-WinVOS-NetFx45-Package.cab`, in `cabs/Common` beside the graphics
+and WPF packages WinQuick already applies, and DISM takes it like any other
+package -- `rc=0`, offline, no Windows host involved.
+
+The package name is historical. What it delivers is the OS's inbox
+`C:\Windows\Microsoft.NET`, and the guest says which version that is. Asked
+from inside a serviced guest, by a .NET Framework program reading its own
+registry:
+
+```
+clr=4.0.30319.42000
+ndp-version=4.8.09221
+ndp-release=533509
+```
+
+One `v4.0.30319` runtime, and 4.x is an in-place family, so it is not a 4.5
+runtime that happens to load 4.5 assemblies -- it serves the whole 4.x line.
+Measured, by building each fixture in `experiments/dotnet-matrix/` and then
+executing the result in the same disposable guest:
+
+| Target | Builds | Runs |
+|---|---|---|
+| net40 | yes | **yes** |
+| net45 | yes | **yes** |
+| net472 | yes | **yes** (AnyCPU and x64, console and WPF) |
+| net48 | yes | **yes** |
+| net481 | yes | **yes** |
+
+There is no CLR 2.0 on the image and no `NetFx35` package on the media, so
+net20 and net35 have a build result and nothing more -- and worse than nothing
+more: the 4.x shim's "please install .NET Framework v2.0" path wants a user,
+and a headless guest has nobody to answer it, so the process never returns.
+That is how the timeout defect below was found.
+
+### What it took beyond `NetFx45`
+
+Five more packages, each found by one failure:
+
+| Package | Without it |
+|---|---|
+| `Apps` | `shell32.dll` is missing, `urlmon.dll` will not load, and `GenerateResource` takes the build down |
+| `GDIPlus` | `new Bitmap(...)` throws `TypeInitializationException` |
+| `Fonts` | GDI+ wants one the moment anything draws text |
+| `COM` | `GenerateResource` asks the shell for a file's security zone and gets `REGDB_E_CLASSNOTREG` |
+| `WLAN` | carries `rasapi32.dll`; without it NuGet dies in `ProxyCache`'s type initializer |
+
+Plus the `-WOW64` halves of `Apps`, `COM` and `NetFx45`, for x86 under
+emulation.
+
+### Three things people mean by ".NET Framework"
+
+Keeping these apart is what took the longest:
+
+- **Reference assemblies** -- metadata only, what the compiler binds against.
+  They come from NuGet (`Microsoft.NETFramework.ReferenceAssemblies.*`),
+  restored on the Mac. A `.csproj` targeting .NET Framework does not declare
+  them, because on Windows they arrive with a developer pack, which is why
+  `winquick cache add <Name>@<Version>` exists.
+- **The runtime** -- the CLR and `C:\Windows\Microsoft.NET`. Microsoft's
+  media, applied by `capability install dotnet-framework`. Nothing runs without
+  it; everything builds without it.
+- **The classic toolchain** -- `MSBuild.exe`, `Microsoft.Common.targets`,
+  `Microsoft.CSharp.targets`, `Microsoft.WinFX.targets`,
+  `PresentationBuildTasks.dll`. Part of the same package. This is what restores
+  a `packages.config` project and markup-compiles a classic WPF one, and the
+  SDK's CoreCLR copy cannot substitute for it: `PresentationBuildTasks` on
+  CoreCLR resolves XAML types from `@(ReferencePath)` alone and RAR puts no
+  transitive framework assembly there, so a classic WPF project stops at
+  **MC1000**.
+
+`experiments/dotnet-matrix/ClassicNetFxX64` is one fixture that needs all three
+at once, and `tests/integration.sh` builds and runs it whenever the capability
+and the net472 reference assemblies are present.
+
+
+## A slow command looked exactly like a broken guest
+
+Found while measuring which .NET Framework targets actually run. A net20
+console application builds in two seconds and then *hangs* the guest: there is
+no CLR 2.0 on the image, and the 4.x shim's "please install .NET Framework
+v2.0" path never returns on a machine with nobody to answer it.
+
+`winquick run --timeout 90` on that binary took **745 seconds** to give up.
+Both net20 and net35, four runs, no variance.
+
+The reason is the same shape as the acknowledgement race above, seen from the
+other end. The warm path asks two questions with one helper:
+
+1. *Did this guest take the command?* — the go flag disappearing, `FIRST_CONTACT`.
+2. *Has the command finished?* — `WQCODE.TXT` appearing, the user's `--timeout`.
+
+Both report failure as `GuestSilent`, and `execute()` reads `GuestSilent` as
+"this prepared guest is no good". So the second question timing out threw away
+a working prepared guest, cold-booted, **ran the user's command again**, and
+kept going for every prepare attempt — five of them now — each paying the whole
+timeout. Ninety seconds of waiting became twelve minutes, and the command ran
+six times.
+
+Only the first question is evidence about the guest. By the time the command is
+running the guest has demonstrably picked it up, so the second wait now reports
+what it is:
+
+```
+winquick: the command did not finish within 90 s — raise it with `--timeout`
+```
+
+and the prepared guest is kept. The same command, unchanged, now costs
+**101 seconds** for a 90-second timeout, and `ready.json` is still there
+afterwards. The distinction is one error type, and `tests/integration.sh`
+checks that a two-second timeout costs seconds rather than minutes and leaves
+the prepared guest alone.
+
+This was never a symptom of the six validation commits; it is older than them,
+and raising `PREPARE_ATTEMPTS` from three to five made it worse rather than
+causing it.
+
+
+## The other half of the same race: a guest that is alive but idle
+
+The byte-counter check above answers "is this guest working hard?", and a great
+many healthy commands are not. Found by a regression test written for something
+else:
+
+```
+winquick run --timeout 2 -- cmd /c "ping -n 30 127.0.0.1"
+```
+
+`ping` moves almost no data, so the guest fails the sixteen-megabyte test. It
+also holds the go flag's directory entry in its cache for the whole thirty
+seconds, exactly as a solution build does. So the host declared a perfectly
+healthy guest halted, threw it away, rebuilt five more, declared each of those
+halted too, and cold-booted -- **117 seconds for a two-second timeout**, and no
+prepared guest left afterwards. Reproduced in isolation, four times, no
+variance.
+
+The byte total was the wrong question for this guest. The right one is smaller:
+not *how much* has it moved, but *is it still moving*. Two readings a second
+and a half apart settle it, and a halted guest cannot pass: its counters stop
+dead once the I/O in flight at resume has drained, and nothing restarts them. A
+live Windows guest never stops touching a disk for that long.
+
+The heavy case still short-circuits on the total and pays nothing extra.
+Measured after the change:
+
+| | before | after |
+|---|---|---|
+| `dotnet build App.sln`, three projects | 11.0 s | **11.2 s** |
+| `--timeout 2` on `ping -n 30` | 117 s, prepared guest destroyed | **14 s**, prepared guest kept |
+
+The second number is 10 s of `FIRST_CONTACT`, 1.5 s of window and the user's
+own two-second timeout, which is about as close to the floor as this shape of
+check gets. The remaining cost is the ten seconds, and the only thing that
+removes it is the guest-side dismount described above.

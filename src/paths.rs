@@ -77,3 +77,40 @@ pub fn uefi_code() -> Option<PathBuf> {
 pub fn run_root() -> Result<PathBuf> {
     Ok(root()?.join("run"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The .NET Framework capability is a *second* image, never a modified
+    /// base. If these ever named the same file, installing it would rewrite
+    /// the pristine runtime and "the base image is never written to" would
+    /// quietly stop being true.
+    #[test]
+    fn the_serviced_image_is_never_the_pristine_one() {
+        assert_ne!(IMAGE_NAME, FRAMEWORK_IMAGE_NAME);
+        let (base, netfx) = (base_image().unwrap(), framework_image().unwrap());
+        assert_ne!(base, netfx);
+        // Siblings under `images/`, so removing the capability is removing one
+        // directory and nothing else.
+        assert_eq!(
+            base.parent().and_then(|p| p.parent()),
+            netfx.parent().and_then(|p| p.parent())
+        );
+    }
+
+    /// A run boots the serviced image when it is installed and the pristine
+    /// one otherwise — and never anything else. Which of the two it is
+    /// depends on the machine this runs on, so the test asserts the rule
+    /// rather than the answer.
+    #[test]
+    fn a_run_boots_the_serviced_image_only_when_it_exists() {
+        let (base, netfx) = (base_image().unwrap(), framework_image().unwrap());
+        let chosen = run_image().unwrap();
+        if netfx.exists() {
+            assert_eq!(chosen, netfx);
+        } else {
+            assert_eq!(chosen, base);
+        }
+    }
+}

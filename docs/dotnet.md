@@ -16,35 +16,77 @@ Measured on Apple Silicon macOS with the `dotnet-sdk` capability, **SDK
 
 ## Build matrix
 
-| Target | Build | Run in the standard guest | Stamped target framework | Machine |
-|---|---|---|---|---|
-| .NET Framework 2.0 | yes | no | *(none — predates the attribute)* | x86 |
-| .NET Framework 3.5 | yes | no | *(none — predates the attribute)* | x86 |
-| .NET Framework 4.0 | yes | no | `.NETFramework,Version=v4.0` | x86 |
-| .NET Framework 4.5 | yes | no | `.NETFramework,Version=v4.5` | x86 |
-| .NET Framework 4.8 | yes | no | `.NETFramework,Version=v4.8` | x86 |
-| .NET Framework 4.8.1 | yes | no | `.NETFramework,Version=v4.8.1` | x86 |
-| netstandard2.0 | yes | library | `.NETStandard,Version=v2.0` | x86 |
-| netstandard2.1 | yes | library | `.NETStandard,Version=v2.1` | x86 |
-| net6.0 | yes | with roll-forward | `.NETCoreApp,Version=v6.0` | x86 IL |
-| net8.0 | yes | with roll-forward | `.NETCoreApp,Version=v8.0` | x86 IL |
-| net9.0 | yes | with roll-forward | `.NETCoreApp,Version=v9.0` | x86 IL |
-| net10.0 | yes | **yes** | `.NETCoreApp,Version=v10.0` | x86 IL |
+| Target | Build | Run in the stock guest | Run with `dotnet-framework` | Stamped target framework | Machine |
+|---|---|---|---|---|---|
+| .NET Framework 2.0 | yes | no | no — and it *hangs*, see below | *(none — predates the attribute)* | x86 |
+| .NET Framework 3.5 | yes | no | no — and it *hangs*, see below | *(none — predates the attribute)* | x86 |
+| .NET Framework 4.0 | yes | no | **yes** | `.NETFramework,Version=v4.0` | x86 |
+| .NET Framework 4.5 | yes | no | **yes** | `.NETFramework,Version=v4.5` | x86 |
+| .NET Framework 4.7.2 | yes | no | **yes** | `.NETFramework,Version=v4.7.2` | AnyCPU and x64 |
+| .NET Framework 4.8 | yes | no | **yes** | `.NETFramework,Version=v4.8` | x86 |
+| .NET Framework 4.8.1 | yes | no | **yes** | `.NETFramework,Version=v4.8.1` | x86 |
+| netstandard2.0 | yes | library | library | `.NETStandard,Version=v2.0` | x86 |
+| netstandard2.1 | yes | library | library | `.NETStandard,Version=v2.1` | x86 |
+| net6.0 | yes | with roll-forward | with roll-forward | `.NETCoreApp,Version=v6.0` | x86 IL |
+| net8.0 | yes | with roll-forward | with roll-forward | `.NETCoreApp,Version=v8.0` | x86 IL |
+| net9.0 | yes | with roll-forward | with roll-forward | `.NETCoreApp,Version=v9.0` | x86 IL |
+| net10.0 | yes | **yes** | **yes** | `.NETCoreApp,Version=v10.0` | x86 IL |
 
-**Build and run are different questions.** The `winquick run` guest is
-Microsoft's stock Validation OS, which carries **no .NET Framework runtime** —
-a .NET Framework executable builds correctly and then dies on launch with
-`0xC0000135` (`STATUS_DLL_NOT_FOUND`, the CLR shim) if you try to run it there.
-That is a property of that image, not of the build.
+**Build and run are different questions.** Microsoft's *stock* Validation OS
+carries **no .NET Framework runtime** — a .NET Framework executable builds
+correctly and then dies on launch with `0xC0000135` (`STATUS_DLL_NOT_FOUND`,
+the CLR shim). That is a property of that image, not of the build, and it is
+fixable: the runtime is on Microsoft's own media.
 
-**The desktop image does have one.** `.NET Framework` is on Microsoft's own
-Validation OS media as `Microsoft-WinVOS-NetFx45-Package.cab`, in `cabs/Common`
-beside the graphics and WPF packages, and `winquick capability install desktop`
-applies it with everything else. A .NET Framework 4.7.2 WPF application built
-by WinQuick launches in a desktop session, renders, and answers UI Automation —
-measured, on a real 3,200-line application, with a screenshot to match. The
-same package would give `winquick run` a Framework runtime too; nothing does
-that yet.
+**A .NET Framework is a capability, not a limitation.**
+`Microsoft-WinVOS-NetFx45-Package.cab` sits in `cabs/Common` on the Validation
+OS media, beside the graphics and WPF packages, and DISM applies it offline
+like any other. Two commands put it in a guest:
+
+```console
+winquick capability install dotnet-framework   # the `run` guest
+winquick capability install desktop            # a session, which includes it
+```
+
+`dotnet-framework` services a *second* image; the pristine one stays
+byte-identical, `winquick run` boots the serviced one while it exists, and
+`winquick capability remove dotnet-framework` puts `run` back on the plain
+image. `winquick doctor` says which of the two a run will boot.
+
+**Which version, exactly.** The package name is historical: what it delivers is
+the OS's inbox `C:\Windows\Microsoft.NET`, and 4.x is an in-place family, so
+one runtime serves the whole 4.x line rather than only 4.5. Asked from inside a
+serviced guest, by a .NET Framework program reading its own registry:
+
+```
+clr=4.0.30319.42000
+ndp-version=4.8.09221
+ndp-release=533509
+```
+
+Every 4.x row in the matrix above was then measured the only way that settles
+it — build the fixture and execute the result in the same disposable guest.
+`net40`, `net45`, `net48` and `net481` console applications all print their
+output and exit 0.
+
+**net20 and net35 build and then hang.** There is no CLR 2.0 on the image, and
+no `NetFx35` package on the media. The 4.x shim's "please install .NET
+Framework v2.0" path wants a user, and there is nobody in the guest to answer
+it, so the process never returns and the run ends at `--timeout`. Do not run a
+CLR 2.0 binary in the guest; building one is fine and is what these targets are
+for.
+
+net472 has been taken furthest, in three shapes:
+
+- an AnyCPU WPF application (3,200 lines, `System.Management`, an embedded
+  resource) launching in a desktop session, rendering, answering UI Automation
+  and running all thirteen of its own diagnostics to a result;
+- an **x64** classic WPF application launching on the ARM64 guest under the
+  guest's own emulation, loading a 15 MB native x64 Pdfium and converting a PDF
+  to a 2479×3508 PNG at 300 dpi;
+- headless `winquick run` executing .NET Framework programs directly — a
+  project's own bundled `nuget.exe` and
+  `C:\Windows\Microsoft.NET\Framework64\v4.0.30319\MSBuild.exe`.
 
 For modern targets the guest has only the .NET 10 runtime, so a net8.0
 executable fails with exit code 150. It runs if you ask the host to roll
@@ -72,11 +114,19 @@ you want the managed metadata.
 Building an architecture and *running* it are again separate, but the guest is
 more capable here than it looks. Validation OS ARM64 ships the full emulator
 set in `C:\Windows\System32` — `xtajit.dll` for x86 and `xtajit64.dll` plus
-`xtajit64se.dll` for x64 — and it works: a **self-contained win-x64 WPF
-application** published by WinQuick launches in a desktop session, paints, and
-answers UI Automation, with `OpcLogger.UI.exe` reading as `native x64 PE32+`
-from its own bytes. A build never needs the guest to execute the result, but if
-you want to, x64 is not a barrier.
+`xtajit64se.dll` for x64 — and it works. Two measurements, both of binaries
+WinQuick built:
+
+- a **self-contained win-x64 WPF application** on .NET 9 launches in a desktop
+  session, paints and answers UI Automation, reading as `native x64 PE32+` from
+  its own bytes;
+- an **x64 .NET Framework 4.7.2 WPF application** launches, loads a 15 MB
+  *native* x64 DLL through P/Invoke and does real work with it — rendering a
+  PDF page to a 2479×3508 PNG. The emulator carries native x64 code, not only
+  managed code JITted for x64.
+
+A build never needs the guest to execute the result, but if you want to, x64 is
+not a barrier.
 
 ## Desktop frameworks
 
@@ -85,7 +135,8 @@ you want to, x64 is not a barrier.
 | WinForms, .NET Framework 4.0 (x86) | yes | untested since the Framework runtime arrived |
 | WinForms, .NET Framework 4.8 | yes | untested since the Framework runtime arrived |
 | WinForms, .NET 10 Windows | yes | **yes**, verified through UI Automation and screenshots |
-| WPF, .NET Framework 4.7.2 | yes | **yes**, verified through UI Automation and screenshots |
+| WPF, .NET Framework 4.7.2 (AnyCPU) | yes | **yes**, verified through UI Automation and screenshots |
+| WPF, .NET Framework 4.7.2, classic non-SDK, **x64** | yes | **yes**, including a native x64 P/Invoke payload |
 | WPF, .NET 10 Windows | yes | **yes**, verified through UI Automation and screenshots |
 | WPF, .NET 9 Windows, self-contained **win-x64** | yes | **yes**, under the guest's x64 emulation |
 
@@ -141,44 +192,65 @@ there. WinQuick has not been tested on Windows XP.
   `dotnet msbuild` is the more direct route.
 
 No Visual Studio, no Build Tools and no developer pack are installed in the
-guest. The reference assemblies come from Microsoft's
-`Microsoft.NETFramework.ReferenceAssemblies.*` NuGet packages, restored on your
-Mac and carried in offline — WinQuick redistributes none of it.
+guest. Three different things get confused here and are worth keeping apart:
 
-### Two things a classic project cannot do here
+| | What it is | Where it comes from |
+|---|---|---|
+| **Reference assemblies** | metadata-only assemblies the compiler binds against | `Microsoft.NETFramework.ReferenceAssemblies.*` on NuGet, restored on your Mac by `cache add`, carried in offline |
+| **The framework runtime** | the CLR and `C:\Windows\Microsoft.NET` that an executable needs to start | Microsoft's Validation OS media, applied by `capability install dotnet-framework` |
+| **The classic toolchain** | `MSBuild.exe`, `Microsoft.WinFX.targets`, `PresentationBuildTasks.dll` | the same package — it is part of the runtime's own install |
+
+A build needs the first; running the result needs the second; a classic
+non-SDK or `packages.config` project needs the third. WinQuick redistributes
+none of it: the packages come from NuGet and the runtime from media you
+obtained from Microsoft yourself.
+
+### Two things the SDK toolchain cannot do, and what does them
 
 Measured against a real 2015-era WPF application (`packages.config`,
 `ToolsVersion="15.0"`, net472, `PlatformTarget=x64`, PdfiumViewer with a native
-x64 payload), historically built by Visual Studio's MSBuild:
+x64 payload), historically built by Visual Studio's MSBuild. Neither of these
+is a WinQuick limitation; both are the .NET SDK declining to do something only
+.NET Framework's own toolchain does, and both are answered by
+`winquick capability install dotnet-framework`, which brings that toolchain
+into the guest — `MSBuild.exe`, `Microsoft.Common.targets`,
+`Microsoft.CSharp.targets`, `Microsoft.WinFX.targets` and
+`PresentationBuildTasks.dll`.
 
-- **`packages.config` cannot be restored inside the guest.** The two programs
-  that can do it are `nuget.exe` and .NET Framework `MSBuild.exe`, and both need
-  a Framework runtime the `run` image does not have — the repository's own
-  bundled `nuget.exe` exits `0xC0000135`. `dotnet msbuild -t:Restore
-  -p:RestorePackagesConfig=true` is not an alternative: NuGet detects the file
-  (`ProjectStyle=PackagesConfig`, the right `PackagesConfigPath`) and then
-  answers "Nothing to do. None of the projects specified contain packages to
-  restore", because that restore path is .NET Framework-only. The packages
-  themselves come in fine with `winquick cache add`; what is missing is the
-  program that lays them out as `packages\<Id>.<Version>\`.
+- **`packages.config` is not restored by the SDK.** `dotnet msbuild -t:Restore
+  -p:RestorePackagesConfig=true` detects the file (`ProjectStyle=PackagesConfig`,
+  the right `PackagesConfigPath`) and then answers "Nothing to do. None of the
+  projects specified contain packages to restore", because that restore path is
+  .NET Framework-only. The two programs that *can* do it are `nuget.exe` and
+  .NET Framework `MSBuild.exe`, and both are .NET Framework programs: on the
+  stock image they exit `0xC0000135`. With the capability installed they run,
+  and a project's own bundled `nuget.exe` restores its `packages.config`
+  against the offline cache:
 
-- **XAML in a classic project does not markup-compile.** A classic `.csproj`
-  never imports the WPF targets, and injecting them works —
-  `/p:CustomAfterMicrosoftCommonTargets=%DOTNET_ROOT%\sdk\<v>\Sdks\Microsoft.NET.Sdk.WindowsDesktop\targets\Microsoft.WinFX.targets`
-  gets `MarkupCompilePass1` to run. It then fails with **MC1000, "Could not find
-  assembly 'System.Web'"**. `PresentationBuildTasks` running on .NET resolves
-  XAML type references only from `@(ReferencePath)`, and MSBuild's
-  `ResolveAssemblyReference` puts no *transitive* framework assemblies there for
-  a classic project — `System.Web` arrives only as a dependency of the project's
-  `System.Web.Extensions` reference. On the historical build machine
-  `PresentationBuildTasks` ran on .NET Framework, where the loader falls back to
-  the GAC. Everything else in that build works: framework references resolve,
-  the `HintPath` package reference resolves, the native x64 payload is staged,
-  and the C# compiler runs.
+  ```console
+  winquick run -w . -- cmd /c "nuget.exe restore App.sln -Source %NUGET_PACKAGES% -NonInteractive"
+  ```
 
-  Both are properties of the toolchain, not of WinQuick. A classic project whose
-  XAML pulls in nothing outside its own explicit references is not affected;
-  an SDK-style `net472` WPF project is not affected at all.
+  WinQuick ships no `nuget.exe` of its own — bring the one the project uses.
+
+- **XAML in a classic project does not markup-compile under the SDK.** A
+  classic `.csproj` never imports the WPF targets, and injecting them
+  (`/p:CustomAfterMicrosoftCommonTargets=…\Microsoft.WinFX.targets`) gets
+  `MarkupCompilePass1` to run and then fails with **MC1000, "Could not find
+  assembly 'System.Web'"**. `PresentationBuildTasks` running on CoreCLR
+  resolves XAML type references from `@(ReferencePath)` alone, and MSBuild's
+  `ResolveAssemblyReference` puts no *transitive* framework assemblies there
+  for a classic project — `System.Web` arrives only as a dependency of the
+  project's `System.Web.Extensions` reference. On .NET Framework the loader
+  falls back to the GAC, which is why the historical build machine never saw
+  this. Framework `MSBuild.exe` markup-compiles the same project without
+  argument:
+
+  ```console
+  winquick run -w . -- cmd /c "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\MSBuild.exe App.sln /p:Configuration=Release"
+  ```
+
+  An SDK-style `net472` WPF project was never affected by either.
 
 ## Offline reference and targeting packs
 

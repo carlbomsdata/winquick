@@ -211,6 +211,42 @@ else
   echo "== nuget cache (skipped: cache/SDK/test project not present) =="
 fi
 
+# A classic, non-SDK .NET Framework project: the shape that found most of what
+# `dotnet-framework` exists for. Each check below stands for a failure that was
+# once discovered by a real build rather than by this suite.
+FIXTURE="$SCRIPTDIR/../experiments/dotnet-matrix/ClassicNetFxX64"
+REFPKG=~/.winquick/caches/nuget/microsoft.netframework.referenceassemblies.net472/1.0.3
+if [ -f ~/.winquick/images/netfx-arm64/base.qcow2 ] && [ -d "$REFPKG" ] && [ -d "$FIXTURE" ]; then
+echo "== classic .NET Framework project =="
+NTMP=$(mktemp -d)
+cp -R "$FIXTURE/." "$NTMP/"
+MSB='C:\Windows\Microsoft.NET\Framework64\v4.0.30319\MSBuild.exe'
+REFROOT='/p:TargetFrameworkRootPath=%NUGET_PACKAGES%\microsoft.netframework.referenceassemblies.net472\1.0.3\build'
+rm -rf winquick-artifacts
+# One run, because the workspace is disposable: what is built has to be run
+# before the guest is thrown away. `dotnet build` cannot drive this project at
+# all; the Framework MSBuild the capability brings can.
+out=$("$WQ" run -w "$NTMP" -a "bin/Release/**" --timeout 900 \
+  -- cmd /c "$MSB ClassicNetFxX64.csproj /p:Configuration=Release $REFROOT /nologo /v:q && bin\\Release\\ClassicNetFxX64.exe" 2>&1)
+check "netfx: classic MSBuild builds a non-SDK project and runs it" "$?" "0"
+EXE=winquick-artifacts/bin/Release/ClassicNetFxX64.exe
+[ -f "$EXE" ] && ok "netfx: the build produced an executable" || bad "netfx: no executable" "$out"
+# PE machine 0x8664. An ARM64 guest produced an x64 binary.
+mach=$(python3 "$SCRIPTDIR/peinfo.py" "$EXE" 2>/dev/null | awk '/machine/{print $2}')
+check "netfx: an ARM64 guest produced an x64 binary" "$mach" "x64"
+tfm=$(python3 "$SCRIPTDIR/peinfo.py" "$EXE" 2>/dev/null | awk '/targetFramework/{print $2}')
+check "netfx: the target framework is stamped" "$tfm" ".NETFramework,Version=v4.7.2"
+# The other half: a guest with no Framework builds this correctly and then
+# dies with 0xC0000135, so only running it proves the runtime is there.
+case "$out" in *"ptr=8"*) ok "netfx: the x64 binary ran as a 64-bit process";; *) bad "netfx: pointer size" "$out";; esac
+case "$out" in *"bitmap=8x8 red=255"*) ok "netfx: System.Drawing and GDI+ work";; *) bad "netfx: GDI+" "$out";; esac
+case "$out" in *"baml=yes"*) ok "netfx: XAML was markup-compiled into the assembly";; *) bad "netfx: markup compile" "$out";; esac
+case "$out" in *"ndp-version=4."*) ok "netfx: the guest reports an installed .NET Framework 4.x";; *) bad "netfx: NDP version" "$out";; esac
+rm -rf "$NTMP" winquick-artifacts
+else
+  echo "== classic .NET Framework project (skipped: dotnet-framework capability or net472 reference assemblies not present) =="
+fi
+
 echo "== lifecycle =="
 "$WQ" --version | grep -q "winquick " && ok "--version reports a version" || bad "--version" "$("$WQ" --version)"
 "$WQ" --help | grep -q "winquick run -- cmd /c ver" && ok "--help shows examples" || bad "--help" "no examples"
@@ -223,9 +259,19 @@ case "$out" in *total*) ok "clean --dry-run reports without removing";; *) bad "
 
 echo "== interrupt and timeout =="
 before_q=$(pgrep -f qemu-system-aarch64 | wc -l | tr -d " ")
-"$WQ" run --timeout 2 -- cmd /c "ping -n 30 127.0.0.1" >/dev/null 2>&1
+# Warm this run up first, so the check below is about the timeout and not about
+# there being no prepared guest yet.
+"$WQ" run -- cmd /c "exit 0" >/dev/null 2>&1
+t0=$(date +%s)
+out=$("$WQ" run --timeout 2 -- cmd /c "ping -n 30 127.0.0.1" 2>&1)
 rc=$?
+el=$(( $(date +%s)-t0 ))
 [ "$rc" -ne 0 ] && ok "timeout fails rather than hanging" || bad "timeout" "exit $rc"
+case "$out" in *"--timeout"*) ok "a timeout says which flag to change";; *) bad "timeout message" "$out";; esac
+# A command that ran out of time says nothing about the guest that ran it.
+# Falling back used to re-run the whole command cold, once per prepare attempt.
+[ "$el" -lt 60 ] && ok "a timeout is not retried on a fresh guest" || bad "timeout retried" "took ${el}s for a 2 s timeout"
+[ -f ~/.winquick/states/validation-arm64/ready.json ] && ok "a timeout keeps the prepared guest" || bad "prepared guest discarded by a timeout" "no ready.json"
 sleep 1
 after_q=$(pgrep -f qemu-system-aarch64 | wc -l | tr -d " ")
 check "timeout leaves no qemu behind" "$after_q" "$before_q"

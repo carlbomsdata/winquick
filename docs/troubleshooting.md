@@ -92,6 +92,31 @@ winquick capability install dotnet-runtime    # only to run built apps
 Install one or the other, not both — they provide the same `dotnet` command and
 whichever is found first wins.
 
+**A program exits `0xC0000135` (`-1073741515`) and prints nothing**
+
+`STATUS_DLL_NOT_FOUND`. For a .NET Framework program — including `nuget.exe`
+and anything else built for net4xx — this means the guest has no .NET Framework
+runtime, which the stock image does not:
+
+```console
+winquick capability install dotnet-framework
+```
+
+That services a second image, which `winquick run` then boots; `winquick
+doctor` says which of the two it is. The same runtime brings the classic
+`MSBuild.exe` toolchain, which is what restores a `packages.config` project and
+markup-compiles a classic WPF one. See [dotnet.md](dotnet.md).
+
+**`error MSB4019: The imported project "…\Microsoft.CSharp.targets" was not
+found`, or MC1000 on a classic WPF project**
+
+The SDK's MSBuild cannot drive a classic non-SDK project all the way. Use the
+Framework one, which the `dotnet-framework` capability provides:
+
+```console
+winquick run -w . -- cmd /c "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\MSBuild.exe App.sln /p:Configuration=Release"
+```
+
 **`error NU1301: No such host is known (api.nuget.org)`**
 
 The packages are not cached and Windows has no network. Restore them on your Mac:

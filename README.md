@@ -120,9 +120,15 @@ cannot change your source.
 WinQuick builds far more than the SDK's own version: .NET Framework 2.0 through
 4.8.1, netstandard, and net6.0 through net10.0 — including a classic non-SDK
 project. It will build an **x86 WinForms application targeting .NET Framework
-4.0**, a Windows XP-era target, with no Visual Studio anywhere. Which of those
-it can also *run* is a separate question, answered in
-[docs/dotnet.md](docs/dotnet.md).
+4.0**, a Windows XP-era target, with no Visual Studio anywhere.
+
+Running a .NET Framework binary is a second question, and the answer is
+`winquick capability install dotnet-framework`: the runtime is on Microsoft's
+own Validation OS media, and with it a classic `packages.config` WPF project
+restores with its own `nuget.exe`, builds under Framework `MSBuild.exe` and
+runs — measured on net472, including an x64 build executing under the ARM64
+guest's emulation. [docs/dotnet.md](docs/dotnet.md) has the matrix and is
+careful about what has and has not been measured.
 
 **Get files back out**
 
@@ -264,7 +270,12 @@ Optional capabilities, installed only if you ask:
 | `powershell` — PowerShell 7.6.5 | 273 MiB |
 | `dotnet-runtime` — .NET 10 runtime | 90 MiB |
 | `dotnet-sdk` — .NET 10 SDK | 837 MiB |
-| `desktop` — WPF/WinForms, UI automation, screenshots | 2.0 GiB |
+| `dotnet-framework` — .NET Framework and the classic MSBuild toolchain | 2.0 GiB image |
+| `desktop` — WPF/WinForms, UI automation, screenshots | 3.0 GiB image |
+
+The first three are volumes attached to the guest. The last two are serviced
+*into* a copy of the Windows image, so they are whole images rather than
+additions — the pristine runtime is never written to either way.
 
 ## Every run is clean
 
@@ -308,11 +319,15 @@ boundary — [docs/security.md](docs/security.md) is precise about what is.
 `winquick cache sync` restores NuGet packages on your Mac so builds work
 offline.
 
-**Two runtimes, on purpose.** The base runtime carries no graphics stack at
-all, which is what keeps it at 763 MiB and a command at ~300 ms; it is for
-commands, builds and tests. The desktop capability adds WPF, WinForms, UI
-Automation and screenshots, and is a separate install because most runs never
-need it. `winquick desktop start` names anything still missing.
+**Separate runtimes, on purpose.** The base runtime carries no graphics stack
+at all, which is what keeps it at 763 MiB and a command at ~300 ms; it is for
+commands, builds and tests. `dotnet-framework` adds .NET Framework and the
+classic MSBuild toolchain to the image `run` boots; `desktop` adds WPF,
+WinForms, UI Automation and screenshots on top of that. Each is a separate
+install because most runs never need it, each is a *second* image so the
+pristine one stays byte-identical, and removing one is deleting a directory.
+`winquick doctor` says which image a run will boot; `winquick desktop start`
+names anything still missing.
 
 **Execution model.** Each `winquick run` starts one disposable top-level
 process and throws the environment away afterwards. That process can do as much

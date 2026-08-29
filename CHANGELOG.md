@@ -90,7 +90,7 @@
   Packages are also counted per *version* rather than per id, so a second
   version of a package already present is noticed.
 - **A build big enough to be worth caching never got a warm run.** Measured on
-  a three-project solution: `dotnet build OpcLogger.sln` took **122 s** and
+  a three-project solution, `dotnet build App.sln` took **122 s** and
   discarded five prepared guests, every single time, while `dotnet build` of
   one project in the same workspace took 8 s warm. The go flag disappearing is
   a FAT directory write, and the agent starts the workload the instant it has
@@ -100,6 +100,29 @@
   nothing, a building one had moved 210 MiB. **122 s to 11 s**, and the
   prepared guest survives. A monitor that will not answer still falls back in
   ten seconds. Evidence in [docs/research.md](docs/research.md).
+- **A guest that was alive but idle was still mistaken for a halted one.** The
+  byte-counter check above asks "is this guest working hard?", and plenty of
+  healthy commands are not: `winquick run --timeout 2 -- cmd /c "ping -n 30
+  127.0.0.1"` moves almost nothing while holding the go flag in the guest's
+  cache for thirty seconds, and was read as halted — a discarded prepared
+  guest, five rebuilds and **117 s** for a two-second timeout. When the total
+  is not enough to decide, WinQuick now asks the smaller question the total
+  cannot: not how much the guest has moved, but whether it is still moving, by
+  comparing two readings a second and a half apart. A halted guest's counters
+  stop dead and cannot pass. **117 s to 14 s**, and the prepared guest is kept;
+  the heavy case still decides on the total and pays nothing extra (an
+  unchanged 11 s on the three-project solution).
+- **A command that hit `--timeout` was run again, up to six times.** The warm
+  path asks two questions with the same mailbox wait — "did this guest take the
+  command?" and "has the command finished?" — and both reported failure as a
+  silent guest. So a command that ran past its timeout was read as a broken
+  prepared guest: WinQuick threw the guest away, cold-booted, ran the whole
+  command again, and repeated that for every prepare attempt. Measured on a
+  `--timeout 90` command that hangs in the guest: **745 s** to give up. Only
+  the first question is evidence about the guest — by the time the command is
+  running, the guest has demonstrably picked it up — so the second now reports
+  what it is, names the limit and says which flag changes it, and the prepared
+  guest is kept. **745 s to 101 s** on the same command.
 - **`winquick cache sync` could not restore a `net*-windows` project at all.**
   The host is macOS, every project WinQuick exists to build targets Windows,
   and the SDK refused each one with `NETSDK1100: To build a project targeting
@@ -245,10 +268,12 @@
   `SetConsoleCtrlHandler`, and `src/proc.rs` carries the three process
   operations both hosts need.
 - **[docs/dotnet.md](docs/dotnet.md) — an empirical .NET build matrix.** Which
-  target frameworks WinQuick can build, which the standard guest can also run,
+  target frameworks WinQuick can build, which guest can also run them,
   and what the produced binaries actually are. .NET Framework 2.0 through
-  4.8.1, netstandard 2.0/2.1 and net6.0 through net10.0 all build; the guest
-  carries no .NET Framework runtime, so those build but do not run there.
+  4.8.1, netstandard 2.0/2.1 and net6.0 through net10.0 all build; the *stock*
+  image carries no .NET Framework runtime, so those build there and do not run
+  — `capability install dotnet-framework` is what changes that, and the matrix
+  says for each target whether running it has actually been measured.
   Includes an **x86 WinForms application targeting .NET Framework 4.0** — a
   Windows XP-era target — built from a classic non-SDK project with no Visual
   Studio anywhere, and verified by reading the output's PE and CLR metadata.
@@ -262,12 +287,37 @@
   files, all in the host seam, and the prepared-state restore experiment that
   has to be answered on real hardware before the backend can be chosen. Not
   implemented; Apple Silicon macOS remains the supported host.
+- **`experiments/dotnet-matrix/ClassicNetFxX64`** — one fixture standing in for
+  the shape of project that found most of this: non-SDK `.csproj`,
+  `packages.config`, XAML that has to be markup-compiled, `PlatformTarget=x64`
+  on an ARM64 guest, and `System.Drawing` at runtime. Each of those was a
+  separate failure discovered by a build, and none of them had a regression
+  test that did not require somebody's private repository. `tests/integration.sh`
+  builds it and runs the result when the `dotnet-framework` capability and the
+  net472 reference assemblies are present, and skips otherwise.
 
 ### Changed
 
 - Public URLs and the Homebrew command use the canonical `carlbomsdata`
   namespace rather than depending on redirects from the old organisation name.
   The install command is now `brew install carlbomsdata/tap/winquick`.
+- **The documentation no longer says a .NET Framework is impossible here.** The
+  old note — "Validation OS carries no .NET Framework runtime" — was true of the
+  stock image and had been read across the docs as a property of the product.
+  Every place that said or implied it now distinguishes the stock image, the
+  serviced image, and the three separate things people mean by ".NET
+  Framework": *reference assemblies* (NuGet, restored on the Mac, needed to
+  compile), the *runtime* (Microsoft's media, applied by
+  `capability install dotnet-framework`, needed to launch), and the *classic
+  toolchain* (`MSBuild.exe` and `PresentationBuildTasks.dll`, part of the same
+  package, needed for `packages.config` and classic WPF). The build matrix in
+  [docs/dotnet.md](docs/dotnet.md) gained a "run with `dotnet-framework`"
+  column, and it says **not measured** for every target where that is the
+  truth: net472 is what has actually been run, in AnyCPU and x64.
+- **`winquick info` reports the .NET Framework capability and the image a run
+  will boot**, in the JSON an agent reads as well as on the terminal. `doctor`
+  already said so; over MCP there was no way to find out except by running a
+  program and getting `0xC0000135`.
 
 ## v0.3.0 — native MCP
 

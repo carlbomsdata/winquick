@@ -10,6 +10,11 @@ the code.
 - `winforms-net48`, `wpf-net48` — legacy desktop frameworks
 - `XpPanel` — a **classic non-SDK** WinForms project, .NET Framework 4.0, x86:
   the Windows XP-era build proof
+- `ClassicNetFxX64` — a **classic non-SDK** project carrying everything that
+  needed the `dotnet-framework` capability at once: `packages.config`, XAML to
+  markup-compile, `PlatformTarget=x64` on an ARM64 guest, and `System.Drawing`
+  at runtime. `tests/integration.sh` builds and runs it when the capability and
+  the net472 reference assemblies are present.
 
 Each carries a `NuGet.config` that clears package sources, so an offline restore
 reports the package it actually wants instead of complaining about the network.

@@ -258,6 +258,11 @@ fn execute(command: &str, opts: &Options) -> Result<Outcome> {
                         return Ok(o);
                     }
                     Err(e) if crate::interrupt::interrupted() => return Err(e),
+                    // The guest took the command and then ran out of time on
+                    // it. Nothing is wrong with this prepared guest, and
+                    // running the same slow command again cold would only
+                    // spend the timeout a second time.
+                    Err(e) if command_timed_out(&e) => return Err(e),
                     Err(e) => {
                         ctx.vlog(format!("warm path failed: {e:#}"));
                         ctx.vlog("discarding ready state and falling back to cold boot");
@@ -293,6 +298,7 @@ fn execute(command: &str, opts: &Options) -> Result<Outcome> {
                             return Ok(o);
                         }
                         Err(e) if crate::interrupt::interrupted() => return Err(e),
+                        Err(e) if command_timed_out(&e) => return Err(e),
                         Err(e) => ctx.vlog(format!("that prepared guest did not work: {e:#}")),
                     }
                 }
@@ -312,6 +318,7 @@ fn execute(command: &str, opts: &Options) -> Result<Outcome> {
                                     return Ok(o);
                                 }
                                 Err(e) if crate::interrupt::interrupted() => return Err(e),
+                                Err(e) if command_timed_out(&e) => return Err(e),
                                 Err(e) => {
                                     ctx.vlog(format!(
                                         "newly built ready state did not work \
@@ -337,11 +344,11 @@ fn execute(command: &str, opts: &Options) -> Result<Outcome> {
                                         // how a machine that works ends up
                                         // cold-booting for ever.
                                         if state::restore_works(&backend) {
-                                            ctx.vlog(
-                                                "three prepared guests in a row came back \
-                                                 silent, but this QEMU has restored one \
-                                                 before; leaving the fast path on",
-                                            );
+                                            ctx.vlog(format!(
+                                                "{PREPARE_ATTEMPTS} prepared guests in a row \
+                                                 came back silent, but this QEMU has restored \
+                                                 one before; leaving the fast path on"
+                                            ));
                                         } else {
                                             let _ = state::mark_restore_unsupported(&backend);
                                             ctx.vlog(
@@ -628,6 +635,46 @@ fn guest_was_silent(e: &anyhow::Error) -> bool {
     e.chain().any(|c| c.downcast_ref::<GuestSilent>().is_some())
 }
 
+/// The command was picked up and did not finish inside `--timeout`.
+///
+/// A different thing entirely from a silent guest, and the difference costs
+/// real time: a silent guest is worth replacing and trying again, a slow
+/// command is not. Treating the two alike ran a user's command once on the
+/// prepared guest, threw that guest away, and then ran the whole thing again
+/// cold -- up to `PREPARE_ATTEMPTS` more times, each paying the full timeout.
+#[derive(Debug)]
+struct CommandTimedOut(Duration);
+
+impl std::fmt::Display for CommandTimedOut {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the command did not finish within {} s — raise it with `--timeout`",
+            self.0.as_secs()
+        )
+    }
+}
+
+impl std::error::Error for CommandTimedOut {}
+
+fn command_timed_out(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.downcast_ref::<CommandTimedOut>().is_some())
+}
+
+/// Reinterpret the *second* of the two waits.
+///
+/// Both waits report silence the same way, because both are "the guest wrote
+/// nothing". Only the first one is evidence about the guest: by the time the
+/// command is running, the guest has demonstrably picked it up, and running out
+/// of time after that says something about the command instead.
+fn as_command_timeout(e: anyhow::Error, limit: Duration) -> anyhow::Error {
+    if guest_was_silent(&e) {
+        anyhow::Error::new(CommandTimedOut(limit))
+    } else {
+        e
+    }
+}
+
 /// Wait for a mailbox file to appear, polling the image directly.
 ///
 /// Cheap on purpose: FAT32 metadata for a handful of files is a few sectors, so
@@ -713,8 +760,6 @@ fn kill(child: &mut Child) {
 
 // ---------------------------------------------------------------- warm path
 
-/// How long to give a prepared guest that has never actually run a command.
-///
 /// How long a restored guest gets to pick the command up.
 ///
 /// A working one does it in about half a second -- the agent's poll loop turns
@@ -745,6 +790,33 @@ const FIRST_CONTACT: Duration = Duration::from_secs(10);
 /// turn. One that is building moves tens of megabytes in the same window.
 /// Sixteen megabytes sits well clear of both.
 const PROOF_OF_LIFE_BYTES: u64 = 16 * 1024 * 1024;
+
+/// How long to watch the counters when the total is not enough to decide.
+///
+/// `PROOF_OF_LIFE_BYTES` answers "is this guest working hard?", and a great
+/// many perfectly healthy commands are not. `winquick run --timeout 2 -- cmd
+/// /c "ping -n 30 127.0.0.1"` moves almost nothing, holds the go flag in the
+/// guest's cache for the whole thirty seconds, and was therefore read as a
+/// halted guest -- which cost a discarded prepared guest, five rebuilds and
+/// **117 s** for a two-second timeout, measured.
+///
+/// So ask the smaller question the byte total cannot: not *how much* has this
+/// guest moved, but *is it still moving*. A guest that came back halted stops
+/// dead once the I/O in flight at resume has drained, and its counters never
+/// change again. A live Windows guest never stops touching a disk for a second
+/// and a half. Only paid on the fallback path, after the ten-second deadline
+/// has already passed.
+const STILL_MOVING_WINDOW: Duration = Duration::from_millis(1500);
+
+/// Is the guest's I/O still advancing at all?
+///
+/// Conservative in the same way `io_since` is: a monitor that will not answer,
+/// or counters that do not move, is never read as proof of life.
+fn still_moving(q: &mut qmp::Qmp) -> bool {
+    let before = guest_io(q);
+    std::thread::sleep(STILL_MOVING_WINDOW);
+    io_since(before, guest_io(q)) > 0
+}
 
 /// How many prepared guests to build before believing the machine cannot restore.
 ///
@@ -831,18 +903,25 @@ fn warm_execute(ctx: &Ctx, ready: &state::ReadyState, command: &str) -> Result<O
         // guest anything.
         let io_at_resume = guest_io(&mut q);
         if let Err(e) = wait_until_gone(&mbox, mailbox::GO, &mut child, Instant::now() + FIRST_CONTACT) {
-            let moved = io_since(io_at_resume, guest_io(&mut q));
-            if !guest_was_silent(&e) || moved < PROOF_OF_LIFE_BYTES {
+            if !guest_was_silent(&e) {
                 return Err(e);
             }
+            let moved = io_since(io_at_resume, guest_io(&mut q));
+            let why = if moved >= PROOF_OF_LIFE_BYTES {
+                format!("has moved {:.0} MiB", moved as f64 / (1024.0 * 1024.0))
+            } else if still_moving(&mut q) {
+                "is still moving data".to_string()
+            } else {
+                return Err(e);
+            };
             ctx.vlog(format!(
-                "the guest has not acknowledged the command yet but has moved {:.0} MiB — \
-                 it is working, not halted; waiting for the command instead",
-                moved as f64 / (1024.0 * 1024.0)
+                "the guest has not acknowledged the command yet but {why} — \
+                 it is working, not halted; waiting for the command instead"
             ));
         }
         let deadline = Instant::now() + ctx.timeout;
-        wait_for(&mbox, mailbox::CODE_FILE, &mut child, deadline)?;
+        wait_for(&mbox, mailbox::CODE_FILE, &mut child, deadline)
+            .map_err(|e| as_command_timeout(e, ctx.timeout))?;
         let t_exec = t0.elapsed();
         let r = mailbox::read_results(&mbox)?;
         if r.nonce.as_deref() != Some(nonce.as_str()) {
@@ -1020,7 +1099,8 @@ fn cold_execute(ctx: &Ctx, command: &str) -> Result<Outcome> {
 
     let result = (|| -> Result<Outcome> {
         let deadline = Instant::now() + ctx.timeout;
-        wait_for(&mbox, mailbox::CODE_FILE, &mut child, deadline)?;
+        wait_for(&mbox, mailbox::CODE_FILE, &mut child, deadline)
+            .map_err(|e| as_command_timeout(e, ctx.timeout))?;
         let r = mailbox::read_results(&mbox)?;
         if r.nonce.as_deref() != Some(nonce.as_str()) {
             bail!("the guest reported a result for a different run (token mismatch)");
@@ -1070,6 +1150,37 @@ mod tests {
         assert!(!guest_was_silent(&anyhow!("interrupted")));
     }
 
+    /// The two waits fail the same way and mean opposite things. A guest that
+    /// never took the command is worth replacing; a command that took too long
+    /// is not, and treating them alike ran the user's slow command once warm
+    /// and then up to `PREPARE_ATTEMPTS` more times cold, each paying the whole
+    /// timeout before giving up.
+    #[test]
+    fn a_slow_command_is_not_a_bad_guest() {
+        let limit = Duration::from_secs(300);
+        let e = as_command_timeout(
+            anyhow::Error::new(GuestSilent(mailbox::CODE_FILE.into())),
+            limit,
+        );
+        assert!(command_timed_out(&e), "{e:#}");
+        assert!(!guest_was_silent(&e), "a slow command must not look like a dead guest");
+        let msg = e.to_string();
+        assert!(msg.contains("300"), "{msg}");
+        assert!(msg.contains("--timeout"), "the message must say what to change: {msg}");
+
+        // Anything that is not silence passes straight through, so a QEMU that
+        // died is still reported as a QEMU that died.
+        let other = as_command_timeout(anyhow!("qemu exited (exit code: 1)"), limit);
+        assert!(!command_timed_out(&other), "{other:#}");
+        assert_eq!(other.to_string(), "qemu exited (exit code: 1)");
+
+        // The first wait keeps its meaning: that one *is* evidence about the
+        // guest, and nothing here may weaken it.
+        let first = anyhow::Error::new(GuestSilent(mailbox::GO.into()));
+        assert!(guest_was_silent(&first));
+        assert!(!command_timed_out(&first));
+    }
+
     /// The message is what a user sees; it should name what was waited for.
     #[test]
     fn a_silent_guest_says_what_it_was_waiting_for() {
@@ -1102,6 +1213,24 @@ winquick-artifact-status=0\r\n";
         // A halted guest's poll loop is a few sectors of FAT metadata.
         assert!(io_since(Some(100 * mib), Some(100 * mib + 40_000)) < PROOF_OF_LIFE_BYTES);
         assert_eq!(io_since(Some(7), Some(7)), 0);
+    }
+
+    /// Not every healthy command is a heavy one. `ping -n 30` moves almost
+    /// nothing and still holds the go flag in the guest's cache for half a
+    /// minute, so "did it move sixteen megabytes" says no about a guest that is
+    /// perfectly alive. "Is it moving at all" is the question that works for
+    /// both, and a halted guest still answers no to it: its counters stop dead.
+    #[test]
+    fn a_guest_that_is_merely_alive_is_not_a_halted_one() {
+        // The window compares two readings, so any advance at all counts.
+        assert!(io_since(Some(1_000), Some(1_512)) > 0);
+        // And a guest whose counters have stopped does not.
+        assert_eq!(io_since(Some(1_000), Some(1_000)), 0);
+        // The heavy case still short-circuits without paying for the window.
+        assert!(io_since(Some(0), Some(64 * 1024 * 1024)) >= PROOF_OF_LIFE_BYTES);
+        // The window is paid only after the ten-second deadline, so it has to
+        // stay small next to it.
+        assert!(STILL_MOVING_WINDOW < FIRST_CONTACT);
     }
 
     /// A monitor that would not answer, or answered oddly, must never be read

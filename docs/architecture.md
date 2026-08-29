@@ -396,9 +396,11 @@ already proves the mechanism); agent-based file transfer once a real agent
 exists; virtiofs eventually, though Windows ARM64 `viofs` support is the weakest
 link. SMB and shared folders are explicitly not assumed.
 
-Note that `dotnet test` specifically needs far more than a workspace — Validation
-OS as shipped has no .NET and no PowerShell. See the open questions in
-research.md.
+Note that `dotnet test` specifically needs far more than a workspace —
+Validation OS as shipped has no .NET, no .NET Framework and no PowerShell. Each
+of those is a capability now: `dotnet-sdk` and `powershell` are volumes,
+`dotnet-framework` is serviced into the image. See
+[dotnet.md](dotnet.md).
 
 ## Licensing boundaries
 

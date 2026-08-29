@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  A classic, non-SDK .NET Framework project of the shape Visual Studio wrote
+  for a decade: no `Sdk` attribute, an explicit reference list, `packages.config`
+  as the restore format, XAML that has to be markup-compiled, and
+  `PlatformTarget=x64` on an ARM64 guest.
+
+  It exists because every one of those was, at some point, a thing WinQuick
+  could not do, and each was found by a build failing rather than by a test.
+  Building this and running the result covers, in one go:
+
+    * MSBuild.exe from the serviced image driving a project `dotnet build`
+      cannot restore,
+    * `PresentationBuildTasks` markup-compiling XAML on .NET Framework, which
+      the CoreCLR copy cannot do for a classic project,
+    * an x64 binary produced by an ARM64 guest, and executed by it,
+    * `System.Drawing`, which throws in a Framework without GDI+ and is where a
+      great many Framework applications begin.
+
+  Needs the `dotnet-framework` capability and the net472 reference assemblies:
+
+    winquick capability install dotnet-framework
+    winquick cache add Microsoft.NETFramework.ReferenceAssemblies.net472@1.0.3
+-->
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Release</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>ClassicNetFxX64</RootNamespace>
+    <AssemblyName>ClassicNetFxX64</AssemblyName>
+    <TargetFrameworkVersion>v4.7.2</TargetFrameworkVersion>
+    <FileAlignment>512</FileAlignment>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)' == 'Release' ">
+    <PlatformTarget>x64</PlatformTarget>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+    <DebugType>none</DebugType>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.Xaml" />
+    <Reference Include="PresentationCore" />
+    <Reference Include="PresentationFramework" />
+    <Reference Include="WindowsBase" />
+    <!-- Resolves only once `packages.config` has been restored, which needs a
+         `nuget.exe` running on .NET Framework. Nothing in the project uses it,
+         so the build is the same either way and the restore is what is being
+         tested. -->
+    <Reference Include="Newtonsoft.Json"
+               Condition="Exists('$(MSBuildThisFileDirectory)packages\Newtonsoft.Json.13.0.3\lib\net45\Newtonsoft.Json.dll')">
+      <HintPath>$(MSBuildThisFileDirectory)packages\Newtonsoft.Json.13.0.3\lib\net45\Newtonsoft.Json.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <Page Include="MainPage.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="MainPage.xaml.cs">
+      <DependentUpon>MainPage.xaml</DependentUpon>
+    </Compile>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="packages.config" />
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+</Project>

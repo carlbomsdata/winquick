@@ -38,6 +38,15 @@ pub struct Info {
     pub platform: String,
     pub runtime_installed: bool,
     pub runtime_bytes: u64,
+    /// Whether a .NET Framework has been serviced into a second image, and
+    /// therefore whether `winquick run` boots it. An agent deciding how to
+    /// build a `net4xx` project needs this before it starts, not after a
+    /// `0xC0000135`.
+    pub dotnet_framework_installed: bool,
+    pub dotnet_framework_bytes: u64,
+    /// The image a command will actually boot, which is the serviced one when
+    /// it exists and the pristine one otherwise.
+    pub run_image: String,
     pub prepared: bool,
     pub prepared_bytes: u64,
     pub capabilities: Vec<Capability>,
@@ -49,6 +58,8 @@ pub struct Info {
 pub fn info() -> Result<Info> {
     let base = paths::base_image()?;
     let runtime_installed = base.exists();
+    let netfx = paths::framework_image()?;
+    let netfx_installed = netfx.exists();
 
     let (prepared, prepared_bytes) = match state::state_dir() {
         Ok(d) if d.join("ready.json").exists() => {
@@ -85,6 +96,9 @@ pub fn info() -> Result<Info> {
         platform: format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
         runtime_installed,
         runtime_bytes: if runtime_installed { helpers::allocated(&base) } else { 0 },
+        dotnet_framework_installed: netfx_installed,
+        dotnet_framework_bytes: if netfx_installed { helpers::allocated(&netfx) } else { 0 },
+        run_image: paths::run_image()?.display().to_string(),
         prepared,
         prepared_bytes,
         capabilities,
