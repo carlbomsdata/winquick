@@ -3,7 +3,11 @@
 #   ./tests/integration.sh [warm-run-count]
 SCRIPTDIR="$(cd "$(dirname "$0")" && pwd)"
 WQ="$SCRIPTDIR/../target/release/winquick"
-BASE=~/.winquick/images/validation-arm64/base.qcow2
+# The image `run` actually boots: the serviced one when the .NET Framework
+# capability is installed, the pristine one otherwise. Checking the wrong one
+# would let a run write to the image it boots and still report "unchanged".
+BASE=~/.winquick/images/netfx-arm64/base.qcow2
+[ -f "$BASE" ] || BASE=~/.winquick/images/validation-arm64/base.qcow2
 N=${1:-100}
 # Optional .NET fixtures, built on the host; tests are skipped when absent.
 FDAPP=${WQ_FDAPP:-/tmp/wqnet/out/fd-arm64}
@@ -201,8 +205,8 @@ check "nuget: guest cannot mutate the canonical cache" "$after" "$before"
 o=$("$WQ" run -- cmd /c "if exist %NUGET_PACKAGES%\pwned.txt (echo LEAKED) else (echo CLEAN)" 2>/dev/null | tr -d "\r\n")
 check "nuget: guest writes do not persist into later runs" "$o" "CLEAN"
 
-BASESHA=$(shasum -a 256 ~/.winquick/images/validation-arm64/base.qcow2 | cut -d" " -f1)
-check "nuget: base image unchanged by cache use" "$BASESHA" "$(shasum -a 256 ~/.winquick/images/validation-arm64/base.qcow2 | cut -d" " -f1)"
+BASESHA=$(shasum -a 256 "$BASE" | cut -d" " -f1)
+check "nuget: base image unchanged by cache use" "$BASESHA" "$(shasum -a 256 "$BASE" | cut -d" " -f1)"
 else
   echo "== nuget cache (skipped: cache/SDK/test project not present) =="
 fi
