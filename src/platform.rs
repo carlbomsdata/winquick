@@ -61,6 +61,19 @@ pub const CPU_MODEL: &str = if cfg!(target_os = "macos") { "host" } else { "Neha
 pub const UEFI_CODE: &str =
     if cfg!(target_arch = "aarch64") { "edk2-aarch64-code.fd" } else { "edk2-x86_64-code.fd" };
 
+/// Other names the same firmware goes by.
+///
+/// Distributions do not ship QEMU's own file names. Debian and Ubuntu package
+/// the aarch64 code image as `AAVMF_CODE.*.fd` under `/usr/share/AAVMF`, and
+/// the x86_64 one as `OVMF_CODE*.fd` under `/usr/share/OVMF`. They are the same
+/// edk2 build; only the packaging differs, so looking for QEMU's name alone
+/// finds nothing on a perfectly well-provisioned Linux host.
+pub const UEFI_CODE_ALTS: &[&str] = if cfg!(target_arch = "aarch64") {
+    &["AAVMF_CODE.no-secboot.fd", "AAVMF_CODE.fd", "AAVMF_CODE.secboot.fd"]
+} else {
+    &["OVMF_CODE_4M.fd", "OVMF_CODE.fd", "OVMF_CODE.secboot.fd"]
+};
+
 /// The variable-store template to seed a writable varstore from.
 ///
 /// aarch64 has no template in QEMU's share directory, so WinQuick creates a

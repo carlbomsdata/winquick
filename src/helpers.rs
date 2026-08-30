@@ -145,7 +145,11 @@ pub fn setup_tools() -> Result<SetupTools> {
                  \x20                ./scripts/build-hivex-windows.sh\n",
             );
         } else {
-            msg.push_str("  hivex      brew install hivex\n");
+            msg.push_str(if cfg!(target_os = "linux") {
+                "  hivex      apt install libhivex-bin\n"
+            } else {
+                "  hivex      brew install hivex\n"
+            });
         }
     }
     if missing.contains(&"ntfsprogs") {
@@ -164,6 +168,8 @@ pub fn setup_tools() -> Result<SetupTools> {
 /// than naming a package manager the user may not have.
 const QEMU_HINT: &str = if cfg!(target_os = "macos") {
     "brew install qemu"
+} else if cfg!(target_os = "linux") {
+    "apt install qemu-system-arm qemu-utils   (or your distribution's equivalent)"
 } else {
     "install QEMU for Windows and put it on PATH"
 };
@@ -211,6 +217,8 @@ pub fn survey() -> Vec<ToolStatus> {
             // machine underprovisioned.
             install_hint: if cfg!(windows) {
                 "should have shipped with WinQuick; reinstall"
+            } else if cfg!(target_os = "linux") {
+                "apt install libhivex-bin"
             } else {
                 "brew install hivex"
             },
@@ -243,10 +251,23 @@ pub fn uefi_firmware() -> Option<PathBuf> {
     roots.push(PathBuf::from("/opt/homebrew/share/qemu"));
     roots.push(PathBuf::from("/usr/local/share/qemu"));
     roots.push(PathBuf::from("C:\\Program Files\\qemu\\share"));
-    roots
-        .into_iter()
-        .map(|r| r.join(crate::platform::UEFI_CODE))
-        .find(|p| p.is_file())
+    // Where Linux distributions put it, which is never beside QEMU.
+    roots.push(PathBuf::from("/usr/share/qemu"));
+    roots.push(PathBuf::from("/usr/share/AAVMF"));
+    roots.push(PathBuf::from("/usr/share/OVMF"));
+    roots.push(PathBuf::from("/usr/share/edk2/aarch64"));
+    roots.push(PathBuf::from("/usr/share/edk2/x64"));
+    roots.push(PathBuf::from("/usr/share/qemu-efi-aarch64"));
+
+    // QEMU's own name first, then the names distributions repackage it under.
+    let names = std::iter::once(crate::platform::UEFI_CODE)
+        .chain(crate::platform::UEFI_CODE_ALTS.iter().copied());
+    for name in names {
+        if let Some(hit) = roots.iter().map(|r| r.join(name)).find(|p| p.is_file()) {
+            return Some(hit);
+        }
+    }
+    None
 }
 
 /// A blank UEFI variable store for one boot.

@@ -181,6 +181,17 @@ pub fn doctor() -> Result<Doctor> {
     match (std::env::consts::OS, arch) {
         ("macos", "aarch64") => b.ok("Host", "cpu", format!("Apple Silicon ({arch})")),
         ("windows", "x86_64") => b.ok("Host", "cpu", format!("x86_64 ({arch})")),
+        // Linux hosts the same product against KVM. Both architectures work the
+        // same way -- the guest follows the host -- so neither is special-cased.
+        ("linux", "x86_64") | ("linux", "aarch64") => {
+            b.ok("Host", "cpu", format!("{arch} (kvm)"))
+        }
+        ("linux", _) => b.fail(
+            "Host",
+            "cpu",
+            format!("unsupported architecture ({arch})"),
+            "On Linux, WinQuick needs x86_64 or aarch64.",
+        ),
         ("macos", _) => b.fail(
             "Host",
             "cpu",
@@ -197,7 +208,7 @@ pub fn doctor() -> Result<Doctor> {
             "Host",
             "cpu",
             format!("unsupported host ({os} {arch})"),
-            "WinQuick runs on Apple Silicon macOS and x86_64 Windows.",
+            "WinQuick runs on Apple Silicon macOS, x86_64 Windows and Linux.",
         ),
     }
     host_version(&mut b);
@@ -222,7 +233,11 @@ pub fn doctor() -> Result<Doctor> {
     match helpers::uefi_firmware() {
         Some(p) => b.ok("Tools", "uefi firmware", p.display().to_string()),
         None => b.fail("Tools", "uefi firmware", "missing",
-                       "QEMU's UEFI firmware is missing. brew reinstall qemu"),
+                       if cfg!(target_os = "linux") {
+                           "QEMU's UEFI firmware is missing. apt install qemu-efi-aarch64 (or ovmf on x86_64)"
+                       } else {
+                           "QEMU's UEFI firmware is missing. brew reinstall qemu"
+                       }),
     }
 
     // -- runtime
