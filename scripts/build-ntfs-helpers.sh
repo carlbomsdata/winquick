@@ -31,6 +31,7 @@ trap 'rm -rf "$WORK"' EXIT
 case "$(uname -s)" in
   Darwin)          HOST=macos ; EXE=""     ;;
   MINGW*|MSYS*)    HOST=windows; EXE=".exe" ;;
+  Linux)           HOST=linux ; EXE=""     ;;
   *) echo "unsupported build host: $(uname -s)" >&2; exit 1 ;;
 esac
 
@@ -68,6 +69,14 @@ CONFIGURE=(
 if [ "$HOST" = macos ]; then
   echo "==> configuring for macOS arm64"
   ./configure "${CONFIGURE[@]}" CFLAGS="-O2 -arch arm64" >/dev/null
+  MAKEFLAGS_EXTRA=()
+elif [ "$HOST" = linux ]; then
+  # A distribution's own ntfsprogs is not a substitute here. WinQuick addresses
+  # a partition *inside* a whole-disk image through NTFS_IMAGE_OFFSET, which is
+  # this project's patch; an unpatched ntfscp reads offset zero, finds no NTFS
+  # boot sector and reports "NTFS signature is missing".
+  echo "==> configuring for native Linux $(uname -m)"
+  ./configure "${CONFIGURE[@]}" CFLAGS="-O2" >/dev/null
   MAKEFLAGS_EXTRA=()
 else
   echo "==> configuring for native Windows x86_64"
@@ -115,7 +124,16 @@ done
 
 # A helper that needs a runtime beside it is not a helper WinQuick can ship.
 echo "==> checking for stray dynamic dependencies"
-if [ "$HOST" = macos ]; then
+if [ "$HOST" = linux ]; then
+  for tool in ntfscp ntfscat; do
+    stray="$(ldd "$OUT/$tool" 2>/dev/null | awk '{print $1}' \
+             | grep -viE '^(linux-vdso|libc|libm|libdl|libpthread|/lib|ld-linux)' || true)"
+    if [ -n "$stray" ]; then
+      echo "    WARNING: $tool links outside the system libraries:" >&2
+      echo "$stray" >&2
+    fi
+  done
+elif [ "$HOST" = macos ]; then
   for tool in ntfscp ntfscat; do
     if otool -L "$OUT/$tool" | tail -n +2 | grep -qv '^\s*/usr/lib\|^\s*/System'; then
       echo "    WARNING: $tool links outside the system libraries:" >&2
