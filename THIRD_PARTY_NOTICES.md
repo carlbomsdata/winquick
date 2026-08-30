@@ -85,10 +85,31 @@ and `qemu-img` as separate child processes. It does not link against QEMU,
 statically or dynamically, and contains no QEMU code. WinQuick does not
 distribute QEMU.
 
-On Windows the prepared-state path additionally needs the changes in
-[`patches/whpx-stop-and-copy.patch`](patches/whpx-stop-and-copy.patch), which
-are not applied to any binary WinQuick ships. Without them a Windows host still
-works; it boots cold every time.
+On Windows the prepared-state path additionally needs **seven** changes to
+QEMU's WHPX backend and its migration transport, applied in the order given in
+[`patches/README.md`](patches/README.md):
+
+| Patch | What it does |
+|---|---|
+| `whpx-nmi-delivery.patch` | delivers an externally injected NMI through the APIC, which was dropped |
+| `whpx-stop-and-copy.patch` | lifts WHPX's unconditional migration blocker for a stopped guest |
+| `whpx-activity-state-migration.patch` | carries each processor's `WHvRegisterInternalActivityState` |
+| `whpx-hyperv-synthetic-migration.patch` | carries the Hyper-V `GuestOsId`, hypercall page, VP assist page and reference TSC |
+| `whpx-lapic-timer-migration.patch` | carries the local APIC timer's current count |
+| `whpx-idle-suspend-restore.patch` | clears the halt/idle suspend bits so a restored processor is runnable |
+| `whpx-migration-file-binary.patch` | opens the migration file in binary mode, which the Windows CRT otherwise mangles |
+
+`whpx-resume-diagnostics.patch` is a laboratory instrument and is not part of
+the set.
+
+**None of these are applied to any binary WinQuick currently distributes** --
+there is no Windows release archive yet. Without them a Windows host still
+works; it boots cold every time, which costs roughly 16.5 s per run instead of
+1.4 s. If a Windows archive ever bundles a patched `qemu-system-x86_64.exe`,
+that is distribution of a GPL-2.0 work and this section has to grow the same
+corresponding-source offer the ntfsprogs section already carries: the exact
+upstream tarball, these patches, the build recipe, and the full licence text
+beside the binary.
 
 ---
 

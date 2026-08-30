@@ -51,7 +51,7 @@ WinQuick is fast because it does not boot Windows. It restores a **prepared
 state** into a fresh QEMU process — that is what turns a ~20 second boot into a
 ~300 ms command. Every other property is downstream of it.
 
-**It works under WHPX, with two small QEMU patches.** Measured on Windows 11 Pro
+**It works under WHPX, with seven QEMU patches.** Measured on Windows 11 Pro
 25H2 (build 26200), Intel i5-8265U, Windows Hypervisor Platform enabled, QEMU
 11.1.0, Validation OS x64 26100.8972:
 
@@ -61,8 +61,11 @@ state** into a fresh QEMU process — that is what turns a ~20 second boot into 
 
 That is fan-out reusable prepared state, not a one-way transfer — as far as the
 file and the loader are concerned. Whether the *guest* resumes executing
-afterwards is a separate question, and the answer turned out to be no; see
-[below](#the-prepared-guest-restores-and-then-does-nothing).
+afterwards is a separate question, and the answer turned out to be no at first;
+see [below](#the-prepared-guest-restores-and-then-does-nothing). It is yes now,
+at one and two processors -- and no at four, for a reason that is a property of
+the platform rather than a bug left to fix; see
+[Why four processors are not supported](#why-four-processors-are-not-supported).
 
 ### Why stock QEMU refuses
 
@@ -400,12 +403,78 @@ rather than guessing when it meets something else.
   publishers', and archives are unpacked with the `tar` Windows has shipped
   since 10 1803 rather than the `unzip` it has not. None of that has been run
   on Windows yet, so it is a claim about the code, not a measurement.
-- **A restored guest with more than one vCPU does not resume**, so a
-  multiprocessor guest still boots cold every time. This is the one real gap,
-  and it is above.
-- **The desktop** needs an x64 `wqui.exe` and x64 drivers.
+- **A restored guest resumes at one and two processors, and not at four.**
+  That is now a supported limit rather than an open gap: `platform::MAX_PREPARED_CPUS`
+  is `Some(2)` on Windows, the Windows default is two processors, and asking for
+  more on the fast path is refused with an error that names both ways out. See
+  [Why four processors are not supported](#why-four-processors-are-not-supported)
+  below.
+- **The desktop** needs x64 drivers. It no longer needs a separate `wqui.exe`
+  source: the bridge's runtime identifier follows `platform::GUEST_ARCH`, so an
+  x64 host publishes a `win-x64` bridge from the same project. That is a claim
+  about the code; it has not been built on Windows yet.
 - **Packaging.** A Windows user should not assemble a QEMU directory by hand,
   and the fast path additionally needs a patched QEMU.
+
+## Why four processors are not supported
+
+Windows parks an idle processor by way of the Hyper-V enlightened idle path:
+`nt!PoIdle` reaches `nt!PpmIdleGuestExecute`, which writes `HV_X64_MSR_GUEST_IDLE`
+(`0x400000F0`) and leaves the processor waiting on a **synthetic timer** whose
+expiry is an absolute point in the *partition's* reference-time domain.
+
+Restoring a prepared state does not resume a partition; it builds a **new** one
+and pours the old one's state into it. The new partition's reference time starts
+where it likes. To keep those absolute expiries meaningful, the restore would
+have to read the source partition's reference count and synthetic timer state
+and rebase both -- and the public Windows Hypervisor Platform API exposes
+neither:
+
+- there is no reference-count register in `WHvRegister*`;
+- there is no `Stimer*` register either; the synthetic timers come back only
+  inside an opaque `WHvGetVirtualProcessorState` blob with no time base in it;
+- the reference TSC page is a hypervisor-owned overlay, and reading it back from
+  the source partition returns `seq=0 scale=0 offset=0`.
+
+With one or two processors this does not matter, because the guest always has a
+processor still executing that reaches its own clock code and reprograms the
+timers itself. Beyond that there is nobody left to do it. Measured at four
+processors on the build below: five prepared states in a row unusable, then
+roughly one usable guest in five thereafter.
+
+This is a limit of *reconstructing a partition from saved state*, not a limit of
+WHP. A cold-booted WHPX guest runs four processors perfectly well, which is why
+`--cold` is the documented escape rather than a silent fallback:
+
+    winquick run --cpus 2 -- <command>          # fast, supported
+    winquick run --cold --cpus 4 -- <command>   # any count, boots from scratch
+
+The restriction is a Windows fact and only a Windows fact.
+`platform::MAX_PREPARED_CPUS` is `None` on every other host, macOS/HVF still
+defaults to four processors, and a unit test asserts a non-Windows host inherits
+no limit, so a Linux/KVM port cannot pick this up by accident.
+
+## Measured gates
+
+Windows 11 Pro 25H2 (build 26200), Intel i5-8265U, Windows Hypervisor Platform
+enabled, QEMU 11.1.0 with the seven patches in [`../patches/`](../patches/).
+
+| | 1 vCPU | 2 vCPU | 4 vCPU |
+|---|---|---|---|
+| warm runs | 20/20 | 20/20, then 99/100 | 0/20 |
+| min | 1,660 ms | 1,249 ms | -- |
+| p50 | 1,855 ms | 1,443 ms | -- |
+| mean | 1,840 ms | 2,678 ms | -- |
+| p95 | 1,947 ms | 1,645 ms | -- |
+| max | 2,303 ms | 68,751 ms | -- |
+
+Exit codes propagate exactly (0, 42 and 255 each arrive unchanged). The
+canonical image hashes identically before and after every soak. No QEMU process
+and no run directory is left behind.
+
+The 2-vCPU maximum is a restore that took the slow path once in a hundred; the
+run still produced the right answer, which is why it is counted as a success and
+reported rather than hidden.
 
 ## What the code audit found, and what was fixed
 
