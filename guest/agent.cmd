@@ -36,12 +36,24 @@ for /f "tokens=*" %%v in ('mountvol %WQ% /L') do set WQVOL=%%v
 
 rem Capability volumes (PowerShell, .NET) are attached as extra disks. Drive
 rem letters are not guaranteed, so probe for known layouts rather than assuming.
+set WQPSDRV=
+set WQPSVOL=
+set WQDOTNETDRV=
+set WQDOTNETVOL=
+for %%d in (D E F G H I J K L M N O P) do (
+  if not defined WQPSDRV if exist %%d:\pwsh\pwsh.exe set WQPSDRV=%%d:
+  if not defined WQDOTNETDRV if exist %%d:\dotnet\dotnet.exe set WQDOTNETDRV=%%d:
+)
 set WQPS=
 set WQDOTNET=
-for %%d in (D E F G H I J K L M N O P) do (
-  if not defined WQPS if exist %%d:\pwsh\pwsh.exe set WQPS=%%d:\pwsh
-  if not defined WQDOTNET if exist %%d:\dotnet\dotnet.exe set WQDOTNET=%%d:\dotnet
-)
+if defined WQPSDRV set WQPS=%WQPSDRV%\pwsh
+if defined WQDOTNETDRV set WQDOTNET=%WQDOTNETDRV%\dotnet
+rem Remember the volume identities while they are still mounted. These volumes
+rem are replaced by a fresh clone on every run, exactly like the workspace, so
+rem they get the same dismount-before-freeze, remount-before-exec treatment --
+rem see the block above WQREADY.TXT.
+if defined WQPSDRV for /f "tokens=*" %%v in ('mountvol %WQPSDRV% /L') do set WQPSVOL=%%v
+if defined WQDOTNETDRV for /f "tokens=*" %%v in ('mountvol %WQDOTNETDRV% /L') do set WQDOTNETVOL=%%v
 if defined WQPS set PATH=%WQPS%;%PATH%
 if defined WQDOTNET (
   set PATH=%WQDOTNET%;%PATH%
@@ -75,6 +87,22 @@ rem Packages come from the host-managed cache. The guest gets a throwaway clone 
 rem it, so anything a build writes here is discarded with the rest of the run.
 if defined WQNUGET set NUGET_PACKAGES=%WQNUGET%\packages
 
+rem Let go of every volume whose backing file this run will replace.
+rem
+rem A capability volume used to stay mounted for the life of the guest, which
+rem meant it was still mounted when the prepared state was frozen. The restored
+rem guest then came back holding a filesystem cache for a disk that had been
+rem swapped underneath it, and hung -- not just for pwsh, but for `cmd /c echo`,
+rem measured on Windows/WHPX as 5 runs out of 5 timing out where the same guest
+rem without a capability did 100 out of 100 in about two seconds. The same guest
+rem with an *unmountable* extra disk attached was fine, which is what pins this
+rem on the mount rather than on the device.
+rem
+rem The mailbox and the workspace have always done this. Capabilities now do too.
+if defined WQPSVOL mountvol %WQPSDRV% /P >nul 2>&1
+if defined WQDOTNETVOL mountvol %WQDOTNETDRV% /P >nul 2>&1
+if defined WQNUGETVOL mountvol %WQNUGET% /P >nul 2>&1
+
 >%WQ%\WQREADY.TXT echo 1
 mountvol %WQ% /P >nul 2>&1
 
@@ -104,6 +132,19 @@ del %WQ%\WQGO.TXT >nul 2>&1
 rem Same cache problem as the mailbox: the guest is holding a stale view of the
 rem workspace from before it was frozen. Dismount and remount to see this run's
 rem files, then surface them at a predictable path.
+rem Capability volumes first: the command about to run may be pwsh or dotnet.
+if defined WQPSVOL (
+  mountvol %WQPSDRV% /P >nul 2>&1
+  mountvol %WQPSDRV% %WQPSVOL% >nul 2>&1
+)
+if defined WQDOTNETVOL (
+  mountvol %WQDOTNETDRV% /P >nul 2>&1
+  mountvol %WQDOTNETDRV% %WQDOTNETVOL% >nul 2>&1
+)
+if defined WQNUGETVOL (
+  mountvol %WQNUGET% /P >nul 2>&1
+  mountvol %WQNUGET% %WQNUGETVOL% >nul 2>&1
+)
 if defined WQWSVOL (
   mountvol %WQWS% /P >nul 2>&1
   mountvol %WQWS% %WQWSVOL% >nul 2>&1
