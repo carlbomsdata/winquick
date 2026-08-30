@@ -571,11 +571,28 @@ fn new_run_dir() -> Result<PathBuf> {
 
 /// Clone the capability volume for this run, if there is one. Cloned rather than
 /// shared because the guest writes to it when mounting.
-fn clone_capability(ctx: &Ctx, dir: &Path) -> Result<Vec<PathBuf>> {
+///
+/// `from_ready` is the prepared state, when there is one. It matters which
+/// source is used: a restored guest resumes with these volumes still mounted
+/// and a filesystem cache describing the bytes that were on them at the freeze,
+/// which are the canonical image *plus* whatever Windows wrote when it mounted
+/// it. Cloning the canonical image instead hands that guest a disk its own
+/// cache disagrees with -- measured on Windows as a guest that restores, never
+/// acknowledges, and hangs until the command times out, for `cmd /c echo` as
+/// readily as for pwsh.
+fn clone_capability(
+    ctx: &Ctx,
+    dir: &Path,
+    from_ready: Option<&state::ReadyState>,
+) -> Result<Vec<PathBuf>> {
     let mut out = Vec::new();
     for (i, c) in ctx.capabilities.iter().enumerate() {
         let dst = dir.join(format!("cap{i}.img"));
-        qemu::clone_file(&c.image, &dst)?;
+        let src = match from_ready {
+            Some(r) => r.capability(i),
+            None => c.image.clone(),
+        };
+        qemu::clone_file(&src, &dst)?;
         out.push(dst);
     }
     Ok(out)
@@ -855,7 +872,7 @@ fn warm_execute(ctx: &Ctx, ready: &state::ReadyState, command: &str) -> Result<O
     let mbox = dir.join("mailbox.img");
     let serial = dir.join("serial.log");
     let qmp_sock = dir.join("qmp.sock");
-    let caps = clone_capability(ctx, &dir)?;
+    let caps = clone_capability(ctx, &dir, Some(ready))?;
     let workspace = dir.join("workspace.img");
     let artifacts_img = dir.join("artifacts.img");
 
@@ -979,7 +996,7 @@ fn build_ready_state(ctx: &Ctx, want: &state::Fingerprint) -> Result<state::Read
     let mbox = dir.join("mailbox.img");
     let serial = dir.join("serial.log");
     let qmp_sock = dir.join("qmp.sock");
-    let caps = clone_capability(ctx, &dir)?;
+    let caps = clone_capability(ctx, &dir, None)?;
     let workspace = dir.join("workspace.img");
     let artifacts_img = dir.join("artifacts.img");
 
@@ -1042,6 +1059,13 @@ fn build_ready_state(ctx: &Ctx, want: &state::Fingerprint) -> Result<state::Read
         qemu::clone_file(&mbox, &sdir.join("ready-mailbox.img"))?;
         qemu::clone_file(&workspace, &sdir.join("ready-workspace.img"))?;
         qemu::clone_file(&artifacts_img, &sdir.join("ready-artifacts.img"))?;
+        // The capability volumes too. The guest mounts these at startup and --
+        // unlike the mailbox, workspace and artifact volumes -- never dismounts
+        // them, so they are still mounted when the picture is taken and the
+        // frozen cache describes *these* bytes, not the canonical image's.
+        for (i, cap) in caps.iter().enumerate() {
+            qemu::clone_file(cap, &sdir.join(format!("ready-cap{i}.img")))?;
+        }
         let meta = state::ReadyMeta {
             fingerprint: want.clone(),
             created_unix: SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
@@ -1076,7 +1100,7 @@ fn cold_execute(ctx: &Ctx, command: &str) -> Result<Outcome> {
     let mbox = dir.join("mailbox.img");
     let serial = dir.join("serial.log");
     let qmp_sock = dir.join("qmp.sock");
-    let caps = clone_capability(ctx, &dir)?;
+    let caps = clone_capability(ctx, &dir, None)?;
     let workspace = dir.join("workspace.img");
     let artifacts_img = dir.join("artifacts.img");
 

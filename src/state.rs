@@ -109,6 +109,26 @@ impl ReadyState {
         self.dir.join("ready-artifacts.img")
     }
 
+    /// The capability volume as it stood at the freeze.
+    ///
+    /// Every other attached volume is snapshotted here for the same reason: the
+    /// frozen guest has that volume *mounted*, so its RAM holds a filesystem
+    /// cache describing those exact bytes. Handing the restored guest a
+    /// different image -- even one differing only by the writes Windows itself
+    /// made when it mounted the volume -- leaves the cache describing something
+    /// that is no longer on the disk.
+    pub fn capability(&self, i: usize) -> PathBuf {
+        self.dir.join(format!("ready-cap{i}.img"))
+    }
+
+    /// How many capability volumes this state was frozen with.
+    ///
+    /// Read from the fingerprint rather than by counting files, so a state
+    /// missing one of them fails the completeness check instead of silently
+    /// running with fewer disks than it was frozen with.
+    pub fn capability_count(&self) -> usize {
+        self.meta.fingerprint.capabilities.len()
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -230,7 +250,10 @@ pub fn load_valid(want: &Fingerprint) -> Result<Option<ReadyState>> {
         }
     };
     let rs = ReadyState { dir, meta };
-    for f in [rs.state_file(), rs.disk(), rs.vars(), rs.mailbox(), rs.workspace(), rs.artifacts()] {
+    let mut required =
+        vec![rs.state_file(), rs.disk(), rs.vars(), rs.mailbox(), rs.workspace(), rs.artifacts()];
+    required.extend((0..rs.capability_count()).map(|i| rs.capability(i)));
+    for f in required {
         if !f.exists() {
             anyhow::bail!("ready state incomplete: {} is missing", f.display());
         }
