@@ -522,3 +522,94 @@ from RIP.
 Build QEMU with [`patches/whpx-resume-diagnostics.patch`](../patches/whpx-resume-diagnostics.patch)
 applied and set `WHPX_DIAG=1` to get the per-vCPU exit accounting. The patch is
 lab instrumentation and is not applied to anything WinQuick ships.
+
+## The synthetic timer, and where public WHP runs out
+
+The 2026-08-30 investigation. One question: can a reusable WHPX prepared-state
+restore preserve Windows timer semantics? The answer is no, and this is the
+evidence.
+
+### The reproducer
+
+Same prepared state, same QEMU, same processor count, classified from what
+WinQuick reports rather than from elapsed time:
+
+| command | waits on a timer | class | result |
+|---|---|---|---|
+| `cmd /c echo` x3 | no | WARM | 1.2, 1.2, 1.3 s |
+| `ping -n 1` | no | WARM | ~3 s |
+| `ipconfig` | no | WARM | ~2 s |
+| `ping -n 2` | yes, ~1 s | WARM restore | **did not finish in 600 s** |
+| staged 1 s + 1 s + 5 s | yes | WARM restore | **did not finish in 1500 s** |
+
+The same staged batch cold is exact: 1.04 s, 1.04 s, 5.09 s. The guest resumes
+and executes -- so this is not a stale timer failing to fire, it is a timer
+*armed after the restore* that never completes.
+
+### What is actually missing
+
+Dumping every piece of Hyper-V timing state public WHP exposes, at the freeze
+and again after the restore:
+
+| state | source at freeze | destination |
+|---|---|---|
+| `Simp` | `0x18001` | **`0`** |
+| `Sint3` | `0xd1` | **masked** |
+| `SynicTimerState` (200 bytes) | armed | **all zero** |
+| `Tsc` | 45,762,143,359 | 45,758,318,571 (~1.7 ms) |
+| `TscVirtualOffset` | 0 | 0 |
+| `VpRuntime` | 126,959,315 | 3,034 |
+| `GuestOsId`, `Hypercall`, `VpAssistPage`, `ReferenceTsc` | carried | carried |
+
+The TSC is fine. The overlays this project already carries are fine. The SynIC
+message page, its interrupt sources, and the synthetic timer block are not.
+
+The blob's live field, at offsets 16 and 32, read `0x0b50d3a2` and `0x0b7f1123`
+on two freezes -- 18.97 s and 19.29 s in 100 ns units, each equal to the age of
+the source partition when it was frozen. It is an absolute deadline in that
+partition's reference-time domain.
+
+### Three ways to restore it, all measured
+
+| variant | restore | timer wait |
+|---|---|---|
+| SynIC plumbing + timer blob verbatim | **fails** -- guest never comes back, run falls to cold | -- |
+| SynIC plumbing, no timer blob | works, no-wait 2.3 s warm | still stalls |
+| SynIC plumbing + timer config, absolute expiry zeroed | works, no-wait 1.5 s warm | still stalls |
+
+Restoring the plumbing is safe and puts `Simp` and `Sint3` back. It is not
+enough. Restoring the deadline verbatim stops the guest resuming at all, which
+is what a deadline from another partition's clock would do.
+
+### Why it cannot be rebased
+
+The rebase needs `destination_now + (source_expiry - source_now)`, so it needs
+the partition reference count on both sides. Public WHP does not expose it. The
+complete Hyper-V register namespace in the installed SDK header
+(`winhvplatformdefs.h`, 0x4000-0x5FFF) is:
+
+    Sint0-15, Scontrol, Sversion, Siefp, Simp, Eom,
+    VpRuntime, Hypercall, GuestOsId, VpAssistPage,
+    ReferenceTsc, ReferenceTscSequence, and four nested-virt registers
+
+There is no `TimeRefCount`. `VpRuntime` is per-processor run time and resets
+with the partition (126,959,315 to 3,034 across this restore), so it is not the
+partition clock. `ReferenceTsc` carries a PFN and an enable bit, not the scale
+and offset that map TSC to reference time. That mapping lives in the reference
+TSC page, which is a hypervisor-owned overlay: reading its backing RAM returns
+`seq=0 scale=0 offset=0`, as recorded earlier in this document.
+
+`TscVirtualOffset` reads 0 on both sides, so there is no TSC-domain shift to
+undo either -- which also rules out the simplest possible explanation.
+
+So the source deadline is readable, the destination clock it would have to be
+expressed against is not, and the register that would let the two be related
+does not exist in the public API.
+
+### Not the causes
+
+`IA32_TSC_DEADLINE` is not involved: instrumented at the freeze it reads 0 on
+every save, so this guest does not use the local APIC in TSC-deadline mode.
+Adding `WHvX64RegisterTscDeadline` to the migration -- which QEMU's WHPX backend
+does not carry -- changed nothing, and that experiment was reverted. TSC
+continuity is not involved either, per the table above.
