@@ -27,7 +27,13 @@ pub const MACHINE: &str = if cfg!(target_arch = "aarch64") { "virt" } else { "q3
 
 /// The hardware accelerator. Never TCG: software emulation would not be the
 /// same product.
-pub const ACCEL: &str = if cfg!(target_os = "macos") { "hvf" } else { "whpx" };
+pub const ACCEL: &str = if cfg!(target_os = "macos") {
+    "hvf"
+} else if cfg!(target_os = "linux") {
+    "kvm"
+} else {
+    "whpx"
+};
 
 /// The CPU model to ask QEMU for.
 ///
@@ -153,7 +159,10 @@ mod tests {
     /// Software emulation is not the product.
     #[test]
     fn the_accelerator_is_never_tcg() {
-        assert!(ACCEL == "hvf" || ACCEL == "whpx", "unexpected accelerator {ACCEL}");
+        assert!(
+            matches!(ACCEL, "hvf" | "kvm" | "whpx"),
+            "unexpected accelerator {ACCEL}"
+        );
     }
 
     /// `-cpu host` crashes OVMF under WHPX, so Windows must pin a concrete
