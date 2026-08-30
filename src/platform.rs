@@ -55,7 +55,10 @@ pub const ACCEL: &str = if cfg!(target_os = "macos") {
 /// least demanding thing a Windows 11 guest will actually boot on, and it is
 /// available on any x86_64 host from roughly 2008 onwards. `Skylake-Client`
 /// also works and exposes more, at the cost of requiring newer hardware.
-pub const CPU_MODEL: &str = if cfg!(target_os = "macos") { "host" } else { "Nehalem" };
+/// Linux/KVM passes the host CPU through for the same reason macOS does: it is
+/// both fastest and correct, and `Nehalem` is not even a model an aarch64 QEMU
+/// recognises -- asking for it there fails with `unable to find CPU model`.
+pub const CPU_MODEL: &str = if cfg!(target_os = "windows") { "Nehalem" } else { "host" };
 
 /// The UEFI firmware code image QEMU ships for this guest architecture.
 pub const UEFI_CODE: &str =
