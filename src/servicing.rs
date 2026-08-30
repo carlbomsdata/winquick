@@ -577,8 +577,13 @@ fn build_bridge(verbose: bool) -> Result<()> {
         artifacts_dir: dest.clone(),
         artifact_overwrite: true,
     };
+    // The runtime identifier has to name the guest's architecture, not a fixed
+    // one: an ARM64 apphost does not run in an x64 guest, and vice versa.
     let outcome = runner::run_capture(
-        "dotnet publish wqui.csproj -c Release -o publish --nologo",
+        &format!(
+            "dotnet publish wqui.csproj -c Release -r win-{} -o publish --nologo",
+            crate::platform::GUEST_ARCH
+        ),
         &opts,
     )?;
     if outcome.exit_code != 0 {

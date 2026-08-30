@@ -4,7 +4,12 @@
        `winquick capability install desktop`, which is why this targets the
        framework rather than publishing self-contained: the .NET SDK capability
        volume already carries Microsoft.WindowsDesktop.App, and a self-contained
-       publish would need runtime packs the guest cannot download. -->
+       publish would need runtime packs the guest cannot download.
+
+       The runtime identifier is deliberately not set here: it follows the guest
+       architecture and is passed on the publish command line by
+       src/servicing.rs. Baking `win-arm64` in produced an ARM64 apphost on an
+       x64 host, which the x64 guest cannot execute. -->
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -14,7 +19,6 @@
     <Nullable>disable</Nullable>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <AssemblyName>wqui</AssemblyName>
-    <RuntimeIdentifier>win-arm64</RuntimeIdentifier>
     <SelfContained>false</SelfContained>
     <InvariantGlobalization>true</InvariantGlobalization>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
