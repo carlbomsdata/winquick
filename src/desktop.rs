@@ -844,24 +844,7 @@ pub fn pull(guest_path: &str, dest: &Path, timeout: Duration) -> Result<Value> {
 
 /// SHA-256 of what came back, to compare against what the guest hashed.
 fn sha256_hex(data: &[u8]) -> String {
-    use std::io::Write as _;
-    let Ok(mut child) = std::process::Command::new("/usr/bin/shasum")
-        .args(["-a", "256"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-    else {
-        return String::new();
-    };
-    if let Some(mut si) = child.stdin.take() {
-        let _ = si.write_all(data);
-    }
-    let Ok(out) = child.wait_with_output() else { return String::new() };
-    String::from_utf8_lossy(&out.stdout)
-        .split_whitespace()
-        .next()
-        .unwrap_or("")
-        .to_string()
+    crate::sha256::hex_of(data)
 }
 
 /// Standard base64, which is how the bridge sends an image back.

@@ -523,19 +523,7 @@ fn write_mbr(mut img: &File, size: u64) -> Result<()> {
 }
 
 fn sha256_file(p: &Path) -> Result<String> {
-    let out = std::process::Command::new("/usr/bin/shasum")
-        .args(["-a", "256"])
-        .arg(p)
-        .output()
-        .context("running shasum")?;
-    if !out.status.success() {
-        bail!("could not checksum {}", p.display());
-    }
-    Ok(String::from_utf8_lossy(&out.stdout)
-        .split_whitespace()
-        .next()
-        .unwrap_or("")
-        .to_string())
+    crate::sha256::hex_of_file(p)
 }
 
 /// Populate the canonical NuGet cache from macOS, then rebuild the volume the

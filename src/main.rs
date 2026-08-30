@@ -22,6 +22,7 @@ mod qmp;
 mod runner;
 mod servicing;
 mod setup;
+mod sha256;
 mod state;
 mod udf;
 mod uiscript;
