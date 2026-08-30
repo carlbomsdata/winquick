@@ -159,8 +159,12 @@ fn smoke_test() -> Result<()> {
     let out = crate::runner::run_capture(
         "cmd /c ver",
         &crate::runner::Options {
-            memory_mb: 1024,
-            cpus: 4,
+            // The defaults, deliberately: this run builds the prepared guest,
+            // and a state built at some other size is one the next real run
+            // would have to throw away and rebuild. Hardcoding four processors
+            // also asked for more than a Windows host supports on this path.
+            memory_mb: crate::runner::DEFAULT_MEMORY_MB,
+            cpus: crate::runner::DEFAULT_CPUS,
             timeout: std::time::Duration::from_secs(300),
             verbose: false,
             force_cold: false,
