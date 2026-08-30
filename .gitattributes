@@ -1,1 +1,8 @@
 * text=auto
+
+# The guest agent is embedded with include_str! and hashed byte-for-byte to
+# decide whether an image and a prepared state are still current. With
+# `text=auto` a Windows checkout gets CRLF and a macOS one LF, so the same
+# commit produced two different hashes and every Windows clone declared a
+# perfectly good runtime stale. Pin it.
+guest/agent.cmd text eol=lf
