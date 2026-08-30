@@ -478,6 +478,61 @@ The 2-vCPU maximum is a restore that took the slow path once in a hundred; the
 run still produced the right answer, which is why it is counted as a success and
 reported rather than hidden.
 
+## The first timer wait after a restore costs about four minutes
+
+This is the blocker, and it is separate from the capability bug below.
+
+A restored guest executes at full speed but cannot wait. Measured at 1 vCPU,
+otherwise identical runs:
+
+| command | what it waits for | warm | cold |
+|---|---|---|---|
+| `cmd /c echo` | nothing | 2-5 s | ~20 s |
+| `ping -n 1` (one packet) | nothing | 3 s | 22 s |
+| `ipconfig` | nothing | 2 s | -- |
+| `ping -n 2` | 1 second | **252 s** | 25 s |
+| `ping -n 3` | 2 seconds | **230 s** | -- |
+| `ping -n 6` | 5 seconds | **240 s** | 26 s |
+
+The cost is not proportional to the wait, and it is not paid twice: one
+1-second sleep took 259 s and *four* consecutive 1-second sleeps in the same
+run took 237 s. So it is a single stall of roughly four minutes, paid the first
+time the restored guest waits on a timer, after which timers behave normally.
+
+It is not the network stack -- `ping -n 1` and `ipconfig` exercise it fully and
+return in about two seconds. It is not the CPU, which runs at full speed. It is
+waiting, and only waiting.
+
+That makes the prepared state worthless for real work on Windows. `pwsh`,
+MSBuild, `dotnet test` and every ordinary build wait constantly, so they pay
+the stall and a warm run ends up no faster than a cold one -- when it finishes
+inside the timeout at all.
+
+**What it is not.** Windows here does not use the local APIC in TSC-deadline
+mode: instrumenting `IA32_TSC_DEADLINE` at the freeze showed `deadline=0` on
+every save, so migrating that register -- which QEMU's WHPX backend does not do
+-- changes nothing, and an experiment adding it confirmed that. The TSC itself
+migrates accurately: 44,996,906,340 at save against 44,994,889,321 at restore,
+about a millisecond apart.
+
+That leaves the Hyper-V synthetic timers, which is where the four-processor
+limitation already lives. The two are the same defect seen from different
+angles: a restored partition cannot reconstruct timer state whose expiry is
+absolute in the source partition's reference-time domain. At four processors
+every processor parks on one immediately and nothing recovers. At one or two a
+processor is still running, so a command that never waits finishes in two
+seconds and nothing looks wrong -- which is exactly why 300 soak runs of
+`cmd /c echo` passed while the product remained unusable for real workloads.
+
+**A measurement trap worth recording.** WinQuick writes a `restore-unsupported`
+note when a warm attempt fails, and thereafter boots cold. The note is keyed on
+the QEMU binary's identity, and `restore-works` is too -- so rebuilding QEMU
+produces a fresh identity that the existing "this works" note does not cover,
+and one failed attempt silently disables the fast path for that build. A whole
+round of measurements was taken through that fallback and read as fast warm
+runs; they were cold runs. Check the note, or run with `--verbose` and read the
+`warm run` / `cold run` line, before believing any timing on this host.
+
 ## Capabilities do not survive a prepared state, and that is the real limit
 
 This is the first time PowerShell has actually been run on a Windows host, and
@@ -513,11 +568,19 @@ that does not contain whatever the guest still had in flight. The mailbox avoids
 exactly this by never being touched by both sides at once. Testing that would
 mean dismounting capability volumes before the freeze, the way the mailbox does.
 
-Until then the honest Windows scope is:
+**This one is fixed.** The mechanism was the mount, not the bytes and not the
+device. Snapshotting the capability volume at the freeze so the run's clone is
+byte-identical to what the guest cached did *not* help -- still 5/5 hangs --
+which ruled out content. What fixed it was making the guest let go: the agent
+now dismounts capability volumes before signalling ready and remounts them
+before the command runs, exactly as the mailbox, workspace and artifact volumes
+have always done. The package cache had the identical bug and got the same
+treatment.
 
-- **fast path: no capabilities.** `cmd`-class commands, 1 or 2 processors,
-  measured at 300/300 with p50 1.5-1.7 s.
-- **PowerShell and .NET: `--cold` only**, about 20-25 s per run.
+After the fix, with PowerShell installed, `cmd /c echo` runs 5/5 in about two
+seconds at 1 vCPU, and the guest can read the capability volume (`PWSH-PRESENT`,
+`dir G:\` lists `pwsh`). What it still cannot do is wait -- see the section
+above, which is the remaining blocker.
 
 ## What the code audit found, and what was fixed
 
