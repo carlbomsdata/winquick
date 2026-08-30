@@ -398,11 +398,13 @@ rather than guessing when it meets something else.
 
 ### What is not done yet
 
-- **Capabilities are wired but untested here.** PowerShell and the .NET runtime
-  and SDK now resolve `win-x64` payloads, with digests verified against the
-  publishers', and archives are unpacked with the `tar` Windows has shipped
-  since 10 1803 rather than the `unzip` it has not. None of that has been run
-  on Windows yet, so it is a claim about the code, not a measurement.
+- **Capabilities install but break the fast path.** PowerShell 7.6.5 now
+  installs on Windows and runs correctly on a cold-booted guest. It does not
+  work on a restored one, and neither does anything else once a capability
+  volume is attached. See
+  [Capabilities do not survive a prepared state](#capabilities-do-not-survive-a-prepared-state-and-that-is-the-real-limit).
+  Getting the install itself to work needed one fix: digest verification shelled
+  out to `/usr/bin/shasum`, which does not exist on Windows.
 - **A restored guest resumes at one and two processors, and not at four.**
   That is now a supported limit rather than an open gap: `platform::MAX_PREPARED_CPUS`
   is `Some(2)` on Windows, the Windows default is two processors, and asking for
@@ -475,6 +477,47 @@ and no run directory is left behind.
 The 2-vCPU maximum is a restore that took the slow path once in a hundred; the
 run still produced the right answer, which is why it is counted as a success and
 reported rather than hidden.
+
+## Capabilities do not survive a prepared state, and that is the real limit
+
+This is the first time PowerShell has actually been run on a Windows host, and
+it does not work on the fast path. Measured, 2026-08-30, on the build below:
+
+| | warm (restored) | cold |
+|---|---|---|
+| `pwsh -c "Write-Output HELLO"`, 1 vCPU | 3/3 hang, >300 s each | 2/2 pass, ~25 s |
+| `pwsh -c "Write-Output HELLO"`, 2 vCPU | hangs, >1200 s | passes, ~20 s |
+
+The cause is not PowerShell, and not the number of processors. Once the
+PowerShell capability was installed, **trivial** warm commands began failing
+too, at 1 vCPU, in exactly the configuration that had just run 100/100:
+
+    cmd /c "echo NOSLEEP-OK"   1 vCPU warm, capability installed:  2/2 timed out
+    cmd /c "echo NOCAP-OK"     1 vCPU warm, capability removed:    5/5 pass, ~2 s
+
+So the finding is about the prepared state, not the command: **a prepared state
+built with a capability volume attached does not restore into a working guest
+on Windows.** Removing the capability and letting the state rebuild restores the
+2-second warm run immediately.
+
+What it is not: the sparse clone. `cargo test` passes 156/156 on the Windows
+host, including `a_cloned_volume_is_byte_for_byte_its_source` -- and that test
+matters here because the Windows clone path is a different implementation from
+the macOS one and had only ever been exercised on macOS.
+
+The likeliest mechanism, unproven, is the FAT-sharing rule this project already
+knows about. A capability volume is FAT and the guest holds it mounted across
+the freeze, so the prepared state carries the guest's cached FAT metadata for a
+volume whose on-disk image is then replaced, per run, by a freshly cloned copy
+that does not contain whatever the guest still had in flight. The mailbox avoids
+exactly this by never being touched by both sides at once. Testing that would
+mean dismounting capability volumes before the freeze, the way the mailbox does.
+
+Until then the honest Windows scope is:
+
+- **fast path: no capabilities.** `cmd`-class commands, 1 or 2 processors,
+  measured at 300/300 with p50 1.5-1.7 s.
+- **PowerShell and .NET: `--cold` only**, about 20-25 s per run.
 
 ## What the code audit found, and what was fixed
 
