@@ -12,7 +12,9 @@ N=${1:-100}
 # Optional .NET fixtures, built on the host; tests are skipped when absent.
 FDAPP=${WQ_FDAPP:-/tmp/wqnet/out/fd-arm64}
 SCAPP=${WQ_SCAPP:-/tmp/wqnet/out/sc-arm64}
-TESTPROJ=${WQ_TESTPROJ:-/tmp/wqnet/tproj}
+# The package-cache fixture lives in the repository so the section runs on any
+# checkout rather than only where someone happened to leave a project in /tmp.
+TESTPROJ=${WQ_TESTPROJ:-$SCRIPTDIR/fixtures/nuget-tproj}
 # Published WPF app for the desktop tests; skipped when unset.
 WQ_UIAPP=${WQ_UIAPP:-}
 pass=0; fail=0
