@@ -21,10 +21,13 @@ if command -v shasum >/dev/null 2>&1; then
 else
   sha256() { sha256sum "$@"; }
 fi
-if stat -f%z . >/dev/null 2>&1; then
-  fsize() { stat -f%z "$1"; }
-else
+# GNU first: `stat -f` on Linux means "filesystem status" and *succeeds*, so
+# probing for the BSD spelling picks the wrong branch there and silently
+# returns the wrong number.
+if stat -c%s . >/dev/null 2>&1; then
   fsize() { stat -c%s "$1"; }
+else
+  fsize() { stat -f%z "$1"; }
 fi
 # Count real QEMU processes.
 #
@@ -211,7 +214,9 @@ sz=$(fsize winquick-artifacts/blob.bin 2>/dev/null || echo 0)
 check "artifact: 32 MiB file exact" "$sz" "$(fsize big/blob.bin)"
 popd >/dev/null; rm -rf "$ATMP"
 
-if [ -f ~/.winquick/capabilities/dotnet-sdk.img ] && [ -d "$TESTPROJ" ]; then
+# `cache sync` restores the packages on the *host*, so this section needs a
+# host .NET as well as the guest capability.
+if [ -f ~/.winquick/capabilities/dotnet-sdk.img ] && [ -d "$TESTPROJ" ] && command -v dotnet >/dev/null 2>&1; then
 echo "== nuget cache =="
 # Populate the cache for this project first: that is the documented workflow,
 # and it exercises `cache sync` as part of the suite.
@@ -235,7 +240,7 @@ check "nuget: guest writes do not persist into later runs" "$o" "CLEAN"
 BASESHA=$(sha256 "$BASE" | cut -d" " -f1)
 check "nuget: base image unchanged by cache use" "$BASESHA" "$(sha256 "$BASE" | cut -d" " -f1)"
 else
-  echo "== nuget cache (skipped: cache/SDK/test project not present) =="
+  echo "== nuget cache (skipped: needs the dotnet-sdk capability, the fixture, and a host dotnet) =="
 fi
 
 # A classic, non-SDK .NET Framework project: the shape that found most of what
