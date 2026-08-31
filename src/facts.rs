@@ -213,6 +213,19 @@ pub fn doctor() -> Result<Doctor> {
     }
     host_version(&mut b);
 
+    // A QEMU too old to migrate its own NVMe device turns every run cold
+    // without saying why, so doctor says why.
+    if let Ok(q) = crate::qemu::Qemu::locate() {
+        match q.version_problem() {
+            Some(why) => b.fail("Host", "qemu version", "too old", why),
+            None => {
+                if let Some((maj, min)) = q.version_parts() {
+                    b.ok("Host", "qemu version", format!("{maj}.{min}"));
+                }
+            }
+        }
+    }
+
     // -- tools
     let have_runtime = paths::base_image()?.exists();
     for t in helpers::survey() {

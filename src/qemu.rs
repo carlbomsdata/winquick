@@ -22,6 +22,48 @@ impl Qemu {
         })
     }
 
+    /// The oldest QEMU whose NVMe device WinQuick can migrate.
+    ///
+    /// The prepared state is a stopped-state migration, and every disk in the
+    /// machine has to be migratable for it. Ubuntu 24.04's QEMU 8.2.2 is not:
+    ///
+    ///     State blocked by non-migratable device '0000:00:02.0/nvme'
+    ///
+    /// so `setup` builds a runtime and then every run boots cold, which is the
+    /// product quietly not working. 11.1.0 is what WinQuick is developed and
+    /// tested against and is known good. Versions in between may well be fine;
+    /// none has been measured, and claiming an untested floor would be worse
+    /// than naming the one that is proven.
+    pub const MIN_MAJOR: u32 = 11;
+
+    /// `(major, minor)` from `qemu-system-... --version`, when it can be read.
+    pub fn version_parts(&self) -> Option<(u32, u32)> {
+        let v = self.version().ok()?;
+        // "QEMU emulator version 11.1.0 (Debian ...)"
+        let tail = v.split("version").nth(1)?.trim();
+        let num: String = tail
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
+        let mut it = num.split('.');
+        let major = it.next()?.parse().ok()?;
+        let minor = it.next().unwrap_or("0").parse().unwrap_or(0);
+        Some((major, minor))
+    }
+
+    /// `None` when the QEMU on this host is new enough, otherwise why not.
+    pub fn version_problem(&self) -> Option<String> {
+        let (major, minor) = self.version_parts()?;
+        if major >= Self::MIN_MAJOR {
+            return None;
+        }
+        Some(format!(
+            "QEMU {major}.{minor} cannot migrate the NVMe device WinQuick boots from, so \
+             every run would boot cold. Install QEMU {}.0 or newer.",
+            Self::MIN_MAJOR
+        ))
+    }
+
     pub fn version(&self) -> Result<String> {
         let out = Command::new(&self.system).arg("--version").output()?;
         Ok(String::from_utf8_lossy(&out.stdout)
