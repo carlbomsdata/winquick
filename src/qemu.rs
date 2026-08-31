@@ -409,9 +409,12 @@ pub fn desktop_device_signature(memory_mb: u32, cpus: u32, capability_count: usi
     format!(
         "{backend};smp={cpus};mem={memory_mb};\
          nvme:root=wqroot;nvme:mbox=wqmbox;nvme:bridge=wqbridge;nvme:app=wqapp;\
-         nvme:ctl=wqctl{caps};pflash:code,vars(rw);xhci+kbd+tablet;virtio-gpu-pci;\
+         nvme:ctl=wqctl{caps};pflash:code,vars(rw);xhci+kbd+tablet;{gpu};\
          display=none;rtc=localtime",
-        backend = crate::platform::backend_signature()
+        backend = crate::platform::backend_signature(),
+        // The display is part of the machine, so a state frozen against one
+        // must not be restored against another.
+        gpu = crate::platform::DESKTOP_DISPLAY.join(",")
     )
 }
 
@@ -477,8 +480,7 @@ impl Qemu {
         c.args(["-device", "qemu-xhci"])
             .args(["-device", "usb-kbd"])
             .args(["-device", "usb-tablet"])
-            .args(["-device", "virtio-gpu-pci,id=wqgpu"])
-            .args(["-display", "none", "-vga", "none"])
+            .args(crate::platform::DESKTOP_DISPLAY)
             .args(["-rtc", "base=localtime", "-no-reboot"])
             .arg("-serial")
             .arg(format!("file:{}", cfg.serial_log.display()))

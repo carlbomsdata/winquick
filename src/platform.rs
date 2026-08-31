@@ -103,6 +103,28 @@ pub const NEEDS_PATCHED_QEMU: bool = cfg!(target_os = "windows");
 
 /// Everything that makes one prepared state incompatible with another.
 ///
+/// The display a desktop session gives the guest.
+///
+/// These are not interchangeable, and the difference is which driver Windows
+/// already has.
+///
+/// The aarch64 `virt` machine has no VGA at all, so the only option is a
+/// virtio GPU plus Red Hat's `viogpudo` driver staged into the image.
+///
+/// x86_64 does have one, and using it is much better: `-vga std` is the
+/// Bochs-style adapter that Windows drives with its own inbox Basic Display
+/// Adapter, with no third-party driver, no INF staging and nothing to bind.
+/// Measured before this: an x64 desktop guest on virtio-gpu produced a
+/// 640x480 QEMU scanout that was 99.8% black while Windows itself reported a
+/// 1024x768 desktop and UI Automation happily returned real controls -- the
+/// guest was drawing somewhere the scanout could not see, because the virtio
+/// driver had never bound.
+pub const DESKTOP_DISPLAY: &[&str] = if cfg!(target_arch = "aarch64") {
+    &["-device", "virtio-gpu-pci,id=wqgpu", "-display", "none", "-vga", "none"]
+} else {
+    &["-display", "none", "-vga", "std"]
+};
+
 /// A state carries the CPUID, machine and accelerator it was created under, so
 /// restoring it into a differently-configured QEMU is not merely slower — it is
 /// wrong. This string goes into the state's fingerprint, and a mismatch forces
