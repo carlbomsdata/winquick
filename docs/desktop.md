@@ -490,40 +490,46 @@ created and then died with a `DllNotFoundException` that nothing else reported.
 
 ## On Linux/KVM
 
-The desktop capability builds and runs on a Linux host against an x64 guest,
-with one gap: nothing renders.
+The desktop capability works on a Linux host against an x64 guest. Measured on
+Ubuntu 24.04 x86_64 / KVM / QEMU 11.1.0 against Validation OS x64:
 
-What works, measured on Ubuntu 24.04 x86_64 / KVM / QEMU 11.1.0 against
-Validation OS x64:
+- `winquick capability install desktop` completes; the guest bridge is built
+  as a **PE32+ x86-64** `wqui.exe`, so the architecture follows the guest
+- `desktop start`, `status`, `launch`, `wait-window`, `stop` all work
+- `desktop tree` returns 33 controls carrying automation IDs
+- reading, typing and clicking all take effect. `StatusText` reads `Ready`;
+  typing into `NameBox` gives it the value `KVM-WORKS`; clicking `SaveButton`
+  leaves `StatusText` reading `Saved: KVM-WORKS / Engineering / basic`
+- `ui-test` runs its whole script and its assertions pass
+- screenshots are **1280x800 at 100% non-black with over a thousand distinct
+  colours**, and the window captures are 620x460 -- the demo's own size
+- desktop MCP is **34/34**; teardown leaves no QEMU and no run directory
 
-- `winquick capability install desktop` completes and produces a 2.1 GiB image
-- the guest bridge is built as a **PE32+ x86-64** `wqui.exe`, so the
-  architecture follows the guest rather than the host that built it
-- `desktop start`, `status`, `launch`, `stop` all work
-- `desktop tree` returns a real UI Automation tree with correct window bounds
-- `ui-test` runs a full script -- launch, wait-window, focus, expect, type,
-  click, screenshot -- and its assertions pass
-- screenshots are real PNGs whose dimensions match the window (620x460 for the
-  demo, 1024x768 for the desktop) and match the metadata reported over MCP
-- the desktop MCP suite is 33/34; teardown leaves no QEMU and no run directory
+### Why an x64 desktop uses `-vga std`
 
-What does not: **every captured frame is a single flat black.** The window is
-there and UI Automation can see and drive it; the framebuffer is empty.
+It did not work at first: every frame was a single flat black while UI
+Automation returned real controls with correct geometry. Three things were
+wrong, and only the third mattered.
 
-Two real bugs were found and fixed on the way to that point, and neither was
-the cause:
+The media was mounted with `/usr/bin/hdiutil`, which only macOS has, so the
+build could not even collect its packages elsewhere. Both discs are now read
+without mounting -- the Validation OS media is UDF, the virtio-win disc is
+ISO 9660, and WinQuick reads both itself. Then the virtio driver was staged
+from the disc's `ARM64` directory whatever the guest was; the disc carries
+ARM64 builds regardless, so on x64 the staging *succeeded* and installed a
+driver that could never bind.
 
-- The media was mounted with `/usr/bin/hdiutil`, which only macOS has, so the
-  build stopped at "collecting packages" on any other host. Both discs are now
-  read without mounting -- the Validation OS media is UDF and the virtio-win
-  disc is ISO 9660, and WinQuick reads both itself.
-- The virtio driver was staged from the disc's `ARM64` directory regardless of
-  guest. The disc carries ARM64 builds whatever you are running, so on x64 the
-  staging *succeeded* and installed a driver that could never bind. Fixed to
-  follow `GUEST_ARCH`; the frames stayed black, so this was necessary and not
-  sufficient.
+Fixing both left the screen black, and the measurement that explained it was
+QEMU's own `screendump`: the scanout was **640x480 and 99.8% black** while
+Windows reported a 1024x768 desktop. The guest was drawing somewhere the
+scanout could not see, because `viogpudo` had still not bound.
 
-The remaining work is x64 guest display enablement -- whether `viogpudo` binds
-to `virtio-gpu-pci` on q35 at all, and what Validation OS x64 needs beyond the
-CAB packages the ARM64 image gets. Until that is answered, treat Linux desktop
-as: automation yes, pixels no.
+The device was the problem rather than the driver. The aarch64 `virt` machine
+has no VGA, so a virtio GPU is the only option there and `viogpudo` is
+genuinely required. x86_64 has one, and `-vga std` is the Bochs-style adapter
+Windows drives with its own inbox Basic Display Adapter -- no third-party
+driver, no INF staging, nothing to bind and nothing to go wrong. WinQuick
+never required virtio-gpu; it requires a desktop that renders.
+
+The display is part of `desktop_device_signature`, so a session state frozen
+against one display is never restored against another.
