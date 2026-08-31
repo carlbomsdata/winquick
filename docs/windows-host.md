@@ -657,3 +657,26 @@ restored guest actually resume under WHPX, which is what stands between a
 16.5 second cold boot and the sub-second run macOS gets. That one now has its
 own document, [whpx-resume.md](whpx-resume.md), narrowed to multiprocessor
 partitions and to two remaining candidates.
+
+## The same test on Linux/KVM
+
+The timer defect above is specific to WHPX. Measured 2026-08-31 on
+Intel x86_64 -> VMware Workstation 17.6.4 (nested VT-x) -> Ubuntu 24.04.4
+x86_64 -> KVM -> QEMU 11.1.0 -> Validation OS x64, every run verified warm
+from what WinQuick reported rather than from its latency:
+
+| command | waits | WHPX | KVM |
+|---|---|---|---|
+| `cmd /c echo` | nothing | 2-5 s | 8.2 s |
+| `ping -n 1` | nothing | 3 s | 8.0 s |
+| `ping -n 2` | 1 second | **252 / 430 / 644 s** | **9.1 s** |
+| `ping -n 6` | 5 seconds | 240 s | 11.8 s |
+| four 1-second waits | 4 seconds | 237 s (same as one) | 12.6 s |
+
+On KVM the cost tracks the wait: one second costs about one second, five cost
+about four and a half, and four waits cost more than one instead of the same.
+That is the behaviour WHPX cannot produce, and it is the difference between a
+prepared state being useful for real work and not.
+
+The absolute figures are slow because the lab is nested -- KVM inside VMware
+inside Windows on a 2018 i5-8265U -- not because of anything WinQuick does.
