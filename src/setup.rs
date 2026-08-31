@@ -456,12 +456,46 @@ pub fn mount_iso_at(iso: &Path) -> Result<PathBuf> {
     if std::fs::read_dir(&mnt).map(|mut d| d.next().is_some()).unwrap_or(false) {
         return Ok(mnt);
     }
-    run_ok(
-        Command::new("/usr/bin/hdiutil")
-            .args(["attach", "-readonly", "-nobrowse", "-mountpoint"])
-            .arg(&mnt)
-            .arg(iso),
-        &format!("opening {}", iso.display()),
-    )?;
+    // macOS can attach the image and read it in place, which is free. Nothing
+    // else can without root, so everywhere else the two trees the desktop
+    // capability needs are copied out of the image with WinQuick's own UDF
+    // reader -- the same one `setup` already uses to lift the VHDX out.
+    if cfg!(target_os = "macos") {
+        run_ok(
+            Command::new("/usr/bin/hdiutil")
+                .args(["attach", "-readonly", "-nobrowse", "-mountpoint"])
+                .arg(&mnt)
+                .arg(iso),
+            &format!("opening {}", iso.display()),
+        )?;
+        return Ok(mnt);
+    }
+    extract_media_trees(iso, &mnt)?;
     Ok(mnt)
+}
+
+/// Copy the parts of the Microsoft media the desktop build reads.
+///
+/// Not the whole image: it is 2.3 GB and the build wants two directories out
+/// of it. Extracting only those keeps this within a few hundred megabytes and
+/// a few seconds.
+fn extract_media_trees(iso: &Path, dest: &Path) -> Result<()> {
+    let mut v = crate::udf::Volume::open(iso)?;
+    let mut got_any = false;
+    for want in ["GenImage", "cabs"] {
+        let Some(entry) = v.find(want)? else { continue };
+        if !entry.is_dir {
+            continue;
+        }
+        v.extract_tree(&entry, &dest.join(want))
+            .with_context(|| format!("extracting {want} from {}", iso.display()))?;
+        got_any = true;
+    }
+    if !got_any {
+        bail!(
+            "{} carries neither GenImage nor cabs.\n\n             The desktop capability needs the full Validation OS ISO, not the\n             VHDX on its own.",
+            iso.display()
+        );
+    }
+    Ok(())
 }

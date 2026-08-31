@@ -46,6 +46,7 @@ const TAG_FILE_ENTRY: u16 = 261;
 const TAG_EXTENDED_FILE_ENTRY: u16 = 266;
 
 /// One entry in the root directory.
+#[derive(Clone)]
 pub struct Entry {
     pub name: String,
     pub is_dir: bool,
@@ -130,6 +131,56 @@ impl Volume {
         let root_icb = u32::from_le_bytes(fsd[404..408].try_into().unwrap());
         let dir = self.read_file_data(root_icb)?;
         parse_directory(&dir)
+    }
+
+    /// What is inside a directory entry.
+    ///
+    /// The root is just the directory the file set points at, so listing any
+    /// other one is the same walk from a different ICB.
+    pub fn list(&mut self, entry: &Entry) -> Result<Vec<Entry>> {
+        if !entry.is_dir {
+            bail!("{} is not a directory", entry.name);
+        }
+        let dir = self.read_file_data(entry.icb)?;
+        parse_directory(&dir)
+    }
+
+    /// Copy a whole directory tree out of the image, creating `dest`.
+    ///
+    /// This is what stands in for mounting the ISO. The desktop capability
+    /// needs two trees off the Microsoft media -- DISM and the optional
+    /// package CABs -- and mounting them cost a `/usr/bin/hdiutil` that only
+    /// macOS has, so on any other host the desktop build failed with
+    /// "No such file or directory" naming the ISO, which reads as the ISO
+    /// being absent rather than the mounting tool.
+    pub fn extract_tree(&mut self, entry: &Entry, dest: &Path) -> Result<u64> {
+        std::fs::create_dir_all(dest)
+            .with_context(|| format!("creating {}", dest.display()))?;
+        let mut total = 0;
+        for child in self.list(entry)? {
+            let target = dest.join(&child.name);
+            total += if child.is_dir {
+                self.extract_tree(&child, &target)?
+            } else {
+                self.extract(&child, &target)?
+            };
+        }
+        Ok(total)
+    }
+
+    /// Walk a `/`-separated path from the root and return what is there.
+    pub fn find(&mut self, path: &str) -> Result<Option<Entry>> {
+        let mut here = self.root()?;
+        let mut found: Option<Entry> = None;
+        for part in path.split('/').filter(|p| !p.is_empty()) {
+            let Some(hit) = here.iter().find(|e| e.name.eq_ignore_ascii_case(part)).cloned()
+            else {
+                return Ok(None);
+            };
+            here = if hit.is_dir { self.list(&hit)? } else { Vec::new() };
+            found = Some(hit);
+        }
+        Ok(found)
     }
 
     /// Copy one entry's contents to `dest`, returning how many bytes were written.

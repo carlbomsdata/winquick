@@ -311,10 +311,14 @@ fn build_servicing_payload(
     std::fs::create_dir_all(payload.join("cabs"))?;
 
     let media = setup::mount_microsoft_image(None)?;
-    let dism_src = media.join("GenImage").join("Tools").join("DISM").join("arm64");
+    // The media carries a DISM per architecture; take the one that matches the
+    // guest. Hardcoding arm64 meant an x64 host looked in a directory the x64
+    // media does not have.
+    let dism_arch = if crate::platform::GUEST_ARCH == "arm64" { "arm64" } else { "amd64" };
+    let dism_src = media.join("GenImage").join("Tools").join("DISM").join(dism_arch);
     if !dism_src.join("dism.exe").exists() {
         bail!(
-            "no arm64 DISM on the Microsoft media at {}.\n\n\
+            "no {dism_arch} DISM on the Microsoft media at {}.\n\n\
              The desktop capability needs the full Validation OS image, not just the VHDX.",
             dism_src.display()
         );
