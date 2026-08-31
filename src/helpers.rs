@@ -281,9 +281,18 @@ pub fn uefi_firmware() -> Option<PathBuf> {
 /// `combined size of system firmware exceeds 8388608 bytes` and no boot at all.
 pub fn fresh_uefi_vars(path: &Path) -> Result<()> {
     if let Some(name) = crate::platform::UEFI_VARS_TEMPLATE {
-        let template = uefi_firmware()
-            .and_then(|code| code.parent().map(|d| d.join(name)))
-            .filter(|p| p.is_file())
+        // Beside the code image, under QEMU's name first and then the ones
+        // distributions repackage it under -- the same problem, and the same
+        // answer, as finding the code image itself.
+        let dir = uefi_firmware().and_then(|code| code.parent().map(|d| d.to_path_buf()));
+        let template = dir
+            .as_ref()
+            .and_then(|d| {
+                std::iter::once(name)
+                    .chain(crate::platform::UEFI_VARS_ALTS.iter().copied())
+                    .map(|n| d.join(n))
+                    .find(|p| p.is_file())
+            })
             .ok_or_else(|| {
                 anyhow::anyhow!(
                     "QEMU is installed but its UEFI variable template {name} is missing"

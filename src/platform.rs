@@ -85,6 +85,14 @@ pub const UEFI_CODE_ALTS: &[&str] = if cfg!(target_arch = "aarch64") {
 pub const UEFI_VARS_TEMPLATE: Option<&str> =
     if cfg!(target_arch = "aarch64") { None } else { Some("edk2-i386-vars.fd") };
 
+/// The same store under the names distributions package it as.
+///
+/// Ubuntu's `ovmf` ships `OVMF_VARS_4M.fd` beside `OVMF_CODE_4M.fd` and no
+/// `edk2-i386-vars.fd` at all, so a Linux host has the file QEMU wants under a
+/// name QEMU never uses. The 4M variant is the one that pairs with the 4M code
+/// image; sizes must match or the firmware pair is rejected outright.
+pub const UEFI_VARS_ALTS: &[&str] = &["OVMF_VARS_4M.fd", "OVMF_VARS.fd"];
+
 /// Whether the guest state can be saved and restored at all on this host.
 ///
 /// On Windows this needs a QEMU carrying the WHPX stop-and-copy patches; stock
