@@ -7,7 +7,11 @@ software. See [docs/licensing.md](docs/licensing.md) for how the boundaries work
 
 ## ntfsprogs (`ntfscp`, `ntfscat`) — distributed with WinQuick
 
-**Included in WinQuick release archives.**
+**Included in WinQuick release archives on every host: macOS, Linux and
+Windows.** A distribution's own ntfsprogs is not a substitute -- WinQuick
+addresses a partition inside a whole-disk image through `NTFS_IMAGE_OFFSET`,
+which is this project's patch, and an unpatched `ntfscp` reads offset zero and
+reports `NTFS signature is missing`.
 
 - Project: ntfs-3g / ntfsprogs
 - Version: 2022.10.3, **modified** -- see below
@@ -77,13 +81,25 @@ release archive, and is available at
 
 - Licence: GNU General Public License, version 2 (GPL-2.0-only)
 - Homepage: <https://www.qemu.org/>
-- Obtained by the user via Homebrew (`brew install qemu`)
-- Tested against: 11.1.0
+- Obtained by the user: `brew install qemu` on macOS, the distribution's own
+  package on Linux, a build on Windows
+- Tested against: 11.1.0 on all three hosts
+- **Minimum on Linux: 11.0.** Older QEMU cannot migrate the NVMe device the
+  guest boots from -- Ubuntu 24.04's 8.2.2 fails with `State blocked by
+  non-migratable device '.../nvme'` -- so `winquick doctor` refuses it rather
+  than letting every run silently boot cold.
 
-WinQuick runs `qemu-system-aarch64` (macOS) or `qemu-system-x86_64` (Windows)
-and `qemu-img` as separate child processes. It does not link against QEMU,
-statically or dynamically, and contains no QEMU code. WinQuick does not
-distribute QEMU.
+WinQuick runs `qemu-system-aarch64` (macOS) or `qemu-system-x86_64` (Linux and
+Windows) and `qemu-img` as separate child processes. It does not link against
+QEMU, statically or dynamically, and contains no QEMU code. **WinQuick does not
+distribute QEMU on any host**, the Linux archive included -- bundling it would
+mean shipping a GPL-2.0 binary and its whole shared-library closure and
+carrying the corresponding-source obligation for it, to avoid a package the
+user can install.
+
+**The Linux QEMU is pristine upstream.** The seven WHPX patches below are
+Windows-only and are not applied to it; nothing in this project patches QEMU
+for KVM.
 
 On Windows the prepared-state path additionally needs **seven** changes to
 QEMU's WHPX backend and its migration transport, applied in the order given in
@@ -125,8 +141,9 @@ beside the binary.
 Used during `winquick setup` only, to set one value in a Windows registry hive.
 Invoked as a separate child process; not linked into WinQuick.
 
-**On macOS this is not distributed** -- the user installs it with
-`brew install hivex`.
+**On macOS and Linux this is not distributed** -- the user installs it with
+`brew install hivex` or `apt install libhivex-bin`. Neither host's copy is
+modified, so no change disclosure arises there.
 
 **On Windows it is distributed with WinQuick, modified**, because no package
 provides it there. Upstream excludes `hivexsh` from Windows builds entirely, for
