@@ -85,6 +85,19 @@ pub fn parse(raw: &str) -> Result<Pattern> {
     // above it; a `**` further left applies the final element at any depth.
     // A single `*` stays one level deep, as it does in every other glob.
     if parts.last() == Some(&"**") {
+        // A second `**` to the left would become a directory literally named
+        // `**`, which nothing matches -- so the run would quietly retrieve
+        // nothing. `**/bin/Release/**` is the natural way to write "every
+        // project's Release output" and it is worth saying why it cannot work
+        // rather than returning an empty artifacts directory.
+        if parts[..parts.len() - 1].iter().any(|p| *p == "**") {
+            bail!(
+                "artifact pattern {raw:?}: `**` works once, either as the trailing \
+                 tree or before the file pattern.\nFor every project's output, \
+                 match the files: `**/*.dll`, `**/*.exe`.\nFor one project's \
+                 tree, name it: `MyProj/bin/Release/**`."
+            );
+        }
         return Ok(Pattern::Tree { dir: parts[..parts.len() - 1].join("\\") });
     }
     if let Some(i) = parts.iter().position(|p| *p == "**") {
@@ -251,6 +264,11 @@ mod tests {
     #[test]
     fn a_whole_tree() {
         assert_eq!(p("bin/Release/**"), Pattern::Tree { dir: "bin\\Release".into() });
+        // `**/bin/Release/**` used to become a directory literally named `**`
+        // and silently match nothing; it is the obvious way to write "every
+        // project's Release output", so it has to explain itself.
+        let msg = super::parse("**/bin/Release/**").unwrap_err().to_string();
+        assert!(msg.contains("**/*.dll"), "{msg}");
         assert_eq!(p("**"), Pattern::Tree { dir: String::new() });
     }
 
