@@ -6,8 +6,33 @@ WQ="$SCRIPTDIR/../target/release/winquick"
 # The image `run` actually boots: the serviced one when the .NET Framework
 # capability is installed, the pristine one otherwise. Checking the wrong one
 # would let a run write to the image it boots and still report "unchanged".
-BASE=~/.winquick/images/netfx-arm64/base.qcow2
-[ -f "$BASE" ] || BASE=~/.winquick/images/validation-arm64/base.qcow2
+# Which guest this host runs, and therefore which directories to look in.
+case "$(uname -m)" in
+  arm64|aarch64) GUEST=arm64 ;;
+  *)             GUEST=x64   ;;
+esac
+BASE=~/.winquick/images/netfx-$GUEST/base.qcow2
+[ -f "$BASE" ] || BASE=~/.winquick/images/validation-$GUEST/base.qcow2
+
+# The three things macOS and Linux spell differently. Defined once so the
+# tests below read the same on both.
+if command -v shasum >/dev/null 2>&1; then
+  sha256() { shasum -a 256 "$@"; }
+else
+  sha256() { sha256sum "$@"; }
+fi
+if stat -f%z . >/dev/null 2>&1; then
+  fsize() { stat -f%z "$1"; }
+else
+  fsize() { stat -c%s "$1"; }
+fi
+# Count real QEMU processes.
+#
+# `pgrep -f qemu-system-...` was wrong twice over: it hard-codes the aarch64
+# binary name, and -f matches the whole command line, so any shell running a
+# command that merely *mentions* qemu counts itself. That produced two
+# confident false failures during development. Match the executable instead.
+qemu_count() { ps -eo comm= 2>/dev/null | grep -c '^qemu-system' || true; }
 N=${1:-100}
 # Optional .NET fixtures, built on the host; tests are skipped when absent.
 FDAPP=${WQ_FDAPP:-/tmp/wqnet/out/fd-arm64}
@@ -55,9 +80,9 @@ env_out=$("$WQ" run -- cmd /c "echo [%WQLEAK%]" 2>/dev/null | tr -d '\n')
 check "environment mutation does not survive" "$env_out" "[]"
 
 echo "== base image immutability =="
-before=$(shasum -a 256 "$BASE" | cut -d' ' -f1)
+before=$(sha256 "$BASE" | cut -d' ' -f1)
 for i in 1 2 3; do "$WQ" run -- cmd /c ver >/dev/null 2>&1; done
-after=$(shasum -a 256 "$BASE" | cut -d' ' -f1)
+after=$(sha256 "$BASE" | cut -d' ' -f1)
 check "base.qcow2 unchanged" "$after" "$before"
 
 echo "== ready-state invalidation and fallback =="
@@ -71,7 +96,7 @@ v=$("$WQ" run --verbose --cpus 2 -- cmd /c ver 2>&1 >/dev/null)
 case "$v" in *"vcpu count changed"*|*"device configuration changed"*) ok "changed vCPU count invalidates the ready state";; *) bad "invalidation on vCPU" "$v";; esac
 
 "$WQ" run -- cmd /c ver >/dev/null 2>&1
-printf 'not a real migration stream' > ~/.winquick/states/validation-arm64/ready.state
+printf 'not a real migration stream' > ~/.winquick/states/validation-$GUEST/ready.state
 v=$("$WQ" run --verbose -- cmd /c ver 2>&1 >/tmp/wq_o); rc=$?
 check "corrupt ready.state still returns the right answer" "$rc" "0"
 grep -q 10.0.26100.8972 /tmp/wq_o && ok "corrupt ready.state falls back and produces output" || bad "corrupt fallback" "$(cat /tmp/wq_o)"
@@ -182,8 +207,8 @@ check "artifact: host file not rewritten" "$(cat "$ATMP/src/top.txt")" "top"
 rm -rf winquick-artifacts
 mkdir -p big && dd if=/dev/urandom of=big/blob.bin bs=1m count=32 2>/dev/null
 "$WQ" run -w "$ATMP/big" -a "**" -- cmd /c "echo x" >/dev/null 2>&1
-sz=$(stat -f%z winquick-artifacts/blob.bin 2>/dev/null || echo 0)
-check "artifact: 32 MiB file exact" "$sz" "$(stat -f%z big/blob.bin)"
+sz=$(fsize winquick-artifacts/blob.bin 2>/dev/null || echo 0)
+check "artifact: 32 MiB file exact" "$sz" "$(fsize big/blob.bin)"
 popd >/dev/null; rm -rf "$ATMP"
 
 if [ -f ~/.winquick/capabilities/dotnet-sdk.img ] && [ -d "$TESTPROJ" ]; then
@@ -193,7 +218,7 @@ echo "== nuget cache =="
 "$WQ" cache sync "$TESTPROJ" >/dev/null 2>&1
 check "cache sync succeeds" "$?" "0"
 CACHE=~/.winquick/capabilities/nuget-cache.img
-before=$(shasum -a 256 "$CACHE" | cut -d" " -f1)
+before=$(sha256 "$CACHE" | cut -d" " -f1)
 rm -rf "$TESTPROJ/obj" "$TESTPROJ/bin"
 out=$("$WQ" run -w "$TESTPROJ" -- dotnet test --nologo 2>&1)
 rc=$?
@@ -202,13 +227,13 @@ case "$out" in *"Passed!"*) ok "nuget: tests actually ran and passed";; *) bad "
 case "$out" in *NU1301*) bad "nuget: hit the network" "NU1301 in output";; *) ok "nuget: no network was needed";; esac
 
 "$WQ" run -w "$TESTPROJ" -- cmd /c "echo pwned> %NUGET_PACKAGES%\pwned.txt & echo done" >/dev/null 2>&1
-after=$(shasum -a 256 "$CACHE" | cut -d" " -f1)
+after=$(sha256 "$CACHE" | cut -d" " -f1)
 check "nuget: guest cannot mutate the canonical cache" "$after" "$before"
 o=$("$WQ" run -- cmd /c "if exist %NUGET_PACKAGES%\pwned.txt (echo LEAKED) else (echo CLEAN)" 2>/dev/null | tr -d "\r\n")
 check "nuget: guest writes do not persist into later runs" "$o" "CLEAN"
 
-BASESHA=$(shasum -a 256 "$BASE" | cut -d" " -f1)
-check "nuget: base image unchanged by cache use" "$BASESHA" "$(shasum -a 256 "$BASE" | cut -d" " -f1)"
+BASESHA=$(sha256 "$BASE" | cut -d" " -f1)
+check "nuget: base image unchanged by cache use" "$BASESHA" "$(sha256 "$BASE" | cut -d" " -f1)"
 else
   echo "== nuget cache (skipped: cache/SDK/test project not present) =="
 fi
@@ -218,7 +243,7 @@ fi
 # once discovered by a real build rather than by this suite.
 FIXTURE="$SCRIPTDIR/../experiments/dotnet-matrix/ClassicNetFxX64"
 REFPKG=~/.winquick/caches/nuget/microsoft.netframework.referenceassemblies.net472/1.0.3
-if [ -f ~/.winquick/images/netfx-arm64/base.qcow2 ] && [ -d "$REFPKG" ] && [ -d "$FIXTURE" ]; then
+if [ -f ~/.winquick/images/netfx-$GUEST/base.qcow2 ] && [ -d "$REFPKG" ] && [ -d "$FIXTURE" ]; then
 echo "== classic .NET Framework project =="
 NTMP=$(mktemp -d)
 cp -R "$FIXTURE/." "$NTMP/"
@@ -257,10 +282,10 @@ check "doctor reports a healthy install" "$?" "0"
 "$WQ" info | grep -q "runtime" && ok "info reports the runtime" || bad "info" "no runtime line"
 out=$("$WQ" clean --dry-run 2>&1)
 case "$out" in *total*) ok "clean --dry-run reports without removing";; *) bad "clean --dry-run" "$out";; esac
-[ -f ~/.winquick/images/validation-arm64/base.qcow2 ] && ok "clean --dry-run removed nothing" || bad "clean --dry-run" "runtime gone"
+[ -f ~/.winquick/images/validation-$GUEST/base.qcow2 ] && ok "clean --dry-run removed nothing" || bad "clean --dry-run" "runtime gone"
 
 echo "== interrupt and timeout =="
-before_q=$(pgrep -f qemu-system-aarch64 | wc -l | tr -d " ")
+before_q=$(qemu_count)
 # Warm this run up first, so the check below is about the timeout and not about
 # there being no prepared guest yet.
 "$WQ" run -- cmd /c "exit 0" >/dev/null 2>&1
@@ -273,9 +298,9 @@ case "$out" in *"--timeout"*) ok "a timeout says which flag to change";; *) bad 
 # A command that ran out of time says nothing about the guest that ran it.
 # Falling back used to re-run the whole command cold, once per prepare attempt.
 [ "$el" -lt 60 ] && ok "a timeout is not retried on a fresh guest" || bad "timeout retried" "took ${el}s for a 2 s timeout"
-[ -f ~/.winquick/states/validation-arm64/ready.json ] && ok "a timeout keeps the prepared guest" || bad "prepared guest discarded by a timeout" "no ready.json"
+[ -f ~/.winquick/states/validation-$GUEST/ready.json ] && ok "a timeout keeps the prepared guest" || bad "prepared guest discarded by a timeout" "no ready.json"
 sleep 1
-after_q=$(pgrep -f qemu-system-aarch64 | wc -l | tr -d " ")
+after_q=$(qemu_count)
 check "timeout leaves no qemu behind" "$after_q" "$before_q"
 check "timeout leaves no run directories" "$(ls -A ~/.winquick/run 2>/dev/null | wc -l | tr -d " ")" "0"
 
@@ -286,7 +311,7 @@ kill -INT $IPID 2>/dev/null
 wait $IPID 2>/dev/null; irc=$?
 check "Ctrl-C exits 130" "$irc" "130"
 sleep 2
-check "Ctrl-C leaves no qemu behind" "$(pgrep -f qemu-system-aarch64 | wc -l | tr -d " ")" "0"
+check "Ctrl-C leaves no qemu behind" "$(qemu_count)" "0"
 check "Ctrl-C leaves no run directories" "$(ls -A ~/.winquick/run 2>/dev/null | wc -l | tr -d " ")" "0"
 
 echo "== concurrency =="
@@ -295,7 +320,7 @@ wait
 cok=0
 for i in 1 2 3 4; do grep -q "conc-$i" /tmp/wq_c$i.out && cok=$((cok+1)); done
 check "four concurrent runs all correct" "$cok" "4"
-check "concurrency leaves no qemu behind" "$(pgrep -f qemu-system-aarch64 | wc -l | tr -d " ")" "0"
+check "concurrency leaves no qemu behind" "$(qemu_count)" "0"
 
 echo "== artifact safety =="
 ATMP2=$(mktemp -d); pushd "$ATMP2" >/dev/null
@@ -386,7 +411,7 @@ for bad in "../escape" "bin/../../etc"; do
 done
 
 echo "== desktop capability =="
-DESKBASE=~/.winquick/images/desktop-arm64/base.qcow2
+DESKBASE=~/.winquick/images/desktop-$GUEST/base.qcow2
 # The CLI surface must be right whether or not the capability is installed.
 "$WQ" desktop --help 2>&1 | grep -q "automation-id" && ok "desktop help documents element selectors" || bad "desktop help" "no selector guidance"
 "$WQ" ui-test --help 2>&1 | grep -q "expect" && ok "ui-test help documents the script format" || bad "ui-test help" "no script guidance"
@@ -440,7 +465,7 @@ if [ -f "$DESKBASE" ] && [ -d "$WQ_UIAPP" ]; then
   "$WQ" desktop stop >/dev/null 2>&1
   # A desktop session must not write to the installed capability volumes; it
   # gets clones, exactly as `winquick run` does.
-  capsum_before=$(shasum -a 256 ~/.winquick/capabilities/*.img | shasum -a 256)
+  capsum_before=$(sha256 ~/.winquick/capabilities/*.img | sha256)
   "$WQ" desktop start --app "$WQ_UIAPP" >/tmp/wq_sess.log 2>&1
   check "desktop session starts" "$?" "0"
 
@@ -488,7 +513,7 @@ PYTREE
     && ok "screenshot accepts --hwnd" || bad "screenshot --hwnd" "not accepted"
 
   "$WQ" desktop stop >/dev/null 2>&1
-  capsum_after=$(shasum -a 256 ~/.winquick/capabilities/*.img | shasum -a 256)
+  capsum_after=$(sha256 ~/.winquick/capabilities/*.img | sha256)
   check "a desktop session leaves capability volumes untouched" "$capsum_before" "$capsum_after"
 fi
 
@@ -496,7 +521,7 @@ fi
 # second instead of ten. It has to be created, reused, and thrown away the
 # moment it stops describing the machine.
 if [ -f "$DESKBASE" ] && [ -d "$WQ_UIAPP" ]; then
-  DSTATE=~/.winquick/states/desktop-arm64
+  DSTATE=~/.winquick/states/desktop-$GUEST
   "$WQ" desktop stop >/dev/null 2>&1
 
   "$WQ" desktop start --app "$WQ_UIAPP" >/dev/null 2>&1
@@ -542,7 +567,7 @@ if [ -f "$DESKBASE" ] && [ -d "$WQ_UIAPP" ]; then
     || "$WQ" desktop wait-window --title "WinQuick Demo" --timeout 60000 >/dev/null 2>&1
   "$WQ" desktop type --automation-id DeviceNameBox --text "LEAKED" >/dev/null 2>&1 \
     || "$WQ" desktop type --automation-id NameBox --text "LEAKED" >/dev/null 2>&1
-  statesum_before=$(shasum -a 256 $DSTATE/ready-disk.qcow2 $DSTATE/ready.state | shasum -a 256)
+  statesum_before=$(sha256 $DSTATE/ready-disk.qcow2 $DSTATE/ready.state | sha256)
   "$WQ" desktop stop >/dev/null 2>&1
 
   "$WQ" desktop start --app "$WQ_UIAPP" >/dev/null 2>&1
@@ -554,7 +579,7 @@ if [ -f "$DESKBASE" ] && [ -d "$WQ_UIAPP" ]; then
     && bad "session disposability" "the previous session's typing survived" \
     || ok "a restored session starts clean"
   "$WQ" desktop stop >/dev/null 2>&1
-  statesum_after=$(shasum -a 256 $DSTATE/ready-disk.qcow2 $DSTATE/ready.state | shasum -a 256)
+  statesum_after=$(sha256 $DSTATE/ready-disk.qcow2 $DSTATE/ready.state | sha256)
   check "sessions never write to the prepared state" "$statesum_before" "$statesum_after"
 fi
 
