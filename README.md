@@ -45,7 +45,34 @@ code back, throw the environment away.
 The mental model is `docker run --rm`, with a real Windows kernel on the other
 end.
 
+## Requirements
+
+Every host needs hardware virtualisation, about 4 GB of disk for the Windows
+runtime, and Microsoft's Validation OS image, which you obtain from Microsoft
+under their licence.
+
+| | macOS | Linux | Windows |
+|---|---|---|---|
+| CPU | Apple Silicon (M1 or newer) | x86_64 | x86_64 |
+| OS | macOS 13 or later | tested on Ubuntu 24.04 | Windows 10/11 |
+| Accelerator | Hypervisor Framework | KVM, `/dev/kvm` readable and writable | Windows Hypervisor Platform |
+| QEMU | 11 or newer | **11 or newer** | 11 or newer, patched |
+| Also needs | hivex | `libhivex-bin`, `ovmf` | none |
+
+Two things catch people out. On Linux, Ubuntu 24.04 ships QEMU 8.2.2, which
+cannot migrate the NVMe device the guest boots from, so every run would boot
+cold; `winquick doctor` checks the version and says so. And if `/dev/kvm` is not
+writable by you, `sudo usermod -aG kvm $USER` and log in again.
+
+On Windows the requirement is the **Windows Hypervisor Platform** feature, which
+is not the same thing as installing the Hyper-V role. Windows hosts run commands
+but do not get the fast path; see the table further down.
+
+WinQuick does not use libvirt and does not run a daemon on any host.
+
 ## Install
+
+### macOS
 
 ```console
 brew install carlbomsdata/tap/winquick
@@ -55,6 +82,18 @@ winquick setup
 Homebrew installs the binary, the `ntfscat`/`ntfscp` helpers and the guest
 bridge sources, and pulls in QEMU and hivex. Nothing is quarantined, so there is
 no `xattr` step.
+
+### Linux
+
+```console
+sudo apt install qemu-system-x86 qemu-utils ovmf libhivex-bin
+tar -xzf winquick-0.3.0-linux-x86_64.tar.gz
+sudo cp -R winquick-0.3.0-linux-x86_64/* /usr/local/
+winquick setup
+```
+
+Check your QEMU is 11 or newer first. If your distribution ships something
+older, `winquick doctor` will tell you before you get as far as a slow run.
 
 Or install the release archive by hand — see
 [docs/install.md](docs/install.md), which also covers the Gatekeeper step a
