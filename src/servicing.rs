@@ -391,12 +391,25 @@ fn find_cab(cabs: &Path, file: &str, language: &str) -> Option<PathBuf> {
 
 /// virtio-win lays drivers out as `<driver>/<windows version>/ARM64/`. Prefer
 /// the newest Windows directory that actually has an ARM64 build.
+/// Where the virtio-win disc keeps the driver for this guest.
+///
+/// The layout is `<driver>/<windows-release>/<arch>/`, and the arch directory
+/// was hardcoded to `ARM64`. The disc carries ARM64 builds of these drivers
+/// whatever guest you are running, so on an x64 image the staging *succeeded*
+/// and installed a driver the guest could never bind: DISM was happy, the
+/// capability reported ready, the desktop session started, UI Automation
+/// worked -- and every screenshot came back a single flat black, because
+/// nothing had a display adapter.
+fn driver_arch() -> &'static str {
+    if crate::platform::GUEST_ARCH == "arm64" { "ARM64" } else { "amd64" }
+}
+
 fn find_driver(root: &Path, name: &str, inf: &str) -> Option<PathBuf> {
     let dir = root.join(name);
     let mut candidates: Vec<PathBuf> = std::fs::read_dir(&dir)
         .ok()?
         .flatten()
-        .map(|e| e.path().join("ARM64"))
+        .map(|e| e.path().join(driver_arch()))
         .filter(|p| p.join(inf).is_file())
         .collect();
     candidates.sort();
