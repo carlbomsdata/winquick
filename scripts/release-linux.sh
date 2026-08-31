@@ -60,6 +60,11 @@ rm -rf "$STAGE/share/winquick/wqui/bin" "$STAGE/share/winquick/wqui/obj"
 curl -sSL -o "$STAGE/libexec/winquick/LICENSE.ntfsprogs" \
   https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt
 
+# A source tree that has been near macOS carries AppleDouble sidecars, and
+# `cp -R` brings them along. They are not ours to ship.
+find "$STAGE" -name '._*' -delete
+find "$STAGE" -name '.DS_Store' -delete
+
 echo "==> checking the staged tree"
 for required in bin/winquick libexec/winquick/ntfscp libexec/winquick/ntfscat \
                 libexec/winquick/LICENSE.ntfsprogs \
