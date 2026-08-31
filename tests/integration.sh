@@ -208,7 +208,7 @@ check "artifact: host source tree untouched" "$after" "$before"
 check "artifact: host file not rewritten" "$(cat "$ATMP/src/top.txt")" "top"
 
 rm -rf winquick-artifacts
-mkdir -p big && dd if=/dev/urandom of=big/blob.bin bs=1m count=32 2>/dev/null
+mkdir -p big && dd if=/dev/urandom of=big/blob.bin bs=1048576 count=32 2>/dev/null
 "$WQ" run -w "$ATMP/big" -a "**" -- cmd /c "echo x" >/dev/null 2>&1
 sz=$(fsize winquick-artifacts/blob.bin 2>/dev/null || echo 0)
 check "artifact: 32 MiB file exact" "$sz" "$(fsize big/blob.bin)"
