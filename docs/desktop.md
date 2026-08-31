@@ -487,3 +487,43 @@ display adapter" from "the application did not start".
 The WPF example logs unhandled exceptions to `C:\wqcrash.txt`, which is how the
 missing `UIAutomationCore.dll` was found in the first place — the window was
 created and then died with a `DllNotFoundException` that nothing else reported.
+
+## On Linux/KVM
+
+The desktop capability builds and runs on a Linux host against an x64 guest,
+with one gap: nothing renders.
+
+What works, measured on Ubuntu 24.04 x86_64 / KVM / QEMU 11.1.0 against
+Validation OS x64:
+
+- `winquick capability install desktop` completes and produces a 2.1 GiB image
+- the guest bridge is built as a **PE32+ x86-64** `wqui.exe`, so the
+  architecture follows the guest rather than the host that built it
+- `desktop start`, `status`, `launch`, `stop` all work
+- `desktop tree` returns a real UI Automation tree with correct window bounds
+- `ui-test` runs a full script -- launch, wait-window, focus, expect, type,
+  click, screenshot -- and its assertions pass
+- screenshots are real PNGs whose dimensions match the window (620x460 for the
+  demo, 1024x768 for the desktop) and match the metadata reported over MCP
+- the desktop MCP suite is 33/34; teardown leaves no QEMU and no run directory
+
+What does not: **every captured frame is a single flat black.** The window is
+there and UI Automation can see and drive it; the framebuffer is empty.
+
+Two real bugs were found and fixed on the way to that point, and neither was
+the cause:
+
+- The media was mounted with `/usr/bin/hdiutil`, which only macOS has, so the
+  build stopped at "collecting packages" on any other host. Both discs are now
+  read without mounting -- the Validation OS media is UDF and the virtio-win
+  disc is ISO 9660, and WinQuick reads both itself.
+- The virtio driver was staged from the disc's `ARM64` directory regardless of
+  guest. The disc carries ARM64 builds whatever you are running, so on x64 the
+  staging *succeeded* and installed a driver that could never bind. Fixed to
+  follow `GUEST_ARCH`; the frames stayed black, so this was necessary and not
+  sufficient.
+
+The remaining work is x64 guest display enablement -- whether `viogpudo` binds
+to `virtio-gpu-pci` on q35 at all, and what Validation OS x64 needs beyond the
+CAB packages the ARM64 image gets. Until that is answered, treat Linux desktop
+as: automation yes, pixels no.
