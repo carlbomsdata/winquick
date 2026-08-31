@@ -2,10 +2,34 @@
 
 ## Requirements
 
-- An Apple Silicon Mac (M1 or newer)
-- macOS 13 (Ventura) or later
-- About 4 GB of disk for the Windows runtime, more for optional tools
-- Microsoft's Validation OS image, which you obtain from Microsoft
+Common to every host: about 4 GB of disk for the Windows runtime (more for
+optional tools), and Microsoft's Validation OS image, which you obtain from
+Microsoft.
+
+### Apple Silicon macOS
+
+- An Apple Silicon Mac (M1 or newer), macOS 13 (Ventura) or later
+
+### Linux x86_64
+
+- Hardware virtualisation enabled in firmware, and KVM available:
+  `/dev/kvm` must exist and be readable and writable by you. If it is not,
+  add yourself to the `kvm` group and log in again:
+  `sudo usermod -aG kvm $USER`
+- **QEMU 11 or newer.** Ubuntu 24.04 ships 8.2.2, which cannot migrate the
+  NVMe device the guest boots from; WinQuick would then boot cold on every
+  run. `winquick doctor` checks this.
+- `libhivex-bin` for `winquick setup` (`sudo apt install libhivex-bin`)
+- UEFI firmware: `ovmf` on x86_64 (`sudo apt install ovmf`)
+
+WinQuick does not use libvirt and does not run a daemon.
+
+### Windows x86_64
+
+Runs, but without the fast path — see the platform table in the README. A
+Windows host needs hardware virtualisation and the **Windows Hypervisor
+Platform** feature (which is not the same thing as installing the Hyper-V
+role).
 
 ## Homebrew
 

@@ -21,7 +21,7 @@ image and leaves nothing behind.
 | PowerShell command | ~870 ms |
 | Desktop session start | **~380 ms** |
 | UI automation step in a session | ~20 ms |
-| Host | Apple Silicon macOS; Windows x86_64 (early) |
+| Host | Apple Silicon macOS; Linux x86_64; Windows x86_64 (limited) |
 
 Times are medians observed on the development host (Apple Silicon, macOS 26,
 QEMU 11.1), not guaranteed latencies.
@@ -78,9 +78,32 @@ winquick setup --from ~/Downloads/vos.iso   # use a file you already have
 Setup finishes by booting Windows and running a real command, so it only says
 "Ready" when it actually is. It takes about a minute.
 
-Requirements: an Apple Silicon Mac (M1 or newer) and macOS 13 or later.
-Windows x86_64 works too, and is earlier along — see
-[docs/windows-host.md](docs/windows-host.md).
+### Which hosts this runs on
+
+| Host | Accelerator | Guest | Fast path | State |
+|---|---|---|---|---|
+| Apple Silicon macOS 13+ | HVF | Windows ARM64 | yes | the reference host |
+| Linux x86_64 | KVM | Windows x64 | yes | validated; needs QEMU 11+ |
+| Windows x86_64 | WHPX | Windows x64 | **no** | cold runs only |
+
+On macOS and Linux a prepared guest resumes into a fresh QEMU process and a
+command comes back in well under a second on the reference host.
+
+**Windows hosts do not get the fast path.** A restored WHPX guest executes but
+cannot wait: the first thing that sleeps on a timer stalls for minutes, so
+anything real — a build, a test, PowerShell — is no faster than booting from
+scratch, and often slower. The cause is that Windows parks idle processors on
+Hyper-V synthetic timers whose expiry is absolute in the source partition's
+reference-time domain, and public WHP exposes no way to read either partition's
+reference count and rebase them. It is a property of the platform, not a bug
+waiting to be fixed, and the evidence is in
+[docs/whpx-resume.md](docs/whpx-resume.md). Cold runs on Windows are correct;
+use `--cold`.
+
+Linux needs QEMU 11 or newer. Ubuntu 24.04 ships 8.2.2, whose NVMe device
+cannot be migrated, so every run would boot cold — `winquick doctor` checks the
+version and says so. See [docs/windows-host.md](docs/windows-host.md) for the
+Windows story in full.
 
 See [docs/install.md](docs/install.md) for details.
 
