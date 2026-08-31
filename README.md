@@ -2,8 +2,8 @@
 
 **Instant disposable Windows environments.**
 
-Run a real Windows command from your Mac in about a quarter of a second, in a
-clean Windows that is thrown away afterwards.
+Run a real Windows command from a Mac or a Linux box in about a quarter of a
+second, in a clean Windows that is thrown away afterwards.
 
 ```console
 $ winquick run -- cmd /c ver
@@ -11,8 +11,8 @@ $ winquick run -- cmd /c ver
 Microsoft Windows [Version 10.0.26100.8972]
 ```
 
-A real Windows ARM64 kernel under QEMU with Apple's Hypervisor Framework —
-not Wine, not an emulator, not a container. Every run starts from a pristine
+A real Windows kernel under QEMU, on Apple's Hypervisor Framework or on KVM.
+Not Wine, not an emulator, not a container. Every run starts from a pristine
 image and leaves nothing behind.
 
 | | |
@@ -83,7 +83,7 @@ Setup finishes by booting Windows and running a real command, so it only says
 | Host | Accelerator | Guest | Fast path | State |
 |---|---|---|---|---|
 | Apple Silicon macOS 13+ | HVF | Windows ARM64 | yes | the reference host |
-| Linux x86_64 | KVM | Windows x64 | yes | validated; needs QEMU 11+ |
+| Linux x86_64 | KVM | Windows x64 | yes | runs, capabilities, desktop, MCP; needs QEMU 11+ |
 | Windows x86_64 | WHPX | Windows x64 | **no** | cold runs only |
 
 On macOS and Linux a prepared guest resumes into a fresh QEMU process and a
@@ -91,7 +91,7 @@ command comes back in well under a second on the reference host.
 
 **Windows hosts do not get the fast path.** A restored WHPX guest executes but
 cannot wait: the first thing that sleeps on a timer stalls for minutes, so
-anything real — a build, a test, PowerShell — is no faster than booting from
+anything real, a build or a test or PowerShell, is no faster than booting from
 scratch, and often slower. The cause is that Windows parks idle processors on
 Hyper-V synthetic timers whose expiry is absolute in the source partition's
 reference-time domain, and public WHP exposes no way to read either partition's
