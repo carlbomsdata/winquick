@@ -11,6 +11,7 @@ mod gpt;
 mod helpers;
 mod hostfs;
 mod interrupt;
+mod iso9660;
 mod lock;
 mod mailbox;
 mod mcp;

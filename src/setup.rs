@@ -480,22 +480,35 @@ pub fn mount_iso_at(iso: &Path) -> Result<PathBuf> {
 /// of it. Extracting only those keeps this within a few hundred megabytes and
 /// a few seconds.
 fn extract_media_trees(iso: &Path, dest: &Path) -> Result<()> {
-    let mut v = crate::udf::Volume::open(iso)?;
-    let mut got_any = false;
-    for want in ["GenImage", "cabs"] {
-        let Some(entry) = v.find(want)? else { continue };
-        if !entry.is_dir {
-            continue;
+    // Two discs, two filesystems. Microsoft's Validation OS media is UDF; Red
+    // Hat's virtio-win disc, which the desktop capability takes drivers from,
+    // is plain ISO 9660. Try each, and only complain if neither reads.
+    if let Ok(mut v) = crate::udf::Volume::open(iso) {
+        let mut got = false;
+        for want in ["GenImage", "cabs"] {
+            if let Some(e) = v.find(want)? {
+                if e.is_dir {
+                    v.extract_tree(&e, &dest.join(want))
+                        .with_context(|| format!("extracting {want} from {}", iso.display()))?;
+                    got = true;
+                }
+            }
         }
-        v.extract_tree(&entry, &dest.join(want))
-            .with_context(|| format!("extracting {want} from {}", iso.display()))?;
-        got_any = true;
+        if got {
+            return Ok(());
+        }
     }
-    if !got_any {
-        bail!(
-            "{} carries neither GenImage nor cabs.\n\n             The desktop capability needs the full Validation OS ISO, not the\n             VHDX on its own.",
-            iso.display()
-        );
+
+    let mut i = crate::iso9660::Image::open(iso)
+        .with_context(|| format!("{} is neither UDF nor ISO 9660", iso.display()))?;
+    // The virtio disc is drivers for every Windows there has ever been; the
+    // caller picks two out of it, so the top-level directories are all that
+    // need to exist on disk.
+    for e in i.root()? {
+        if e.is_dir {
+            i.extract_tree(&e, &dest.join(&e.name))
+                .with_context(|| format!("extracting {} from {}", e.name, iso.display()))?;
+        }
     }
     Ok(())
 }
