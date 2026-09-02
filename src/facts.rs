@@ -291,6 +291,16 @@ pub fn doctor() -> Result<Doctor> {
             "prepared guest",
             "disabled: this QEMU restores a guest that never resumes, so every run boots cold",
         );
+    } else if let Some(why) = state::structural_problem() {
+        // The files are there but they do not describe a finished freeze.
+        // Saying "ready" here sent someone chasing a hypervisor bug for an
+        // hour, because every run timed out while doctor insisted all was well.
+        b.fail(
+            "Runtime",
+            "prepared guest",
+            format!("incomplete ({why})"),
+            "The prepared guest is incomplete. Rebuild it with `winquick reset`.",
+        );
     } else if prepared {
         b.ok("Runtime", "prepared guest", "ready (runs are fast)");
     } else {

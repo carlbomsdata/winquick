@@ -1074,9 +1074,22 @@ fn build_ready_state(ctx: &Ctx, want: &state::Fingerprint) -> Result<state::Read
         std::thread::sleep(SETTLE_BEFORE_FREEZE);
         q.stop()?;
         std::fs::create_dir_all(&sdir)?;
+        // Withdraw the claim before touching anything a previous freeze
+        // published. From here until `state::save` at the end, the files in
+        // this directory are half of one freeze and half of another, and an
+        // interruption anywhere in between used to leave `ready.json` still
+        // advertising a guest whose state file had already been deleted.
+        state::unpublish()?;
         let state_file = sdir.join("ready.state");
+        // Migrate into a temporary name and rename once QEMU says it finished,
+        // so a killed migration cannot leave a truncated file under the name
+        // everything else trusts.
+        let partial = sdir.join("ready.state.part");
         let _ = std::fs::remove_file(&state_file);
-        q.migrate_to_file(&state_file, Duration::from_secs(120))?;
+        let _ = std::fs::remove_file(&partial);
+        q.migrate_to_file(&partial, Duration::from_secs(120))?;
+        std::fs::rename(&partial, &state_file)
+            .context("publishing the frozen guest state")?;
         // Quit cleanly rather than killing: the block layer has to flush before
         // the overlay we are about to copy is trustworthy.
         let _ = q.command("quit", serde_json::json!({}));

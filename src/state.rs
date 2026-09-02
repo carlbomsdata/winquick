@@ -297,6 +297,75 @@ fn describe_mismatch(have: &Fingerprint, want: &Fingerprint) -> String {
     }
 }
 
+/// Withdraw the "there is a prepared guest" claim.
+///
+/// Called before a freeze starts overwriting the files a previous freeze
+/// published. `ready.json` is the only thing that advertises a prepared guest,
+/// so removing it first means an interrupted freeze leaves a guest that is
+/// merely absent rather than one that claims to be ready and is not.
+pub fn unpublish() -> Result<()> {
+    if let Ok(mp) = meta_path() {
+        let _ = std::fs::remove_file(mp);
+    }
+    Ok(())
+}
+
+/// What is structurally wrong with the prepared guest, if anything.
+///
+/// Cheap on purpose: it reads one small JSON file and stats the rest. It
+/// answers "was this freeze finished and are its pieces still here", not "will
+/// this guest restore" - the second question needs a hypervisor, and that is
+/// what `doctor --smoke` is for.
+///
+/// `None` means nothing detectable is wrong. A prepared guest that does not
+/// exist at all is not a problem, and is reported as `None` here; the caller
+/// distinguishes absent from broken.
+pub fn structural_problem() -> Option<String> {
+    structural_problem_in(&state_dir().ok()?)
+}
+
+/// As [`structural_problem`], against a named directory, so the rules can be
+/// tested without a real prepared guest on the machine running the tests.
+pub fn structural_problem_in(dir: &Path) -> Option<String> {
+    let mp = dir.join("ready.json");
+    if !mp.exists() {
+        return None;
+    }
+    let text = match std::fs::read_to_string(&mp) {
+        Ok(t) => t,
+        Err(e) => return Some(format!("ready.json cannot be read: {e}")),
+    };
+    let meta: ReadyMeta = match serde_json::from_str(&text) {
+        Ok(m) => m,
+        Err(e) => return Some(format!("ready.json is unreadable: {e}")),
+    };
+    let rs = ReadyState { dir: dir.to_path_buf(), meta };
+    let mut required =
+        vec![rs.state_file(), rs.disk(), rs.vars(), rs.mailbox(), rs.workspace(), rs.artifacts()];
+    required.extend((0..rs.capability_count()).map(|i| rs.capability(i)));
+    for f in required {
+        if !f.exists() {
+            return Some(format!(
+                "{} is missing",
+                f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
+            ));
+        }
+    }
+    match std::fs::metadata(rs.state_file()) {
+        Err(e) => return Some(format!("ready.state cannot be read: {e}")),
+        Ok(m) if m.len() != rs.meta.state_bytes => {
+            return Some(format!(
+                "ready.state is {} but ready.json says {}",
+                crate::helpers::human(m.len()),
+                crate::helpers::human(rs.meta.state_bytes)
+            ))
+        }
+        Ok(m) if m.len() == 0 => return Some("ready.state is empty".to_string()),
+        Ok(_) => {}
+    }
+    None
+}
+
 pub fn save(meta: &ReadyMeta) -> Result<()> {
     let mp = meta_path()?;
     std::fs::create_dir_all(mp.parent().unwrap())?;
@@ -559,6 +628,130 @@ mod desktop_tests {
 
 #[cfg(test)]
 mod tests {
+
+    // ---- prepared-state validity -------------------------------------------
+    //
+    // An interrupted freeze used to leave `ready.json` advertising a guest
+    // whose state file had already been deleted, and `doctor` believed it.
+
+    struct Tmp(PathBuf);
+    impl Drop for Tmp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A directory that looks like a finished freeze.
+    fn prepared(name: &str, state_len: usize, caps: usize) -> Tmp {
+        let d = std::env::temp_dir().join(format!("wq-state-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("ready.state"), vec![7u8; state_len]).unwrap();
+        for f in ["ready-disk.qcow2", "ready-vars.fd", "ready-mailbox.img",
+                  "ready-workspace.img", "ready-artifacts.img"] {
+            std::fs::write(d.join(f), b"x").unwrap();
+        }
+        let mut cap_json = Vec::new();
+        for i in 0..caps {
+            std::fs::write(d.join(format!("ready-cap{i}.img")), b"x").unwrap();
+            cap_json.push(serde_json::json!([
+                format!("cap{i}"),
+                { "path": "/x", "len": 1, "mtime_ns": 0 }
+            ]));
+        }
+        let id = serde_json::json!({ "path": "/x", "len": 1, "mtime_ns": 0 });
+        let meta = serde_json::json!({
+            "fingerprint": {
+                "winquick_version": "0.0.0", "protocol_version": PROTOCOL_VERSION,
+                "base_image": id, "agent_hash": "0", "qemu_binary": id,
+                "qemu_version": "id:0", "firmware": id, "memory_mb": 1024, "cpus": 4,
+                "machine": "virt", "capabilities": cap_json, "devices": "d"
+            },
+            "created_unix": 0,
+            "state_bytes": state_len,
+        });
+        std::fs::write(d.join("ready.json"), serde_json::to_vec_pretty(&meta).unwrap()).unwrap();
+        Tmp(d)
+    }
+
+    /// A freeze that finished is not a problem.
+    #[test]
+    fn a_complete_prepared_guest_reports_nothing_wrong() {
+        let t = prepared("ok", 4096, 2);
+        assert_eq!(structural_problem_in(&t.0), None);
+    }
+
+    /// No prepared guest at all is absence, not corruption. The caller says
+    /// "not built yet"; it must not be reported as a fault.
+    #[test]
+    fn an_absent_prepared_guest_is_not_a_problem() {
+        let d = std::env::temp_dir().join(format!("wq-state-none-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        assert_eq!(structural_problem_in(&d), None);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The exact shape of the bug: `ready.json` survives, the state file it
+    /// describes does not.
+    #[test]
+    fn a_missing_state_file_is_detected() {
+        let t = prepared("gone", 4096, 0);
+        std::fs::remove_file(t.0.join("ready.state")).unwrap();
+        let why = structural_problem_in(&t.0).expect("must be reported");
+        assert!(why.contains("ready.state"), "{why}");
+        assert!(why.contains("missing"), "{why}");
+    }
+
+    /// A migration that stopped partway leaves fewer bytes than `ready.json`
+    /// recorded.
+    #[test]
+    fn a_truncated_state_file_is_detected() {
+        let t = prepared("short", 4096, 0);
+        std::fs::write(t.0.join("ready.state"), vec![7u8; 100]).unwrap();
+        let why = structural_problem_in(&t.0).expect("must be reported");
+        assert!(why.contains("ready.state"), "{why}");
+    }
+
+    /// Any volume the guest needs, not just the state file.
+    #[test]
+    fn a_missing_volume_is_detected() {
+        let t = prepared("vol", 4096, 0);
+        std::fs::remove_file(t.0.join("ready-workspace.img")).unwrap();
+        let why = structural_problem_in(&t.0).expect("must be reported");
+        assert!(why.contains("ready-workspace.img"), "{why}");
+    }
+
+    /// A capability volume named by the metadata but absent on disk.
+    #[test]
+    fn a_missing_capability_volume_is_detected() {
+        let t = prepared("cap", 4096, 2);
+        std::fs::remove_file(t.0.join("ready-cap1.img")).unwrap();
+        let why = structural_problem_in(&t.0).expect("must be reported");
+        assert!(why.contains("ready-cap1.img"), "{why}");
+    }
+
+    #[test]
+    fn unreadable_metadata_is_detected_rather_than_ignored() {
+        let t = prepared("json", 4096, 0);
+        std::fs::write(t.0.join("ready.json"), b"{ not json").unwrap();
+        let why = structural_problem_in(&t.0).expect("must be reported");
+        assert!(why.contains("ready.json"), "{why}");
+    }
+
+    /// The half-written file a killed migration leaves behind must never be
+    /// mistaken for the published one.
+    #[test]
+    fn a_partial_state_file_is_not_the_published_one() {
+        let t = prepared("part", 4096, 0);
+        std::fs::write(t.0.join("ready.state.part"), vec![7u8; 12]).unwrap();
+        assert_eq!(structural_problem_in(&t.0), None, "a leftover .part must not matter");
+        std::fs::remove_file(t.0.join("ready.state")).unwrap();
+        assert!(
+            structural_problem_in(&t.0).is_some(),
+            "a .part file must not stand in for the real state"
+        );
+    }
     use super::*;
 
     /// Evidence that a QEMU *can* restore outranks any amount of evidence that
