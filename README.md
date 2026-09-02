@@ -2,7 +2,7 @@
 
 **Instant disposable Windows environments.**
 
-Run a real Windows command from a Mac or a Linux box in about a quarter of a
+Run a real Windows command from a Mac or a Linux box in about a third of a
 second, in a clean Windows that is thrown away afterwards.
 
 ```console
@@ -11,14 +11,16 @@ $ winquick run -- cmd /c ver
 Microsoft Windows [Version 10.0.26100.8972]
 ```
 
+![Five consecutive WinQuick runs, measured at 365, 378, 341, 359 and 363 milliseconds](assets/screenshots/speed.png)
+
 A real Windows kernel under QEMU, on Apple's Hypervisor Framework or on KVM.
 Not Wine, not an emulator, not a container. Every run starts from a pristine
 image and leaves nothing behind.
 
 | | |
 |---|---|
-| Windows command | **~300 ms** |
-| PowerShell command | ~870 ms |
+| Windows command | **~350 ms** |
+| PowerShell command | ~920 ms |
 | Desktop session start | **~380 ms** |
 | UI automation step in a session | ~20 ms |
 | Host | Apple Silicon macOS; Linux x86_64; Windows x86_64 (limited) |
@@ -292,6 +294,20 @@ A fresh Claude Code session given that line diagnosed and fixed four Windows-onl
 bugs in a .NET project, verifying each fix against a real Windows kernel, without
 knowing anything about how WinQuick works. See
 [experiments/dogfood](experiments/dogfood/).
+
+## See it
+
+Every image here comes from a real run, reproduced by
+[`scripts/capture-screenshots.sh`](scripts/capture-screenshots.sh).
+
+**A real WPF application, driven through Windows UI Automation** — typed into,
+selected, toggled and clicked, then verified:
+
+![A WPF application running in WinQuick with its text box, combo box and checkbox filled in by UI automation](assets/screenshots/ui-automation.png)
+
+| Your project goes in, and stays untouched | The guest has no network adapter |
+|---|---|
+| ![A project copied into Windows, with the host file SHA-256 unchanged afterwards](assets/screenshots/workspace.png) | ![The Windows guest reporting zero IPv4 adapters and a failed ping](assets/screenshots/offline.png) |
 
 ## AI agents / MCP
 

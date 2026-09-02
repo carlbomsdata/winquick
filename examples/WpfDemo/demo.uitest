@@ -13,15 +13,15 @@ expect --automation-id StatusText --expect-name "Ready"
 screenshot 01-before.png --title "WinQuick Demo"
 
 # Drive every control type the window has.
-type --automation-id NameBox --text "Tobias Carlbom"
+type --automation-id NameBox --text "Ada Lovelace"
 select --automation-id DeptCombo --item Design
 toggle --automation-id AdvancedCheck --state on
 click --automation-id SaveButton
 
 # The click must have changed what the window says.
-expect --automation-id NameBox --expect-value "Tobias Carlbom"
+expect --automation-id NameBox --expect-value "Ada Lovelace"
 expect --automation-id AdvancedCheck --expect-toggle "On"
-expect --automation-id StatusText --expect-name "Saved: Tobias Carlbom / Design / advanced"
+expect --automation-id StatusText --expect-name "Saved: Ada Lovelace / Design / advanced"
 
 screenshot 02-after.png --title "WinQuick Demo"
 screenshot 03-desktop.png
