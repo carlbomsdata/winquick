@@ -202,6 +202,33 @@ pub fn run(command: &str, opts: &Options) -> Result<i32> {
     emit(o, t_start, opts.verbose)
 }
 
+/// Refuse a workspace that cannot be staged, before anything boots.
+///
+/// Left to the copy, a missing directory surfaces as a bare
+/// `No such file or directory (os error 2)` from deep inside the staging code,
+/// naming neither the path nor the flag that carried it. The MCP surface
+/// already answers this properly; the command line is the more common way in
+/// and deserves the same answer.
+fn check_workspace(ws: Option<&Path>) -> Result<()> {
+    let Some(ws) = ws else { return Ok(()) };
+    if !ws.exists() {
+        bail!(
+            "--workspace: {} does not exist.\n\n\
+             That directory is copied into the guest and appears there as\n\
+             C:\\workspace, so it has to exist on this machine first.",
+            ws.display()
+        );
+    }
+    if !ws.is_dir() {
+        bail!(
+            "--workspace: {} is a file, not a directory.\n\n\
+             Give the directory to expose as C:\\workspace.",
+            ws.display()
+        );
+    }
+    Ok(())
+}
+
 fn execute(command: &str, opts: &Options) -> Result<Outcome> {
     let t_start = Instant::now();
     let base = paths::run_image()?;
@@ -210,6 +237,7 @@ fn execute(command: &str, opts: &Options) -> Result<Outcome> {
             "No Windows runtime is installed yet.\n\nSet one up with:\n    winquick setup"
         );
     }
+    check_workspace(opts.workspace.as_deref())?;
     let uefi_code = paths::uefi_code()
         .ok_or_else(|| anyhow!("could not find edk2-aarch64-code.fd next to QEMU"))?;
     let capabilities = crate::capability::installed()?;
@@ -1167,6 +1195,39 @@ fn strip_cr(b: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A mistyped `--workspace` is one of the easiest mistakes to make, and the
+    /// answer has to name the path and the flag. It used to be a bare
+    /// `No such file or directory (os error 2)` raised from inside the staging
+    /// code, which said neither.
+    #[test]
+    fn a_missing_workspace_names_the_path_and_the_flag() {
+        let e = super::check_workspace(Some(std::path::Path::new("/no/such/winquick/dir")))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("--workspace"), "{e}");
+        assert!(e.contains("/no/such/winquick/dir"), "{e}");
+        assert!(e.contains("does not exist"), "{e}");
+        assert!(!e.contains("os error"), "the raw errno must not be the answer: {e}");
+    }
+
+    /// Pointing at a file is the other half of the same mistake.
+    #[test]
+    fn a_workspace_that_is_a_file_says_so() {
+        let f = std::env::temp_dir().join(format!("wq-ws-file-{}", std::process::id()));
+        std::fs::write(&f, b"x").unwrap();
+        let e = super::check_workspace(Some(&f)).unwrap_err().to_string();
+        let _ = std::fs::remove_file(&f);
+        assert!(e.contains("is a file, not a directory"), "{e}");
+        assert!(e.contains("--workspace"), "{e}");
+    }
+
+    /// The common cases must stay silent: no workspace at all, and a real one.
+    #[test]
+    fn a_real_directory_and_no_workspace_both_pass() {
+        assert!(super::check_workspace(None).is_ok());
+        assert!(super::check_workspace(Some(&std::env::temp_dir())).is_ok());
+    }
 
     /// Recording "this host cannot restore" is a decision that makes every
     /// later run slower, so it must rest on the one failure that actually says

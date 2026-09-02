@@ -289,6 +289,27 @@ out=$("$WQ" clean --dry-run 2>&1)
 case "$out" in *total*) ok "clean --dry-run reports without removing";; *) bad "clean --dry-run" "$out";; esac
 [ -f ~/.winquick/images/validation-$GUEST/base.qcow2 ] && ok "clean --dry-run removed nothing" || bad "clean --dry-run" "runtime gone"
 
+echo "== error messages =="
+# These paths must fail before anything boots, and must name what is wrong.
+# A bare "No such file or directory (os error 2)" is not an answer.
+out=$("$WQ" run -w /no/such/winquick/dir -- cmd /c ver 2>&1); rc=$?
+check "a missing workspace fails" "$rc" "1"
+case "$out" in *--workspace*) ok "a missing workspace names the flag";; *) bad "workspace flag" "$out";; esac
+case "$out" in */no/such/winquick/dir*) ok "a missing workspace names the path";; *) bad "workspace path" "$out";; esac
+case "$out" in *"os error"*) bad "workspace errno" "the raw errno reached the user: $out";; *) ok "a missing workspace does not leak an errno";; esac
+
+WSFILE=$(mktemp)
+out=$("$WQ" run -w "$WSFILE" -- cmd /c ver 2>&1)
+case "$out" in *"is a file, not a directory"*) ok "a file as workspace says so";; *) bad "workspace file" "$out";; esac
+rm -f "$WSFILE"
+
+out=$("$WQ" capability install nosuchcapability 2>&1); rc=$?
+check "an unknown capability fails" "$rc" "1"
+case "$out" in *powershell*) ok "an unknown capability lists the real ones";; *) bad "capability list" "$out";; esac
+
+# None of the above may leave a guest behind: they are refused before boot.
+check "refused input leaves no qemu behind" "$(qemu_count)" "0"
+
 echo "== interrupt and timeout =="
 before_q=$(qemu_count)
 # Warm this run up first, so the check below is about the timeout and not about

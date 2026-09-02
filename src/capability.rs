@@ -190,8 +190,13 @@ pub fn remove(name: &str) -> Result<bool> {
 
 /// Download (or reuse), verify, unpack and build a capability volume.
 pub fn install(name: &str, zip: Option<PathBuf>, verbose: bool) -> Result<u64> {
-    let sp = spec(name)
-        .ok_or_else(|| anyhow::anyhow!("unknown capability `{name}`"))?;
+    // Naming the alternatives costs one line and saves a trip to `--help`.
+    let sp = spec(name).ok_or_else(|| {
+        anyhow::anyhow!(
+            "unknown capability `{name}`.\n\nAvailable: {}\n\nSee them all with:  winquick capability list",
+            SPECS.iter().map(|s| s.name).collect::<Vec<_>>().join(", ")
+        )
+    })?;
     let cache = paths::cache()?;
     std::fs::create_dir_all(&cache)?;
 
