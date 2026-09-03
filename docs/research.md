@@ -2009,3 +2009,55 @@ The second number is 10 s of `FIRST_CONTACT`, 1.5 s of window and the user's
 own two-second timeout, which is about as close to the floor as this shape of
 check gets. The remaining cost is the ten seconds, and the only thing that
 removes it is the guest-side dismount described above.
+
+## Windows ARM64 will not boot under nested KVM
+
+The Linux host was verified on an aarch64 Ubuntu 26.04 guest (QEMU 10.2.1,
+`/dev/kvm` present and writable, 8 vCPU) running under Apple's
+Virtualization.framework on an M4 Pro. WinQuick builds there, `cargo test`
+passes all 168 host tests, and `winquick doctor` reports the host correctly,
+including flagging QEMU 10.2 as too old to migrate the NVMe device. What does
+not work is the guest: every run ended in silence and, after the timeout, in a
+firmware register dump on the serial line.
+
+    Synchronous Exception at 0x000000007C16DDD4
+    ASSERT [ArmCpuDxe] .../DefaultExceptionHandler.c(343): ((BOOLEAN)(0==1))
+
+That is edk2's unhandled-exception path, which means the fault happens before
+Windows is running at all. `root.qcow2` for the failed run was 197 KB — the
+guest never wrote a sector.
+
+Bisecting the machine, one device at a time:
+
+| configuration | result |
+|---|---|
+| firmware alone, no disks | boots to BdsDxe, then PXE |
+| `-device ramfb` added | boots to BdsDxe |
+| blank NVMe disk | boots to BdsDxe, `Boot0001` |
+| **Validation OS image on NVMe** | **firmware fault** |
+| **Validation OS image on virtio-blk** | **firmware fault, same address** |
+
+So it is neither the firmware, nor `ramfb`, nor the NVMe device, nor the disk
+transport: it is the Windows boot manager on that image faulting once the
+firmware hands control to it. The same image boots on macOS/HVF.
+
+The discriminator is the accelerator. With everything else held constant —
+same QEMU, same firmware, same image, same machine type — swapping `-accel kvm`
+for `-accel tcg` gets past the fault entirely and into Windows' own boot:
+
+    ConvertPages: range 7B6AE000 - 7B75DFFF covers multiple entries
+
+TCG is not a supported configuration and never will be; it is used here only as
+a control. What it proves is that the fault is a property of *nested* KVM under
+Apple's hypervisor, not of WinQuick, the firmware, or the QEMU version.
+
+Two things came out of this. WinQuick now reads the serial log when a guest goes
+silent and reports the firmware fault, rather than suggesting a longer timeout
+that cannot help; and it names running inside another virtual machine as the
+usual cause, because that is what was measured here.
+
+What is still unmeasured is a Linux host on real hardware. Nothing in this
+result says anything against one — the failure is in the layer underneath — but
+no bare-metal Linux machine was available, and an x86_64 Linux VM on Apple
+Silicon would have no KVM at all. Linux is therefore verified as far as build,
+tests, tooling and diagnostics, and unverified for guest bring-up.
