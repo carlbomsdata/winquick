@@ -346,6 +346,22 @@ pub fn fresh_uefi_vars(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// A path as a person should read it.
+///
+/// `canonicalize` on Windows returns an extended-length path -- `\\?\C:\...`
+/// -- which is correct, works everywhere the short form does, and is required
+/// past 260 characters. It also looks like something has gone wrong when it
+/// turns up in `winquick doctor`, so the prefix is dropped for display and
+/// nowhere else.
+pub fn display_path(p: &Path) -> String {
+    let s = p.display().to_string();
+    match s.strip_prefix(r"\\?\UNC\") {
+        // `\\?\UNC\server\share` is `\\server\share`.
+        Some(rest) => format!(r"\\{rest}"),
+        None => s.strip_prefix(r"\\?\").unwrap_or(&s).to_string(),
+    }
+}
+
 /// Human-readable size, for status output.
 pub fn human(bytes: u64) -> String {
     const UNITS: [&str; 4] = ["B", "KiB", "MiB", "GiB"];
@@ -366,4 +382,18 @@ pub fn human(bytes: u64) -> String {
 /// that matters.
 pub fn allocated(p: &Path) -> u64 {
     crate::hostfs::allocated(p)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Only the prefix goes, and only when it is there.
+    #[test]
+    fn an_extended_length_path_is_shown_the_short_way() {
+        assert_eq!(display_path(Path::new(r"\\?\C:\wq\bin")), r"C:\wq\bin");
+        assert_eq!(display_path(Path::new(r"\\?\UNC\host\share\f")), r"\\host\share\f");
+        assert_eq!(display_path(Path::new(r"C:\wq\bin")), r"C:\wq\bin");
+        assert_eq!(display_path(Path::new("/usr/local/bin/winquick")), "/usr/local/bin/winquick");
+    }
 }

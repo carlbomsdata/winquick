@@ -233,7 +233,7 @@ pub fn doctor() -> Result<Doctor> {
     let have_runtime = paths::base_image()?.exists();
     for t in helpers::survey() {
         match &t.path {
-            Some(p) => b.ok("Tools", t.name, p.display().to_string()),
+            Some(p) => b.ok("Tools", t.name, helpers::display_path(p)),
             // Only needed to build a runtime, and one is already built.
             None if t.needed_for == "setup only" && have_runtime => {
                 b.ok("Tools", t.name, "not installed (only needed by `winquick setup`)")
@@ -247,7 +247,7 @@ pub fn doctor() -> Result<Doctor> {
         }
     }
     match helpers::uefi_firmware() {
-        Some(p) => b.ok("Tools", "uefi firmware", p.display().to_string()),
+        Some(p) => b.ok("Tools", "uefi firmware", helpers::display_path(&p)),
         None => b.fail(
             "Tools",
             "uefi firmware",
@@ -389,7 +389,7 @@ pub fn doctor() -> Result<Doctor> {
         }
     }
     match servicing::bridge_source() {
-        Ok(p) => b.ok("Desktop", "bridge sources", p.display().to_string()),
+        Ok(p) => b.ok("Desktop", "bridge sources", helpers::display_path(&p)),
         // A FAIL that adds no problem made `doctor` print a failing check and
         // then "Everything looks good" in the same breath, which is exactly the
         // kind of report nobody can act on. Either it is wrong or it is not.
