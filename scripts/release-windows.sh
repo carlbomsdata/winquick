@@ -21,6 +21,23 @@
 # `winquick doctor` says where to get it.
 set -euo pipefail
 
+# The licence text travels with the binaries it covers, so a release without it
+# is not one that may be distributed. `-f` matters as much as the check: without
+# it curl writes an HTTP error page to the file and exits 0, and the release
+# ships a 404 where the GPL should be.
+fetch_licence() {
+  local url="$1" dest="$2"
+  if ! curl -fsSL --proto '=https' --proto-redir '=https' -o "$dest" "$url"; then
+    echo "could not download $url" >&2
+    echo "  The licence text has to ship beside the binaries it covers, so this" >&2
+    echo "  is not something a release can go without. Check the network and run" >&2
+    echo "  this again, or save the file to $dest yourself." >&2
+    exit 1
+  fi
+  [ -s "$dest" ] || { echo "$dest came back empty" >&2; exit 1; }
+}
+
+
 VERSION="${1:?usage: release-windows.sh <version>}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 NAME="winquick-${VERSION}-windows-x86_64"
@@ -69,11 +86,10 @@ cp -R "$ROOT/docs" "$STAGE/doc/docs"
 cp -R "$ROOT/guest/wqui" "$STAGE/wqui"
 rm -rf "$STAGE/wqui/bin" "$STAGE/wqui/obj"
 
-# GPL/LGPL: the licence texts travel with the binaries they cover.
-curl -sSL -o "$STAGE/doc/LICENSE.ntfsprogs" \
-  https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt
-curl -sSL -o "$STAGE/doc/LICENSE.hivex" \
-  https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt
+fetch_licence https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt \
+  "$STAGE/doc/LICENSE.ntfsprogs"
+fetch_licence https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt \
+  "$STAGE/doc/LICENSE.hivex"
 
 # A source tree that has been near macOS carries AppleDouble sidecars, and
 # `cp -R` brings them along. They are not ours to ship.
