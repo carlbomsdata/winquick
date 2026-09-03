@@ -633,6 +633,9 @@ pub fn bridge_source() -> Result<PathBuf> {
     if let Ok(exe) = std::env::current_exe() {
         let exe = exe.canonicalize().unwrap_or(exe);
         if let Some(bin) = exe.parent() {
+            // Beside the executable: the Windows archive unpacks to one flat
+            // directory the user puts on PATH, with no prefix layout to walk.
+            candidates.push(bin.join("wqui"));
             if let Some(prefix) = bin.parent() {
                 candidates.push(prefix.join("share").join("winquick").join("wqui"));
                 if let Some(repo) = prefix.parent() {

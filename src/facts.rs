@@ -390,11 +390,15 @@ pub fn doctor() -> Result<Doctor> {
     }
     match servicing::bridge_source() {
         Ok(p) => b.ok("Desktop", "bridge sources", p.display().to_string()),
-        Err(_) => b.add(
+        // A FAIL that adds no problem made `doctor` print a failing check and
+        // then "Everything looks good" in the same breath, which is exactly the
+        // kind of report nobody can act on. Either it is wrong or it is not.
+        Err(_) => b.fail(
             "Desktop",
             "bridge sources",
-            Status::Fail,
-            "missing (the installation is incomplete)".into(),
+            "missing (the installation is incomplete)",
+            "The guest bridge sources are missing, so `winquick capability install desktop` \
+             cannot build them. Reinstall WinQuick, or run from a source checkout.",
         ),
     }
 
@@ -558,19 +562,15 @@ mod tests {
     fn healthy_agrees_with_the_problem_list() {
         let d = doctor().expect("doctor runs");
         assert_eq!(d.healthy, d.problems.is_empty());
-        let failed = d.checks.iter().any(|c| c.status == Status::Fail);
-        // A failing check must have produced a problem to act on. The bridge
-        // sources check is the one deliberate exception: it reports a broken
-        // install without adding a second, duplicate instruction.
-        if failed && d.problems.is_empty() {
-            assert!(
-                d.checks
-                    .iter()
-                    .filter(|c| c.status == Status::Fail)
-                    .all(|c| c.name == "bridge sources"),
-                "a failing check produced no problem to act on"
-            );
-        }
+        // Every failing check must produce a problem to act on. There used to be
+        // an exception here for the bridge sources, and it let `doctor` print a
+        // FAIL and "Everything looks good" together on a real installation.
+        let failed: Vec<&str> =
+            d.checks.iter().filter(|c| c.status == Status::Fail).map(|c| c.name.as_str()).collect();
+        assert!(
+            failed.is_empty() || !d.problems.is_empty(),
+            "failing checks with nothing to act on: {failed:?}"
+        );
     }
 
     /// A note is advice, not a fault; it must never make the host unhealthy.
