@@ -1,0 +1,141 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  # Formatting and lints do not vary by host, so they run once rather than three
+  # times.
+  check:
+    name: format and lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked
+
+  # Every host WinQuick claims must build and pass its unit tests here. A host
+  # that does not compile is not a supported host, whatever the README says.
+  #
+  # The unit suite is pure host logic: no hypervisor, no Windows image, no
+  # network. Everything that needs a real guest lives in tests/integration.sh,
+  # which needs nested virtualisation these runners do not have and runs on real
+  # hardware instead.
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+          - name: Linux x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - name: Windows x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - run: cargo test --release --locked --target ${{ matrix.target }}
+      - name: the binary runs and reports itself
+        run: cargo run --release --locked --target ${{ matrix.target }} -- --version
+
+  # Linux on arm64 is a supported host, but the hosted arm64 runners are not
+  # free for private repositories. `cargo check` needs no linker and no
+  # emulation, so the target at least cannot rot silently; it is verified for
+  # real on an arm64 Linux machine before a release.
+  cross:
+    name: Linux arm64 (check only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --all-targets --locked --target aarch64-unknown-linux-gnu
+
+  # A release that cannot be packaged is not a release. These run the real
+  # release scripts, which also build the patched ntfsprogs and hivex helpers
+  # from source, so a broken patch or a moved upstream tarball shows up here
+  # rather than on release day.
+  package:
+    name: package ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    needs: [check, build]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos-arm64
+            os: macos-latest
+          - name: linux-x86_64
+            os: ubuntu-latest
+          - name: windows-x86_64
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: read the version from Cargo.toml
+        shell: bash
+        run: echo "VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)" >> "$GITHUB_ENV"
+
+      - name: install packaging dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libhivex-bin
+
+      # The Windows helpers are built under MSYS2, which is a build-time
+      # dependency only: nothing in the archive links against it.
+      - uses: msys2/setup-msys2@v2
+        if: runner.os == 'Windows'
+        with:
+          msystem: MINGW64
+          update: false
+          install: >-
+            base-devel zip mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-libxml2 perl autoconf automake libtool
+
+      - name: package
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then ./scripts/release.sh "$VERSION"
+          else ./scripts/release-linux.sh "$VERSION"; fi
+
+      - name: package
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          # rustup installs outside MSYS2's own prefix.
+          export PATH="$PATH:/c/Users/runneradmin/.cargo/bin"
+          ./scripts/release-windows.sh "$VERSION"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: winquick-${{ matrix.name }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
