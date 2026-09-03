@@ -93,18 +93,6 @@ Homebrew installs the binary, the `ntfscat`/`ntfscp` helpers and the guest
 bridge sources, and pulls in QEMU and hivex. Nothing is quarantined, so there is
 no `xattr` step.
 
-### Linux
-
-```console
-sudo apt install qemu-system-x86 qemu-utils ovmf libhivex-bin
-tar -xzf winquick-0.3.0-linux-x86_64.tar.gz
-sudo cp -R winquick-0.3.0-linux-x86_64/* /usr/local/
-winquick setup
-```
-
-Check your QEMU is 11 or newer first. If your distribution ships something
-older, `winquick doctor` will tell you before you get as far as a slow run.
-
 Or install the release archive by hand — see
 [docs/install.md](docs/install.md), which also covers the Gatekeeper step a
 browser download needs:
@@ -114,6 +102,24 @@ tar -xzf winquick-0.3.0-darwin-arm64.tar.gz
 sudo cp -R winquick-0.3.0-darwin-arm64/* /usr/local/
 winquick setup
 ```
+
+### Linux
+
+There is an archive for each architecture, `linux-x86_64` and `linux-aarch64`;
+take the one matching `uname -m`.
+
+```console
+sudo apt install qemu-system-x86 qemu-utils ovmf libhivex-bin
+tar -xzf winquick-0.3.0-linux-x86_64.tar.gz
+sudo cp -R winquick-0.3.0-linux-x86_64/* /usr/local/
+winquick setup
+```
+
+On arm64, `qemu-system-arm` replaces `qemu-system-x86` and `qemu-efi-aarch64`
+replaces `ovmf`.
+
+Check your QEMU is 11 or newer first. If your distribution ships something
+older, `winquick doctor` will tell you before you get as far as a slow run.
 
 ### Windows
 

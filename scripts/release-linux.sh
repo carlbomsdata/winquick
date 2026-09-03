@@ -1,11 +1,11 @@
 #!/bin/bash
-# Build a WinQuick release archive for Linux x86_64.
+# Build a WinQuick release archive for Linux, on the architecture you run it on.
 #
 #   ./scripts/release-linux.sh 0.3.0
 #
 # Produces, under dist/:
-#   winquick-<version>-linux-x86_64.tar.gz          the archive
-#   winquick-<version>-linux-x86_64.tar.gz.sha256   its checksum
+#   winquick-<version>-linux-<arch>.tar.gz          the archive
+#   winquick-<version>-linux-<arch>.tar.gz.sha256   its checksum
 #   ntfs-3g_ntfsprogs-<v>.tgz                       GPL corresponding source
 #
 # QEMU is NOT bundled. WinQuick runs it as a separate child process, the same
@@ -20,7 +20,15 @@ set -euo pipefail
 
 VERSION="${1:?usage: release-linux.sh <version>}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-NAME="winquick-${VERSION}-linux-x86_64"
+# Both architectures are supported hosts -- the guest follows the host, so an
+# arm64 Linux machine runs an ARM64 Windows exactly as an Apple Silicon Mac
+# does. The archive is named for the one it was built on.
+case "$(uname -m)" in
+  x86_64)          ARCH=x86_64;  ELF='ELF 64-bit.*x86-64' ;;
+  aarch64|arm64)   ARCH=aarch64; ELF='ELF 64-bit.*ARM aarch64' ;;
+  *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+esac
+NAME="winquick-${VERSION}-linux-${ARCH}"
 DIST="$ROOT/dist"
 STAGE="$DIST/$NAME"
 
@@ -30,13 +38,13 @@ if [ "$CARGO_VERSION" != "$VERSION" ]; then
   exit 1
 fi
 [ "$(uname -s)" = Linux ]   || { echo "run this on Linux" >&2; exit 1; }
-[ "$(uname -m)" = x86_64 ]  || { echo "run this on x86_64" >&2; exit 1; }
+
 
 echo "==> building winquick $VERSION"
 cd "$ROOT"
 cargo build --release --locked
 BIN="$ROOT/target/release/winquick"
-file "$BIN" | grep -q 'ELF 64-bit.*x86-64' || { echo "not an x86-64 ELF" >&2; exit 1; }
+file "$BIN" | grep -qE "$ELF" || { echo "not a $ARCH ELF" >&2; exit 1; }
 
 echo "==> building the NTFS helpers"
 # The distribution's ntfscp will not do: WinQuick addresses a partition inside
