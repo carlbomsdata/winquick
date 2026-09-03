@@ -231,6 +231,28 @@ Multiple `winquick run` invocations at once are supported; each gets its own
 isolated environment. Operations that change shared state — setup, capability
 changes, cache sync, clean — take a lock and will say if they are waiting.
 
+## Environment variables
+
+WinQuick is configured by its flags; there is no configuration file and nothing
+to set up before first use. These few variables exist for cases the flags do not
+cover, and none of them is needed in normal use.
+
+| Variable | Effect |
+|---|---|
+| `WINQUICK_KEEP` | Keep the run directory instead of deleting it, and print where it is. For looking at `serial.log` after a guest misbehaves. |
+| `WINQUICK_NTFSCP`, `WINQUICK_NTFSCAT` | Use these `ntfscp`/`ntfscat` binaries instead of the ones shipped with WinQuick. |
+| `WINQUICK_HIVEXSH` | Use this `hivexsh` instead of the one found on `PATH`. |
+| `HOME`, `USERPROFILE` | Where `~/.winquick` goes. `HOME` wins where both are set. It must be an absolute path; WinQuick refuses an empty or relative one rather than resolving its data directory against wherever it happens to be run from. |
+
+`WINQUICK_NTFSCP` and `WINQUICK_NTFSCAT` are worth knowing about if you build
+the helpers yourself, because WinQuick will not take them from `PATH`. It writes
+into a partition inside a whole-disk image by setting `NTFS_IMAGE_OFFSET`, which
+only this project's patch honours — a distribution's `ntfscp` ignores it and
+writes at offset zero instead, over the partition table, reporting success. The
+two cannot be told apart by asking, so only the bundled copy is trusted and
+these variables are the way to override that. `hivexsh` is different: upstream's
+is exactly what WinQuick wants, so `PATH` is fine there.
+
 ## Still stuck
 
 `winquick --verbose run -- ...` shows what WinQuick is doing: which path it took,
