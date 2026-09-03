@@ -88,8 +88,7 @@ pub fn parse(text: &str) -> Result<Script> {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let words = tokenize(line)
-            .map_err(|e| anyhow::anyhow!("line {}: {e}", n + 1))?;
+        let words = tokenize(line).map_err(|e| anyhow::anyhow!("line {}: {e}", n + 1))?;
         let step = build(words).map_err(|e| anyhow::anyhow!("line {}: {e}", n + 1))?;
         steps.push(step);
     }
@@ -341,7 +340,10 @@ mod tests {
         let s = steps("expect --automation-id SaveButton --expect-enabled false");
         match &s[0] {
             Step::Expect { selector, check } => {
-                assert_eq!(selector, &vec!["--automation-id".to_string(), "SaveButton".to_string()]);
+                assert_eq!(
+                    selector,
+                    &vec!["--automation-id".to_string(), "SaveButton".to_string()]
+                );
                 assert_eq!(check.field, Field::Enabled);
                 assert_eq!(check.expected, "false");
                 assert!(!check.contains);

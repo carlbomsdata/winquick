@@ -154,10 +154,7 @@ fn collect_artifacts(ctx: &Ctx, image: &Path) -> Result<()> {
     let t = Instant::now();
     let got = crate::artifact::extract(image, &ctx.artifacts_dir)?;
     if got.log.contains("winquick-artifact-status=1") {
-        bail!(
-            "the guest could not copy some requested artifacts:\n{}",
-            got.log.trim()
-        );
+        bail!("the guest could not copy some requested artifacts:\n{}", got.log.trim());
     }
     // The guest reports each pattern that matched nothing. Only reporting the
     // all-or-nothing case hid the more common mistake: several patterns, one of
@@ -182,10 +179,7 @@ fn collect_artifacts(ctx: &Ctx, image: &Path) -> Result<()> {
             got.bytes as f64 / (1024.0 * 1024.0),
             ctx.artifacts_dir.display()
         );
-        ctx.vlog(format!(
-            "artifact extraction {:.0}ms",
-            t.elapsed().as_secs_f64() * 1000.0
-        ));
+        ctx.vlog(format!("artifact extraction {:.0}ms", t.elapsed().as_secs_f64() * 1000.0));
     }
     Ok(())
 }
@@ -233,9 +227,7 @@ fn execute(command: &str, opts: &Options) -> Result<Outcome> {
     let t_start = Instant::now();
     let base = paths::run_image()?;
     if !base.exists() {
-        bail!(
-            "No Windows runtime is installed yet.\n\nSet one up with:\n    winquick setup"
-        );
+        bail!("No Windows runtime is installed yet.\n\nSet one up with:\n    winquick setup");
     }
     check_workspace(opts.workspace.as_deref())?;
     let uefi_code = paths::uefi_code()
@@ -419,11 +411,8 @@ fn execute(command: &str, opts: &Options) -> Result<Outcome> {
 /// The guest has no network on purpose, so a package that is not in the cache
 /// fails with a DNS error that says nothing useful about how to fix it.
 fn nuget_hint(o: &Outcome) -> Option<String> {
-    let text = format!(
-        "{}{}",
-        String::from_utf8_lossy(&o.stdout),
-        String::from_utf8_lossy(&o.stderr)
-    );
+    let text =
+        format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
     if !text.contains("NU1301") {
         return None;
     }
@@ -578,10 +567,7 @@ fn fingerprint(ctx: &Ctx) -> Result<state::Fingerprint> {
 
 /// Cheap unique-per-run token. Not a secret; it only has to differ between runs.
 fn run_nonce() -> String {
-    let t = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
+    let t = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
     format!("n{:x}{:x}", std::process::id(), t)
 }
 
@@ -637,7 +623,12 @@ fn prepare_workspace(ctx: &Ctx, template: Option<&Path>, dst: &Path) -> Result<(
     match template {
         Some(t) => qemu::clone_file(t, dst)?,
         None => {
-            crate::capability::build_sized(dst, Path::new("/nonexistent"), "workspace", WORKSPACE_BYTES)?;
+            crate::capability::build_sized(
+                dst,
+                Path::new("/nonexistent"),
+                "workspace",
+                WORKSPACE_BYTES,
+            )?;
         }
     }
     crate::capability::mark(dst, "WQWORK.TXT", "workspace")?;
@@ -658,7 +649,12 @@ fn prepare_artifacts(template: Option<&Path>, dst: &Path) -> Result<()> {
     match template {
         Some(t) => qemu::clone_file(t, dst)?,
         None => {
-            crate::capability::build_sized(dst, Path::new("/nonexistent"), crate::artifact::DIR, ARTIFACT_BYTES)?;
+            crate::capability::build_sized(
+                dst,
+                Path::new("/nonexistent"),
+                crate::artifact::DIR,
+                ARTIFACT_BYTES,
+            )?;
         }
     }
     crate::capability::mark(dst, crate::artifact::MARKER, crate::artifact::DIR)?;
@@ -741,12 +737,7 @@ fn as_command_timeout(e: anyhow::Error, limit: Duration) -> anyhow::Error {
 /// the flag going away is the earliest and cheapest proof that a restored guest
 /// is not only running but running *the agent*. Reported as a silent guest when
 /// it does not happen, which is exactly what it is.
-fn wait_until_gone(
-    mbox: &Path,
-    name: &str,
-    child: &mut Child,
-    deadline: Instant,
-) -> Result<()> {
+fn wait_until_gone(mbox: &Path, name: &str, child: &mut Child, deadline: Instant) -> Result<()> {
     loop {
         if crate::interrupt::interrupted() {
             bail!("interrupted");
@@ -764,12 +755,7 @@ fn wait_until_gone(
     }
 }
 
-fn wait_for(
-    mbox: &Path,
-    name: &str,
-    child: &mut Child,
-    deadline: Instant,
-) -> Result<Vec<u8>> {
+fn wait_for(mbox: &Path, name: &str, child: &mut Child, deadline: Instant) -> Result<Vec<u8>> {
     loop {
         if crate::interrupt::interrupted() {
             bail!("interrupted");
@@ -908,8 +894,7 @@ fn warm_execute(ctx: &Ctx, ready: &state::ReadyState, command: &str) -> Result<O
     qemu::clone_file(&ready.disk(), &overlay)?;
     qemu::clone_file(&ready.vars(), &vars)?;
     qemu::clone_file(&ready.mailbox(), &mbox)?;
-    let art_script = (!ctx.artifacts.is_empty())
-        .then(|| crate::artifact::script(&ctx.artifacts));
+    let art_script = (!ctx.artifacts.is_empty()).then(|| crate::artifact::script(&ctx.artifacts));
     let nonce = run_nonce();
     mailbox::inject_command(&mbox, command, art_script.as_deref(), &nonce)?;
     prepare_workspace(ctx, Some(&ready.workspace()), &workspace)?;
@@ -958,7 +943,9 @@ fn warm_execute(ctx: &Ctx, ready: &state::ReadyState, command: &str) -> Result<O
         // byte counters tell a busy guest from a halted one without asking the
         // guest anything.
         let io_at_resume = guest_io(&mut q);
-        if let Err(e) = wait_until_gone(&mbox, mailbox::GO, &mut child, Instant::now() + FIRST_CONTACT) {
+        if let Err(e) =
+            wait_until_gone(&mbox, mailbox::GO, &mut child, Instant::now() + FIRST_CONTACT)
+        {
             if !guest_was_silent(&e) {
                 return Err(e);
             }
@@ -988,9 +975,7 @@ fn warm_execute(ctx: &Ctx, ready: &state::ReadyState, command: &str) -> Result<O
                 r.nonce
             );
         }
-        let code = r
-            .exit_code
-            .ok_or_else(|| anyhow!("guest wrote no exit code"))?;
+        let code = r.exit_code.ok_or_else(|| anyhow!("guest wrote no exit code"))?;
         collect_artifacts(ctx, &artifacts_img)?;
         ctx.vlog(format!(
             "warm phases: prep {:.0}ms | qemu spawn {:.0}ms | state restore {:.0}ms | guest exec + mailbox sync {:.0}ms",
@@ -999,15 +984,18 @@ fn warm_execute(ctx: &Ctx, ready: &state::ReadyState, command: &str) -> Result<O
             (t_restore - t_spawn).as_secs_f64() * 1000.0,
             (t_exec - t_restore).as_secs_f64() * 1000.0
         ));
-        Ok(Outcome { stdout: r.stdout, stderr: r.stderr, exit_code: code, warm: true, command: command.to_string() })
+        Ok(Outcome {
+            stdout: r.stdout,
+            stderr: r.stderr,
+            exit_code: code,
+            warm: true,
+            command: command.to_string(),
+        })
     })();
 
     let t_before_kill = Instant::now();
     kill(&mut child);
-    ctx.vlog(format!(
-        "teardown {:.0}ms",
-        t_before_kill.elapsed().as_secs_f64() * 1000.0
-    ));
+    ctx.vlog(format!("teardown {:.0}ms", t_before_kill.elapsed().as_secs_f64() * 1000.0));
     result
 }
 
@@ -1088,8 +1076,7 @@ fn build_ready_state(ctx: &Ctx, want: &state::Fingerprint) -> Result<state::Read
         let _ = std::fs::remove_file(&state_file);
         let _ = std::fs::remove_file(&partial);
         q.migrate_to_file(&partial, Duration::from_secs(120))?;
-        std::fs::rename(&partial, &state_file)
-            .context("publishing the frozen guest state")?;
+        std::fs::rename(&partial, &state_file).context("publishing the frozen guest state")?;
         // Quit cleanly rather than killing: the block layer has to flush before
         // the overlay we are about to copy is trustworthy.
         let _ = q.command("quit", serde_json::json!({}));
@@ -1148,8 +1135,7 @@ fn cold_execute(ctx: &Ctx, command: &str) -> Result<Outcome> {
     ctx.q.create_overlay(&ctx.base, &overlay)?;
     fresh_vars(&vars)?;
     mailbox::create_template(&mbox)?;
-    let art_script = (!ctx.artifacts.is_empty())
-        .then(|| crate::artifact::script(&ctx.artifacts));
+    let art_script = (!ctx.artifacts.is_empty()).then(|| crate::artifact::script(&ctx.artifacts));
     let nonce = run_nonce();
     mailbox::inject_command(&mbox, command, art_script.as_deref(), &nonce)?;
     prepare_workspace(ctx, None, &workspace)?;
@@ -1183,7 +1169,13 @@ fn cold_execute(ctx: &Ctx, command: &str) -> Result<Outcome> {
         }
         let code = r.exit_code.ok_or_else(|| anyhow!("guest wrote no exit code"))?;
         collect_artifacts(ctx, &artifacts_img)?;
-        Ok(Outcome { stdout: r.stdout, stderr: r.stderr, exit_code: code, warm: false, command: command.to_string() })
+        Ok(Outcome {
+            stdout: r.stdout,
+            stderr: r.stderr,
+            exit_code: code,
+            warm: false,
+            command: command.to_string(),
+        })
     })();
 
     kill(&mut child);
@@ -1203,7 +1195,6 @@ fn strip_cr(b: &[u8]) -> Vec<u8> {
     }
     v
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -1267,10 +1258,8 @@ mod tests {
     #[test]
     fn a_slow_command_is_not_a_bad_guest() {
         let limit = Duration::from_secs(300);
-        let e = as_command_timeout(
-            anyhow::Error::new(GuestSilent(mailbox::CODE_FILE.into())),
-            limit,
-        );
+        let e =
+            as_command_timeout(anyhow::Error::new(GuestSilent(mailbox::CODE_FILE.into())), limit);
         assert!(command_timed_out(&e), "{e:#}");
         assert!(!guest_was_silent(&e), "a slow command must not look like a dead guest");
         let msg = e.to_string();
@@ -1306,10 +1295,7 @@ winquick: no match for */bin/Release/*.dll\r\n\
 2 File(s) copied\r\n\
 winquick: no match for TestResults/**\r\n\
 winquick-artifact-status=0\r\n";
-        assert_eq!(
-            unmatched_patterns(log),
-            vec!["*/bin/Release/*.dll", "TestResults/**"]
-        );
+        assert_eq!(unmatched_patterns(log), vec!["*/bin/Release/*.dll", "TestResults/**"]);
     }
 
     /// A guest that is building moves hundreds of megabytes while the host is

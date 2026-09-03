@@ -176,10 +176,13 @@ pub fn start(opts: &StartOptions) -> Result<()> {
     let installed = capability::installed()?;
     let mut missing: Vec<&str> = Vec::new();
     if !installed.iter().any(|c| c.name == "dotnet-sdk") {
-        missing.push("    winquick capability install dotnet-sdk    # supplies the Windows Desktop runtime");
+        missing.push(
+            "    winquick capability install dotnet-sdk    # supplies the Windows Desktop runtime",
+        );
     }
     if !bridge_dir()?.join("wqui.exe").exists() {
-        missing.push("    winquick capability install desktop --force   # rebuilds the guest bridge");
+        missing
+            .push("    winquick capability install desktop --force   # rebuilds the guest bridge");
     }
     if !missing.is_empty() {
         bail!(
@@ -632,8 +635,23 @@ pub struct CallResult {
 /// Kept here so an unrecognised verb is a syntax error the CLI can report
 /// immediately, without first requiring a session to exist.
 pub const VERBS: &[&str] = &[
-    "windows", "display", "launch", "wait-window", "focus", "screenshot", "pull", "tree", "find",
-    "get", "click", "type", "key", "select", "toggle", "mouse", "remount",
+    "windows",
+    "display",
+    "launch",
+    "wait-window",
+    "focus",
+    "screenshot",
+    "pull",
+    "tree",
+    "find",
+    "get",
+    "click",
+    "type",
+    "key",
+    "select",
+    "toggle",
+    "mouse",
+    "remount",
 ];
 
 /// What each forwarded verb does, and the options it takes.
@@ -655,8 +673,16 @@ pub const VERB_HELP: &[(&str, &str, &str)] = &[
     ("focus", "Bring a window to the front", "--title <text> | --hwnd <n>"),
     ("tree", "Print the UI Automation tree", "[<selector>] [--depth <n>]"),
     ("find", "List every element matching a selector", "<selector> [--all]"),
-    ("screenshot", "Capture the screen, or one window, as a PNG", "<file> [--title <text>] [--hwnd <n>] [--rect x,y,w,h]"),
-    ("pull", "Copy a file the application produced back to this Mac", "<guest-path> <local-file>   (e.g. app\\out\\page.png)"),
+    (
+        "screenshot",
+        "Capture the screen, or one window, as a PNG",
+        "<file> [--title <text>] [--hwnd <n>] [--rect x,y,w,h]",
+    ),
+    (
+        "pull",
+        "Copy a file the application produced back to this Mac",
+        "<guest-path> <local-file>   (e.g. app\\out\\page.png)",
+    ),
     ("get", "Read one element", "<selector>"),
     ("click", "Click one element", "<selector> [--right] [--settle <ms>]"),
     ("type", "Type text into one element", "<selector> --text <text>"),
@@ -704,11 +730,8 @@ pub fn check_verb(verb: Option<&str>) -> Result<()> {
     if VERBS.contains(&v) {
         return Ok(());
     }
-    let near: Vec<&str> = VERBS
-        .iter()
-        .copied()
-        .filter(|k| k.starts_with(v.chars().next().unwrap_or('\0')))
-        .collect();
+    let near: Vec<&str> =
+        VERBS.iter().copied().filter(|k| k.starts_with(v.chars().next().unwrap_or('\0'))).collect();
     let hint = if near.is_empty() {
         String::new()
     } else {
@@ -723,20 +746,13 @@ pub fn check_verb(verb: Option<&str>) -> Result<()> {
 /// Run one bridge verb in the live session and return its JSON.
 pub fn call(argv: &[String], timeout: Duration) -> Result<CallResult> {
     let session = running().ok_or_else(|| {
-        anyhow!(
-            "no desktop session is running.\n\nStart one with:\n    winquick desktop start"
-        )
+        anyhow!("no desktop session is running.\n\nStart one with:\n    winquick desktop start")
     })?;
     let mut channel = crate::control::Channel::open(&control_path()?)?;
     let pid = session.pid;
     let r = channel.call(argv, timeout, move || alive(pid))?;
     let json = serde_json::from_slice::<serde_json::Value>(&r.body).ok();
-    Ok(CallResult {
-        json,
-        stdout: r.body,
-        stderr: Vec::new(),
-        exit_code: r.exit_code,
-    })
+    Ok(CallResult { json, stdout: r.body, stderr: Vec::new(), exit_code: r.exit_code })
 }
 
 /// Wrap a bridge invocation in the volume probe the guest needs.
@@ -822,9 +838,7 @@ pub fn pull(guest_path: &str, dest: &Path, timeout: Duration) -> Result<Value> {
     if let Some(want) = json.get("sha256").and_then(Value::as_str) {
         let got = sha256_hex(&bytes);
         if got != want {
-            bail!(
-                "{guest_path} arrived corrupted: the guest hashed {want}, this Mac has {got}"
-            );
+            bail!("{guest_path} arrived corrupted: the guest hashed {want}, this Mac has {got}");
         }
     }
 
@@ -924,8 +938,7 @@ pub fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
         if entry.file_type()?.is_dir() {
             copy_tree(&from, &to)?;
         } else {
-            std::fs::copy(&from, &to)
-                .with_context(|| format!("copying {}", from.display()))?;
+            std::fs::copy(&from, &to).with_context(|| format!("copying {}", from.display()))?;
         }
     }
     Ok(())
@@ -944,9 +957,11 @@ pub fn host_screenshot(dest: &Path) -> Result<u64> {
     let _ = session;
 
     let mut qmp = crate::qmp::Qmp::connect(&qmp_path()?, Duration::from_secs(10))?;
-    let target = std::fs::canonicalize(dest.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new(".")))
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join(dest.file_name().unwrap_or_else(|| std::ffi::OsStr::new("screen.ppm")));
+    let target = std::fs::canonicalize(
+        dest.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new(".")),
+    )
+    .unwrap_or_else(|_| PathBuf::from("."))
+    .join(dest.file_name().unwrap_or_else(|| std::ffi::OsStr::new("screen.ppm")));
 
     // Newer QEMU can encode PNG directly; older builds only write PPM. Ask for
     // PNG and fall back rather than silently producing a file with the wrong
@@ -956,11 +971,8 @@ pub fn host_screenshot(dest: &Path) -> Result<u64> {
         serde_json::json!({ "filename": target.to_string_lossy(), "format": "png" }),
     );
     if png.is_err() {
-        qmp.command(
-            "screendump",
-            serde_json::json!({ "filename": target.to_string_lossy() }),
-        )
-        .context("asking QEMU for a framebuffer dump")?;
+        qmp.command("screendump", serde_json::json!({ "filename": target.to_string_lossy() }))
+            .context("asking QEMU for a framebuffer dump")?;
         eprintln!(
             "winquick: this QEMU cannot encode PNG; {} is a PPM despite its name",
             target.display()
@@ -1058,8 +1070,11 @@ pub fn run_script(
                             actual == check.expected
                         };
                         if ok {
-                            println!("{label}expect {what} {} = {:?}  OK",
-                                check.field.json_key(), actual);
+                            println!(
+                                "{label}expect {what} {} = {:?}  OK",
+                                check.field.json_key(),
+                                actual
+                            );
                             report.passed += 1;
                         } else {
                             let msg = format!(

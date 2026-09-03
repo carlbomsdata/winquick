@@ -104,6 +104,9 @@ pub fn set_sparse_len(f: &File, len: u64) -> std::io::Result<()> {
 ///
 /// A filesystem that cannot answer gets the whole file back, which is correct
 /// and merely slower.
+// Only the non-macOS `clone_file` walks these ranges; macOS clones a file whole
+// with `clonefile(2)` and never asks which parts are allocated.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub fn allocated_ranges(f: &File, len: u64) -> Vec<(u64, u64)> {
     #[cfg(windows)]
     {
@@ -263,6 +266,69 @@ pub fn open_lock_file(path: &Path) -> std::io::Result<Option<File>> {
     OpenOptions::new().create(true).read(true).write(true).truncate(false).open(path).map(Some)
 }
 
+// ------------------------------------------------------- QEMU monitor socket
+
+/// The connection to QEMU's monitor.
+///
+/// QEMU is asked for a Unix socket on macOS and a TCP port on Windows, which
+/// has no Unix sockets. Both are byte streams with identical semantics once
+/// connected, so the rest of the QMP client never has to know which it got.
+/// The `endpoint` is a path on Unix and a file holding `127.0.0.1:<port>` on
+/// Windows, written by whoever launched QEMU.
+#[cfg(unix)]
+pub struct ControlStream(std::os::unix::net::UnixStream);
+
+#[cfg(windows)]
+pub struct ControlStream(std::net::TcpStream);
+
+impl ControlStream {
+    #[cfg(unix)]
+    pub fn connect(endpoint: &Path) -> std::io::Result<Self> {
+        if !endpoint.exists() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "the monitor socket does not exist yet",
+            ));
+        }
+        std::os::unix::net::UnixStream::connect(endpoint).map(ControlStream)
+    }
+
+    #[cfg(windows)]
+    pub fn connect(endpoint: &Path) -> std::io::Result<Self> {
+        let addr = std::fs::read_to_string(endpoint)?;
+        std::net::TcpStream::connect(addr.trim()).map(ControlStream)
+    }
+
+    pub fn try_clone(&self) -> std::io::Result<Self> {
+        self.0.try_clone().map(ControlStream)
+    }
+
+    /// Give up rather than block forever on a QEMU that has stopped answering.
+    ///
+    /// Both underlying stream types support this and neither does it by
+    /// default. Without it, a wedged QEMU wedges WinQuick too -- and because
+    /// the prepared-guest build holds a lock, every other run on the machine
+    /// then fails as well.
+    pub fn set_read_timeout(&self, d: std::time::Duration) -> std::io::Result<()> {
+        self.0.set_read_timeout(Some(d))
+    }
+}
+
+impl std::io::Read for ControlStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.0.read(buf)
+    }
+}
+
+impl std::io::Write for ControlStream {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.write(buf)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.flush()
+    }
+}
+
 #[cfg(windows)]
 pub fn open_lock_file(path: &Path) -> std::io::Result<Option<File>> {
     use std::fs::OpenOptions;
@@ -334,68 +400,5 @@ mod tests {
     #[test]
     fn identity_of_a_missing_file_is_an_error() {
         assert!(identity(Path::new("/nonexistent/winquick/file")).is_err());
-    }
-}
-
-// ------------------------------------------------------- QEMU monitor socket
-
-/// The connection to QEMU's monitor.
-///
-/// QEMU is asked for a Unix socket on macOS and a TCP port on Windows, which
-/// has no Unix sockets. Both are byte streams with identical semantics once
-/// connected, so the rest of the QMP client never has to know which it got.
-/// The `endpoint` is a path on Unix and a file holding `127.0.0.1:<port>` on
-/// Windows, written by whoever launched QEMU.
-#[cfg(unix)]
-pub struct ControlStream(std::os::unix::net::UnixStream);
-
-#[cfg(windows)]
-pub struct ControlStream(std::net::TcpStream);
-
-impl ControlStream {
-    #[cfg(unix)]
-    pub fn connect(endpoint: &Path) -> std::io::Result<Self> {
-        if !endpoint.exists() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "the monitor socket does not exist yet",
-            ));
-        }
-        std::os::unix::net::UnixStream::connect(endpoint).map(ControlStream)
-    }
-
-    #[cfg(windows)]
-    pub fn connect(endpoint: &Path) -> std::io::Result<Self> {
-        let addr = std::fs::read_to_string(endpoint)?;
-        std::net::TcpStream::connect(addr.trim()).map(ControlStream)
-    }
-
-    pub fn try_clone(&self) -> std::io::Result<Self> {
-        self.0.try_clone().map(ControlStream)
-    }
-
-    /// Give up rather than block forever on a QEMU that has stopped answering.
-    ///
-    /// Both underlying stream types support this and neither does it by
-    /// default. Without it, a wedged QEMU wedges WinQuick too -- and because
-    /// the prepared-guest build holds a lock, every other run on the machine
-    /// then fails as well.
-    pub fn set_read_timeout(&self, d: std::time::Duration) -> std::io::Result<()> {
-        self.0.set_read_timeout(Some(d))
-    }
-}
-
-impl std::io::Read for ControlStream {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        self.0.read(buf)
-    }
-}
-
-impl std::io::Write for ControlStream {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.write(buf)
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.0.flush()
     }
 }

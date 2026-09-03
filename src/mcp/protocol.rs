@@ -132,7 +132,7 @@ pub fn tool_image(mime: &str, base64_data: String, structured: Value) -> Value {
 /// Base64, without pulling in a crate for eighteen lines of table lookup.
 pub fn base64(bytes: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
         let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
         let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
@@ -150,9 +150,12 @@ mod tests {
 
     #[test]
     fn a_request_without_an_id_is_a_notification() {
-        let r: Request = serde_json::from_str(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#).unwrap();
+        let r: Request =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
+                .unwrap();
         assert!(r.is_notification());
-        let r: Request = serde_json::from_str(r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#).unwrap();
+        let r: Request =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#).unwrap();
         assert!(!r.is_notification());
     }
 

@@ -180,8 +180,7 @@ pub fn install_framework(opts: &Options) -> Result<()> {
     q.convert(&base, &target_raw, "raw")
         .context("making a raw copy of the Windows image to service")?;
     let original = gpt::snapshot(&target_raw)?;
-    gpt::randomize(&target_raw)
-        .context("giving the servicing target its own disk identity")?;
+    gpt::randomize(&target_raw).context("giving the servicing target its own disk identity")?;
 
     println!("  [3/4] applying packages with DISM inside Windows");
     service(&q, &work, &svc_img, &target_raw, opts, FRAMEWORK_PACKAGES, &[])?;
@@ -194,15 +193,9 @@ pub fn install_framework(opts: &Options) -> Result<()> {
     let _ = std::fs::remove_file(&target_raw);
     // The agent came along with the image, so its metadata comes along too.
     // Without this every run reports "built by a different version of winquick".
-    std::fs::copy(
-        crate::state::base_meta_path(&base)?,
-        crate::state::base_meta_path(&staged)?,
-    )
-    .context("carrying the runtime metadata onto the serviced image")?;
-    std::fs::rename(
-        crate::state::base_meta_path(&staged)?,
-        crate::state::base_meta_path(&out)?,
-    )?;
+    std::fs::copy(crate::state::base_meta_path(&base)?, crate::state::base_meta_path(&staged)?)
+        .context("carrying the runtime metadata onto the serviced image")?;
+    std::fs::rename(crate::state::base_meta_path(&staged)?, crate::state::base_meta_path(&out)?)?;
     // Renamed last, so an interrupted build never leaves a half-written image
     // that looks installed.
     std::fs::rename(&staged, &out)?;
@@ -265,8 +258,7 @@ pub fn install(opts: &Options) -> Result<()> {
 
     // Captured before the identity is changed, and put back after servicing.
     let original = gpt::snapshot(&target_raw)?;
-    gpt::randomize(&target_raw)
-        .context("giving the servicing target its own disk identity")?;
+    gpt::randomize(&target_raw).context("giving the servicing target its own disk identity")?;
 
     // ---- 3. run DISM inside Windows --------------------------------------
     println!("  [3/5] applying packages with DISM inside Windows");
@@ -401,7 +393,11 @@ fn find_cab(cabs: &Path, file: &str, language: &str) -> Option<PathBuf> {
 /// worked -- and every screenshot came back a single flat black, because
 /// nothing had a display adapter.
 fn driver_arch() -> &'static str {
-    if crate::platform::GUEST_ARCH == "arm64" { "ARM64" } else { "amd64" }
+    if crate::platform::GUEST_ARCH == "arm64" {
+        "ARM64"
+    } else {
+        "amd64"
+    }
 }
 
 fn find_driver(root: &Path, name: &str, inf: &str) -> Option<PathBuf> {

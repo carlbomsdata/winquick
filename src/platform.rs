@@ -157,8 +157,7 @@ pub fn backend_signature() -> String {
 /// This is a limit of reconstructing a partition from a saved state, not of WHP:
 /// a cold-booted WHPX guest runs four processors perfectly well, which is why
 /// `--cold` is the documented way out rather than a silent fallback.
-pub const MAX_PREPARED_CPUS: Option<u32> =
-    if cfg!(target_os = "windows") { Some(2) } else { None };
+pub const MAX_PREPARED_CPUS: Option<u32> = if cfg!(target_os = "windows") { Some(2) } else { None };
 
 /// Refuses a vCPU count this host cannot restore a prepared state onto.
 ///
@@ -205,10 +204,7 @@ mod tests {
     /// Software emulation is not the product.
     #[test]
     fn the_accelerator_is_never_tcg() {
-        assert!(
-            matches!(ACCEL, "hvf" | "kvm" | "whpx"),
-            "unexpected accelerator {ACCEL}"
-        );
+        assert!(matches!(ACCEL, "hvf" | "kvm" | "whpx"), "unexpected accelerator {ACCEL}");
     }
 
     /// `-cpu host` crashes OVMF under WHPX, so Windows must pin a concrete

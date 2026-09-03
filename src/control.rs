@@ -270,7 +270,8 @@ mod tests {
         create(&p).unwrap();
         let mut ch = Channel::open(&p).unwrap();
 
-        let argv: Vec<String> = vec!["click".into(), "--automation-id".into(), "Save Button".into()];
+        let argv: Vec<String> =
+            vec!["click".into(), "--automation-id".into(), "Save Button".into()];
         let path = p.clone();
         let t = std::thread::spawn(move || {
             // Wait for the request to land, then answer it.
@@ -278,7 +279,10 @@ mod tests {
                 let mut f = File::open(&path).unwrap();
                 let head = read_at(&mut f, REQUEST_OFFSET, SECTOR as usize).unwrap();
                 if &head[..8] == REQ_MAGIC {
-                    assert_eq!(read_request(&path), vec!["click", "--automation-id", "Save Button"]);
+                    assert_eq!(
+                        read_request(&path),
+                        vec!["click", "--automation-id", "Save Button"]
+                    );
                     return guest_reply(&path, r#"{"ok":true}"#, 0);
                 }
                 std::thread::sleep(Duration::from_millis(5));
@@ -386,10 +390,8 @@ mod tests {
         create(&p).unwrap();
         let mut ch = Channel::open(&p).unwrap();
         let start = Instant::now();
-        let err = ch
-            .call(&["a".to_string()], Duration::from_secs(30), || false)
-            .unwrap_err()
-            .to_string();
+        let err =
+            ch.call(&["a".to_string()], Duration::from_secs(30), || false).unwrap_err().to_string();
         assert!(err.contains("died"), "{err}");
         assert!(start.elapsed() < Duration::from_secs(5), "waited too long");
         std::fs::remove_dir_all(p.parent().unwrap()).ok();

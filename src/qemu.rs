@@ -16,10 +16,7 @@ pub struct Qemu {
 
 impl Qemu {
     pub fn locate() -> Result<Self> {
-        Ok(Self {
-            system: which(crate::platform::QEMU_SYSTEM)?,
-            img: which("qemu-img")?,
-        })
+        Ok(Self { system: which(crate::platform::QEMU_SYSTEM)?, img: which("qemu-img")? })
     }
 
     /// The oldest QEMU whose NVMe device WinQuick can migrate.
@@ -41,10 +38,7 @@ impl Qemu {
         let v = self.version().ok()?;
         // "QEMU emulator version 11.1.0 (Debian ...)"
         let tail = v.split("version").nth(1)?.trim();
-        let num: String = tail
-            .chars()
-            .take_while(|c| c.is_ascii_digit() || *c == '.')
-            .collect();
+        let num: String = tail.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
         let mut it = num.split('.');
         let major = it.next()?.parse().ok()?;
         let minor = it.next().unwrap_or("0").parse().unwrap_or(0);
@@ -66,11 +60,7 @@ impl Qemu {
 
     pub fn version(&self) -> Result<String> {
         let out = Command::new(&self.system).arg("--version").output()?;
-        Ok(String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .next()
-            .unwrap_or("")
-            .to_string())
+        Ok(String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or("").to_string())
     }
 
     /// Create a copy-on-write overlay. The base is opened read-only by QEMU and
@@ -131,9 +121,7 @@ pub struct BootConfig<'a> {
 /// Canonical description of the device topology, recorded in the ready-state
 /// fingerprint. Migration state is only meaningful against the same machine.
 pub fn device_signature(memory_mb: u32, cpus: u32, capability_count: usize) -> String {
-    let caps: String = (0..capability_count)
-        .map(|i| format!(";nvme:cap{i}=wqcap{i}"))
-        .collect();
+    let caps: String = (0..capability_count).map(|i| format!(";nvme:cap{i}=wqcap{i}")).collect();
     format!(
         "{backend};smp={cpus};mem={memory_mb};\
          nvme:root=wqroot;nvme:mbox=wqmbox;nvme:work=wqwork;nvme:arts=wqarts{caps};pflash:code,vars(rw);ramfb;display=none;rtc=localtime",
@@ -146,30 +134,31 @@ impl Qemu {
     /// `ramfb` is still present because Windows expects a display device.
     pub fn boot(&self, cfg: &BootConfig) -> Result<Child> {
         let mut c = Command::new(&self.system);
-        c.args(["-M", MACHINE, "-accel", crate::platform::ACCEL, "-cpu", crate::platform::CPU_MODEL])
-            .args(["-smp", &cfg.cpus.to_string()])
-            .args(["-m", &cfg.memory_mb.to_string()])
-            .arg("-drive")
-            .arg(format!(
-                "if=pflash,format=raw,readonly=on,file={}",
-                cfg.uefi_code.display()
-            ))
-            .arg("-drive")
-            .arg(format!("if=pflash,format=raw,file={}", cfg.uefi_vars.display()))
-            .arg("-drive")
-            .arg(format!(
-                "if=none,id=root,file={},format=qcow2",
-                cfg.root_disk.display()
-            ))
-            .args(["-device", "nvme,drive=root,serial=wqroot"])
-            // writethrough so the guest's results are on the host's disk as soon
-            // as the guest dismounts the volume
-            .arg("-drive")
-            .arg(format!(
-                "if=none,id=mbox,file={},format=raw,cache=writethrough",
-                cfg.mailbox.display()
-            ))
-            .args(["-device", "nvme,drive=mbox,serial=wqmbox"]);
+        c.args([
+            "-M",
+            MACHINE,
+            "-accel",
+            crate::platform::ACCEL,
+            "-cpu",
+            crate::platform::CPU_MODEL,
+        ])
+        .args(["-smp", &cfg.cpus.to_string()])
+        .args(["-m", &cfg.memory_mb.to_string()])
+        .arg("-drive")
+        .arg(format!("if=pflash,format=raw,readonly=on,file={}", cfg.uefi_code.display()))
+        .arg("-drive")
+        .arg(format!("if=pflash,format=raw,file={}", cfg.uefi_vars.display()))
+        .arg("-drive")
+        .arg(format!("if=none,id=root,file={},format=qcow2", cfg.root_disk.display()))
+        .args(["-device", "nvme,drive=root,serial=wqroot"])
+        // writethrough so the guest's results are on the host's disk as soon
+        // as the guest dismounts the volume
+        .arg("-drive")
+        .arg(format!(
+            "if=none,id=mbox,file={},format=raw,cache=writethrough",
+            cfg.mailbox.display()
+        ))
+        .args(["-device", "nvme,drive=mbox,serial=wqmbox"]);
         c.arg("-drive")
             .arg(format!(
                 "if=none,id=work,file={},format=raw,cache=writethrough",
@@ -192,8 +181,7 @@ impl Qemu {
                 ))
                 .args(["-device", &format!("nvme,drive=cap{i},serial=wqcap{i}")]);
         }
-        c
-            .args(["-device", "ramfb", "-display", "none", "-vga", "none"])
+        c.args(["-device", "ramfb", "-display", "none", "-vga", "none"])
             .args(["-rtc", "base=localtime", "-no-reboot"])
             .arg("-serial")
             .arg(format!("file:{}", cfg.serial_log.display()))
@@ -205,9 +193,7 @@ impl Qemu {
         if cfg.verbose {
             eprintln!("winquick: {}", describe(&c));
         }
-        c.stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped());
+        c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
         c.spawn().context("spawning QEMU")
     }
 }
@@ -284,12 +270,8 @@ pub fn clone_file(src: &Path, dst: &Path) -> Result<()> {
     let _ = std::fs::remove_file(dst);
     // Captured, not inherited: a message from `cp` must never end up mixed into
     // the guest's stdout, which is the caller's actual result.
-    let out = Command::new("/bin/cp")
-        .arg("-c")
-        .arg(src)
-        .arg(dst)
-        .output()
-        .context("running cp -c")?;
+    let out =
+        Command::new("/bin/cp").arg("-c").arg(src).arg(dst).output().context("running cp -c")?;
     if !out.status.success() {
         std::fs::copy(src, dst).with_context(|| {
             format!(
@@ -319,13 +301,10 @@ pub fn clone_file(src: &Path, dst: &Path) -> Result<()> {
     use std::io::{Read, Seek, SeekFrom, Write};
 
     let _ = std::fs::remove_file(dst);
-    let mut r = std::fs::File::open(src)
-        .with_context(|| format!("opening {}", src.display()))?;
+    let mut r = std::fs::File::open(src).with_context(|| format!("opening {}", src.display()))?;
     let len = r.metadata()?.len();
-    let w = std::fs::File::create(dst)
-        .with_context(|| format!("creating {}", dst.display()))?;
-    crate::hostfs::set_sparse_len(&w, len)
-        .with_context(|| format!("sizing {}", dst.display()))?;
+    let w = std::fs::File::create(dst).with_context(|| format!("creating {}", dst.display()))?;
+    crate::hostfs::set_sparse_len(&w, len).with_context(|| format!("sizing {}", dst.display()))?;
     let mut w = w;
 
     const BLOCK: usize = 1 << 20;
@@ -334,8 +313,7 @@ pub fn clone_file(src: &Path, dst: &Path) -> Result<()> {
     for (start, length) in crate::hostfs::allocated_ranges(&r, len) {
         let mut off = start;
         let end = (start + length).min(len);
-        r.seek(SeekFrom::Start(start))
-            .with_context(|| format!("seeking {}", src.display()))?;
+        r.seek(SeekFrom::Start(start)).with_context(|| format!("seeking {}", src.display()))?;
         while off < end {
             let want = ((end - off) as usize).min(BLOCK);
             // Short reads are ordinary, and a block that is only partly filled
@@ -346,10 +324,7 @@ pub fn clone_file(src: &Path, dst: &Path) -> Result<()> {
                     Ok(0) => break,
                     Ok(n) => filled += n,
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                    Err(e) => {
-                        return Err(e)
-                            .with_context(|| format!("reading {}", src.display()))
-                    }
+                    Err(e) => return Err(e).with_context(|| format!("reading {}", src.display())),
                 }
             }
             if filled == 0 {
@@ -403,9 +378,7 @@ pub struct DesktopBoot<'a> {
 /// state's fingerprint. Migration state is only meaningful against the same
 /// machine it came from.
 pub fn desktop_device_signature(memory_mb: u32, cpus: u32, capability_count: usize) -> String {
-    let caps: String = (0..capability_count)
-        .map(|i| format!(";nvme:cap{i}=wqcap{i}"))
-        .collect();
+    let caps: String = (0..capability_count).map(|i| format!(";nvme:cap{i}=wqcap{i}")).collect();
     format!(
         "{backend};smp={cpus};mem={memory_mb};\
          nvme:root=wqroot;nvme:mbox=wqmbox;nvme:bridge=wqbridge;nvme:app=wqapp;\
@@ -425,50 +398,45 @@ impl Qemu {
     /// soon as the guest is ready, and every later verb finds it by pid.
     pub fn boot_desktop(&self, cfg: &DesktopBoot) -> Result<Child> {
         let mut c = Command::new(&self.system);
-        c.args(["-M", MACHINE, "-accel", crate::platform::ACCEL, "-cpu", crate::platform::CPU_MODEL])
-            .args(["-smp", &cfg.cpus.to_string()])
-            .args(["-m", &cfg.memory_mb.to_string()])
-            .arg("-drive")
-            .arg(format!(
-                "if=pflash,format=raw,readonly=on,file={}",
-                cfg.uefi_code.display()
-            ))
-            .arg("-drive")
-            .arg(format!("if=pflash,format=raw,file={}", cfg.uefi_vars.display()))
-            .arg("-drive")
-            .arg(format!(
-                "if=none,id=root,file={},format=qcow2",
-                cfg.root_disk.display()
-            ))
-            .args(["-device", "nvme,drive=root,serial=wqroot"])
-            .arg("-drive")
-            .arg(format!(
-                "if=none,id=mbox,file={},format=raw,cache=writethrough",
-                cfg.mailbox.display()
-            ))
-            .args(["-device", "nvme,drive=mbox,serial=wqmbox"])
-            .arg("-drive")
-            .arg(format!(
-                "if=none,id=bridge,file={},format=raw,cache=writethrough",
-                cfg.bridge.display()
-            ))
-            .args(["-device", "nvme,drive=bridge,serial=wqbridge"])
-            .arg("-drive")
-            .arg(format!(
-                "if=none,id=app,file={},format=raw,cache=writethrough",
-                cfg.app.display()
-            ))
-            .args(["-device", "nvme,drive=app,serial=wqapp"])
-            // writethrough, like every other volume: the host writes through
-            // its page cache and QEMU reads through the same one, so both sides
-            // see each other's bytes. `cache=none` makes QEMU bypass that cache
-            // and the two halves stop seeing each other entirely.
-            .arg("-drive")
-            .arg(format!(
-                "if=none,id=ctl,file={},format=raw,cache=writethrough",
-                cfg.control.display()
-            ))
-            .args(["-device", "nvme,drive=ctl,serial=wqctl"]);
+        c.args([
+            "-M",
+            MACHINE,
+            "-accel",
+            crate::platform::ACCEL,
+            "-cpu",
+            crate::platform::CPU_MODEL,
+        ])
+        .args(["-smp", &cfg.cpus.to_string()])
+        .args(["-m", &cfg.memory_mb.to_string()])
+        .arg("-drive")
+        .arg(format!("if=pflash,format=raw,readonly=on,file={}", cfg.uefi_code.display()))
+        .arg("-drive")
+        .arg(format!("if=pflash,format=raw,file={}", cfg.uefi_vars.display()))
+        .arg("-drive")
+        .arg(format!("if=none,id=root,file={},format=qcow2", cfg.root_disk.display()))
+        .args(["-device", "nvme,drive=root,serial=wqroot"])
+        .arg("-drive")
+        .arg(format!(
+            "if=none,id=mbox,file={},format=raw,cache=writethrough",
+            cfg.mailbox.display()
+        ))
+        .args(["-device", "nvme,drive=mbox,serial=wqmbox"])
+        .arg("-drive")
+        .arg(format!(
+            "if=none,id=bridge,file={},format=raw,cache=writethrough",
+            cfg.bridge.display()
+        ))
+        .args(["-device", "nvme,drive=bridge,serial=wqbridge"])
+        .arg("-drive")
+        .arg(format!("if=none,id=app,file={},format=raw,cache=writethrough", cfg.app.display()))
+        .args(["-device", "nvme,drive=app,serial=wqapp"])
+        // writethrough, like every other volume: the host writes through
+        // its page cache and QEMU reads through the same one, so both sides
+        // see each other's bytes. `cache=none` makes QEMU bypass that cache
+        // and the two halves stop seeing each other entirely.
+        .arg("-drive")
+        .arg(format!("if=none,id=ctl,file={},format=raw,cache=writethrough", cfg.control.display()))
+        .args(["-device", "nvme,drive=ctl,serial=wqctl"]);
         for (i, cap) in cfg.capabilities.iter().enumerate() {
             c.arg("-drive")
                 .arg(format!(
@@ -514,45 +482,43 @@ pub struct ServicingBoot<'a> {
 impl Qemu {
     pub fn boot_servicing(&self, cfg: &ServicingBoot) -> Result<Child> {
         let mut c = Command::new(&self.system);
-        c.args(["-M", MACHINE, "-accel", crate::platform::ACCEL, "-cpu", crate::platform::CPU_MODEL])
-            .args(["-smp", "4", "-m", "3072"])
-            .arg("-drive")
-            .arg(format!(
-                "if=pflash,format=raw,readonly=on,file={}",
-                cfg.uefi_code.display()
-            ))
-            .arg("-drive")
-            .arg(format!("if=pflash,format=raw,file={}", cfg.uefi_vars.display()))
-            .arg("-drive")
-            .arg(format!(
-                "if=none,id=root,file={},format=qcow2",
-                cfg.root_disk.display()
-            ))
-            .args(["-device", "nvme,drive=root,serial=wqroot"])
-            .arg("-drive")
-            .arg(format!(
-                "if=none,id=mbox,file={},format=raw,cache=writethrough",
-                cfg.mailbox.display()
-            ))
-            .args(["-device", "nvme,drive=mbox,serial=wqmbox"])
-            .arg("-drive")
-            .arg(format!(
-                "if=none,id=svc,file={},format=raw,cache=writethrough",
-                cfg.servicing.display()
-            ))
-            .args(["-device", "nvme,drive=svc,serial=wqsvc"])
-            // writethrough so DISM's writes reach the host file as the guest
-            // makes them, rather than at some point QEMU chooses
-            .arg("-drive")
-            .arg(format!(
-                "if=none,id=tgt,file={},format=raw,cache=writethrough",
-                cfg.target.display()
-            ))
-            .args(["-device", "nvme,drive=tgt,serial=wqtgt"])
-            .args(["-device", "ramfb", "-display", "none", "-vga", "none"])
-            .args(["-rtc", "base=localtime", "-no-reboot"])
-            .arg("-serial")
-            .arg(format!("file:{}", cfg.serial_log.display()));
+        c.args([
+            "-M",
+            MACHINE,
+            "-accel",
+            crate::platform::ACCEL,
+            "-cpu",
+            crate::platform::CPU_MODEL,
+        ])
+        .args(["-smp", "4", "-m", "3072"])
+        .arg("-drive")
+        .arg(format!("if=pflash,format=raw,readonly=on,file={}", cfg.uefi_code.display()))
+        .arg("-drive")
+        .arg(format!("if=pflash,format=raw,file={}", cfg.uefi_vars.display()))
+        .arg("-drive")
+        .arg(format!("if=none,id=root,file={},format=qcow2", cfg.root_disk.display()))
+        .args(["-device", "nvme,drive=root,serial=wqroot"])
+        .arg("-drive")
+        .arg(format!(
+            "if=none,id=mbox,file={},format=raw,cache=writethrough",
+            cfg.mailbox.display()
+        ))
+        .args(["-device", "nvme,drive=mbox,serial=wqmbox"])
+        .arg("-drive")
+        .arg(format!(
+            "if=none,id=svc,file={},format=raw,cache=writethrough",
+            cfg.servicing.display()
+        ))
+        .args(["-device", "nvme,drive=svc,serial=wqsvc"])
+        // writethrough so DISM's writes reach the host file as the guest
+        // makes them, rather than at some point QEMU chooses
+        .arg("-drive")
+        .arg(format!("if=none,id=tgt,file={},format=raw,cache=writethrough", cfg.target.display()))
+        .args(["-device", "nvme,drive=tgt,serial=wqtgt"])
+        .args(["-device", "ramfb", "-display", "none", "-vga", "none"])
+        .args(["-rtc", "base=localtime", "-no-reboot"])
+        .arg("-serial")
+        .arg(format!("file:{}", cfg.serial_log.display()));
         c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
         c.spawn().context("spawning the servicing guest")
     }

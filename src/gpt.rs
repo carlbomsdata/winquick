@@ -177,8 +177,7 @@ const BASIC_DATA: [u8; 16] = [
 /// volume is the large basic data one, so the largest is what gets picked
 /// rather than a fixed index.
 pub fn windows_volume_offset(disk: &Path) -> Result<u64> {
-    let mut f = std::fs::File::open(disk)
-        .with_context(|| format!("opening {}", disk.display()))?;
+    let mut f = std::fs::File::open(disk).with_context(|| format!("opening {}", disk.display()))?;
     check_len(f.metadata()?.len())?;
 
     let header = read_at(&mut f, SECTOR, SECTOR as usize)?;
@@ -205,7 +204,7 @@ pub fn windows_volume_offset(disk: &Path) -> Result<u64> {
             continue;
         }
         let sectors = last - first + 1;
-        if best.map_or(true, |(b, _)| sectors > b) {
+        if best.is_none_or(|(b, _)| sectors > b) {
             best = Some((sectors, first * SECTOR));
         }
     }
@@ -429,12 +428,10 @@ mod tests {
         let disk = read(&p);
 
         assert!(header_crc_valid(&disk, 1), "primary header CRC is stale");
-        assert!(
-            header_crc_valid(&disk, DISK_SECTORS - 1),
-            "backup header CRC is stale"
-        );
+        assert!(header_crc_valid(&disk, DISK_SECTORS - 1), "backup header CRC is stale");
 
-        let entries = &disk[(2 * SECTOR) as usize..(2 * SECTOR) as usize + ENTRY_COUNT * ENTRY_SIZE];
+        let entries =
+            &disk[(2 * SECTOR) as usize..(2 * SECTOR) as usize + ENTRY_COUNT * ENTRY_SIZE];
         let expect = crc32(entries);
         for lba in [1, DISK_SECTORS - 1] {
             let h = (lba * SECTOR) as usize;

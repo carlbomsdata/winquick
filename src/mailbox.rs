@@ -48,7 +48,6 @@ pub const CODE_FILE: &str = "WQCODE.TXT";
 /// Script the agent runs after the command, to collect artifacts.
 pub const ART_SCRIPT: &str = "WQART.CMD";
 
-
 const SECTOR: u64 = 512;
 const PART_START_LBA: u64 = 2048;
 const SIZE_BYTES: u64 = 64 * 1024 * 1024;
@@ -89,9 +88,7 @@ pub fn create_template(path: &Path) -> Result<()> {
     let mut buf = BufStream::new(slice);
     fatfs::format_volume(
         &mut buf,
-        FormatVolumeOptions::new()
-            .fat_type(FatType::Fat32)
-            .volume_label(*b"WQMAILBOX  "),
+        FormatVolumeOptions::new().fat_type(FatType::Fat32).volume_label(*b"WQMAILBOX  "),
     )
     .context("formatting mailbox as FAT32")?;
     let fs = FileSystem::new(&mut buf, FsOptions::new())?;
@@ -148,7 +145,12 @@ fn write_file<T: fatfs::ReadWriteSeek>(
 /// lets the guest observe the go flag before the command and nonce behind it —
 /// it then runs the *previous* command and answers with the previous token.
 /// So: write the command, let the volume flush, and only then arm it.
-pub fn inject_command(path: &Path, command: &str, artifact_script: Option<&str>, nonce: &str) -> Result<()> {
+pub fn inject_command(
+    path: &Path,
+    command: &str,
+    artifact_script: Option<&str>,
+    nonce: &str,
+) -> Result<()> {
     {
         let fs = open_fs(path, true)?;
         {
@@ -235,7 +237,8 @@ mod tests {
         let img = dir.join("mailbox.img");
         create_template(&img).unwrap();
 
-        inject_command(&img, "cmd /c echo hello", Some("@echo off\r\nrem art\r\n"), "tok1").unwrap();
+        inject_command(&img, "cmd /c echo hello", Some("@echo off\r\nrem art\r\n"), "tok1")
+            .unwrap();
         assert_eq!(
             String::from_utf8(probe(&img, CMD_FILE).expect("command file")).unwrap(),
             "@echo off\r\ncmd /c echo hello\r\n"

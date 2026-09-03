@@ -190,9 +190,7 @@ impl Server {
                 // Without a method we cannot tell a request from a notification;
                 // if it carries an id, it deserves an answer.
                 let id = value.get("id").cloned().unwrap_or(Value::Null);
-                if value.get("id").is_none() {
-                    return None;
-                }
+                value.get("id")?;
                 return Some(render(Response::err(
                     id,
                     INVALID_REQUEST,
@@ -238,7 +236,8 @@ impl Server {
                     .unwrap_or(PROTOCOL_VERSION);
                 // Echo a version we both know; otherwise state ours and let the
                 // client decide whether it can proceed.
-                let version = if SUPPORTED_VERSIONS.contains(&asked) { asked } else { PROTOCOL_VERSION };
+                let version =
+                    if SUPPORTED_VERSIONS.contains(&asked) { asked } else { PROTOCOL_VERSION };
                 Response::ok(
                     id,
                     json!({
@@ -266,11 +265,7 @@ impl Server {
             "tools/call" => self.call_tool(req, id),
             // Advertised as unsupported, so answer honestly rather than
             // pretending to have an empty collection.
-            _ => Response::err(
-                id,
-                METHOD_NOT_FOUND,
-                format!("unknown method `{}`", req.method),
-            ),
+            _ => Response::err(id, METHOD_NOT_FOUND, format!("unknown method `{}`", req.method)),
         }
     }
 
@@ -278,11 +273,7 @@ impl Server {
         let Some(name) = req.params.get("name").and_then(Value::as_str) else {
             return Response::err(id, INVALID_PARAMS, "tools/call needs a `name`");
         };
-        let args = req
-            .params
-            .get("arguments")
-            .cloned()
-            .unwrap_or_else(|| json!({}));
+        let args = req.params.get("arguments").cloned().unwrap_or_else(|| json!({}));
         if !args.is_object() {
             return Response::err(id, INVALID_PARAMS, "`arguments` must be an object");
         }
@@ -298,11 +289,9 @@ impl Server {
                 }
                 Response::ok(id, result)
             }
-            Err(tools::CallError::UnknownTool(n)) => Response::err(
-                id,
-                METHOD_NOT_FOUND,
-                format!("unknown tool `{n}`"),
-            ),
+            Err(tools::CallError::UnknownTool(n)) => {
+                Response::err(id, METHOD_NOT_FOUND, format!("unknown tool `{n}`"))
+            }
         }
     }
 
@@ -338,7 +327,10 @@ mod tests {
     #[test]
     fn initialize_advertises_only_tools() {
         let mut s = Server::new();
-        let v = ask(&mut s, r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}"#);
+        let v = ask(
+            &mut s,
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}"#,
+        );
         assert_eq!(v["id"], 1);
         assert_eq!(v["result"]["protocolVersion"], "2024-11-05");
         assert_eq!(v["result"]["serverInfo"]["name"], "winquick");
@@ -355,9 +347,15 @@ mod tests {
     #[test]
     fn protocol_version_is_negotiated() {
         let mut s = Server::new();
-        let v = ask(&mut s, r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}"#);
+        let v = ask(
+            &mut s,
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}"#,
+        );
         assert_eq!(v["result"]["protocolVersion"], "2025-06-18");
-        let v = ask(&mut s, r#"{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"1999-01-01"}}"#);
+        let v = ask(
+            &mut s,
+            r#"{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"1999-01-01"}}"#,
+        );
         assert_eq!(v["result"]["protocolVersion"], PROTOCOL_VERSION);
     }
 
@@ -367,7 +365,11 @@ mod tests {
         let mut s = Server::new();
         assert!(s.handle(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#).is_none());
         assert!(s.initialized);
-        assert!(s.handle(r#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":1}}"#).is_none());
+        assert!(s
+            .handle(
+                r#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":1}}"#
+            )
+            .is_none());
         // Even an unknown notification stays silent.
         assert!(s.handle(r#"{"jsonrpc":"2.0","method":"notifications/something_new"}"#).is_none());
     }
@@ -398,7 +400,10 @@ mod tests {
         let mut s = Server::new();
         let v = ask(&mut s, r#"{"jsonrpc":"2.0","id":3,"method":"no/such/method"}"#);
         assert_eq!(v["error"]["code"], METHOD_NOT_FOUND);
-        let v = ask(&mut s, r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"nope","arguments":{}}}"#);
+        let v = ask(
+            &mut s,
+            r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"nope","arguments":{}}}"#,
+        );
         assert_eq!(v["error"]["code"], METHOD_NOT_FOUND);
         assert!(v["error"]["message"].as_str().unwrap().contains("nope"));
     }
@@ -428,7 +433,10 @@ mod tests {
         let mut s = Server::new();
         let v = ask(&mut s, r#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{}}"#);
         assert_eq!(v["error"]["code"], INVALID_PARAMS);
-        let v = ask(&mut s, r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"winquick_info","arguments":[]}}"#);
+        let v = ask(
+            &mut s,
+            r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"winquick_info","arguments":[]}}"#,
+        );
         assert_eq!(v["error"]["code"], INVALID_PARAMS);
     }
 
@@ -437,7 +445,10 @@ mod tests {
     #[test]
     fn tool_failures_are_results_not_rpc_errors() {
         let mut s = Server::new();
-        let v = ask(&mut s, r#"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"windows_run","arguments":{}}}"#);
+        let v = ask(
+            &mut s,
+            r#"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"windows_run","arguments":{}}}"#,
+        );
         assert!(v.get("error").is_none(), "a tool-level failure must not be an RPC error");
         assert_eq!(v["result"]["isError"], true);
     }
@@ -458,9 +469,7 @@ mod tests {
     #[test]
     fn a_batch_of_notifications_is_silent() {
         let mut s = Server::new();
-        assert!(s
-            .handle(r#"[{"jsonrpc":"2.0","method":"notifications/initialized"}]"#)
-            .is_none());
+        assert!(s.handle(r#"[{"jsonrpc":"2.0","method":"notifications/initialized"}]"#).is_none());
     }
 
     /// Cleanup only stops what this server started; a session the user started

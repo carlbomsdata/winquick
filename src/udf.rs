@@ -66,8 +66,7 @@ pub struct Volume {
 
 impl Volume {
     pub fn open(path: &Path) -> Result<Self> {
-        let mut file =
-            File::open(path).with_context(|| format!("opening {}", path.display()))?;
+        let mut file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
         let blocks = file.metadata()?.len() / SECTOR;
         if blocks < 300 {
             bail!("{} is too small to be Microsoft installation media", path.display());
@@ -154,8 +153,7 @@ impl Volume {
     /// "No such file or directory" naming the ISO, which reads as the ISO
     /// being absent rather than the mounting tool.
     pub fn extract_tree(&mut self, entry: &Entry, dest: &Path) -> Result<u64> {
-        std::fs::create_dir_all(dest)
-            .with_context(|| format!("creating {}", dest.display()))?;
+        std::fs::create_dir_all(dest).with_context(|| format!("creating {}", dest.display()))?;
         let mut total = 0;
         for child in self.list(entry)? {
             let target = dest.join(&child.name);
@@ -173,8 +171,7 @@ impl Volume {
         let mut here = self.root()?;
         let mut found: Option<Entry> = None;
         for part in path.split('/').filter(|p| !p.is_empty()) {
-            let Some(hit) = here.iter().find(|e| e.name.eq_ignore_ascii_case(part)).cloned()
-            else {
+            let Some(hit) = here.iter().find(|e| e.name.eq_ignore_ascii_case(part)).cloned() else {
                 return Ok(None);
             };
             here = if hit.is_dir { self.list(&hit)? } else { Vec::new() };
@@ -192,8 +189,7 @@ impl Volume {
             bail!("{} is a directory", entry.name);
         }
         let (size, extents) = self.file_extents(entry.icb)?;
-        let mut out = File::create(dest)
-            .with_context(|| format!("creating {}", dest.display()))?;
+        let mut out = File::create(dest).with_context(|| format!("creating {}", dest.display()))?;
         let mut left = size;
         for (len, block) in extents {
             let mut remaining = len.min(left);
@@ -248,7 +244,7 @@ impl Volume {
         match kind {
             // Short allocation descriptors: length, then block.
             0 => {
-                for c in ads.chunks_exact(8) {
+                for c in ads.as_chunks::<8>().0 {
                     let raw = u32::from_le_bytes(c[0..4].try_into().unwrap());
                     let len = (raw & 0x3FFF_FFFF) as u64;
                     if len == 0 {
@@ -262,7 +258,7 @@ impl Volume {
             }
             // Long allocation descriptors: length, block, partition, then use.
             1 => {
-                for c in ads.chunks_exact(16) {
+                for c in ads.as_chunks::<16>().0 {
                     let raw = u32::from_le_bytes(c[0..4].try_into().unwrap());
                     let len = (raw & 0x3FFF_FFFF) as u64;
                     if len == 0 {
@@ -274,7 +270,9 @@ impl Volume {
                     out.push((len, u32::from_le_bytes(c[4..8].try_into().unwrap())));
                 }
             }
-            3 => bail!("this UDF file is stored inside its own descriptor, which WinQuick cannot read"),
+            3 => bail!(
+                "this UDF file is stored inside its own descriptor, which WinQuick cannot read"
+            ),
             other => bail!("unsupported UDF allocation descriptor type {other}"),
         }
         Ok((size, out))
@@ -354,11 +352,7 @@ fn parse_directory(data: &[u8]) -> Result<Vec<Entry>> {
         let raw = &data[name_at..name_at + l_fi];
         // A zero-length identifier is the entry for the parent directory.
         if !raw.is_empty() && chars & 0x08 == 0 {
-            out.push(Entry {
-                name: decode_name(raw),
-                is_dir: chars & 0x02 != 0,
-                icb,
-            });
+            out.push(Entry { name: decode_name(raw), is_dir: chars & 0x02 != 0, icb });
         }
         let mut total = 38 + l_iu + l_fi;
         total += (4 - total % 4) % 4;
@@ -376,7 +370,9 @@ fn decode_name(raw: &[u8]) -> String {
     match raw[0] {
         16 => {
             let units: Vec<u16> = raw[1..]
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|c| u16::from_be_bytes([c[0], c[1]]))
                 .collect();
             String::from_utf16_lossy(&units)
@@ -468,10 +464,7 @@ mod bench {
         let t = std::time::Instant::now();
         let n = extract_file(&iso, "ValidationOS.vhdx", &dest).expect("extract");
         let secs = t.elapsed().as_secs_f64();
-        eprintln!(
-            "extracted {n} bytes in {secs:.2}s ({:.1} MB/s)",
-            n as f64 / secs / 1e6
-        );
+        eprintln!("extracted {n} bytes in {secs:.2}s ({:.1} MB/s)", n as f64 / secs / 1e6);
         let _ = std::fs::remove_file(&dest);
     }
 }

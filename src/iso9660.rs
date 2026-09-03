@@ -32,8 +32,7 @@ pub struct Entry {
 
 impl Image {
     pub fn open(path: &Path) -> Result<Self> {
-        let mut file =
-            File::open(path).with_context(|| format!("opening {}", path.display()))?;
+        let mut file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
         // Volume descriptors start at sector 16 and run until the terminator.
         for sector in 16..32 {
             let mut buf = [0u8; SECTOR as usize];
@@ -97,12 +96,7 @@ impl Image {
                     if let Some(p) = name.find(';') {
                         name.truncate(p);
                     }
-                    out.push(Entry {
-                        name,
-                        is_dir: flags & 0x02 != 0,
-                        extent: ext,
-                        length: size,
-                    });
+                    out.push(Entry { name, is_dir: flags & 0x02 != 0, extent: ext, length: size });
                 }
             }
             i += len;
@@ -122,36 +116,19 @@ impl Image {
         self.parse_dir(entry.extent, entry.length)
     }
 
-    /// Walk a `/`-separated path from the root.
-    pub fn find(&mut self, path: &str) -> Result<Option<Entry>> {
-        let mut here = self.root()?;
-        let mut found = None;
-        for part in path.split('/').filter(|p| !p.is_empty()) {
-            let Some(hit) = here.iter().find(|e| e.name.eq_ignore_ascii_case(part)).cloned()
-            else {
-                return Ok(None);
-            };
-            here = if hit.is_dir { self.list(&hit)? } else { Vec::new() };
-            found = Some(hit);
-        }
-        Ok(found)
-    }
-
     pub fn extract(&mut self, entry: &Entry, dest: &Path) -> Result<u64> {
         if entry.is_dir {
             bail!("{} is a directory", entry.name);
         }
         let data = self.read_at(entry.extent, entry.length)?;
-        let mut out = File::create(dest)
-            .with_context(|| format!("creating {}", dest.display()))?;
+        let mut out = File::create(dest).with_context(|| format!("creating {}", dest.display()))?;
         out.write_all(&data)?;
         out.flush()?;
         Ok(data.len() as u64)
     }
 
     pub fn extract_tree(&mut self, entry: &Entry, dest: &Path) -> Result<u64> {
-        std::fs::create_dir_all(dest)
-            .with_context(|| format!("creating {}", dest.display()))?;
+        std::fs::create_dir_all(dest).with_context(|| format!("creating {}", dest.display()))?;
         let mut total = 0;
         for child in self.list(entry)? {
             let target = dest.join(&child.name);

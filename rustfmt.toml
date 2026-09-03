@@ -1,0 +1,6 @@
+# The codebase is written to 100 columns and keeps call arguments on one line
+# where they fit. rustfmt's defaults split a call whose arguments exceed 60
+# characters even when the whole line fits, which would reformat most of the
+# project for no readability gain. `Max` lets the width limit be the only rule.
+max_width = 100
+use_small_heuristics = "Max"

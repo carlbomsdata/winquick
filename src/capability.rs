@@ -210,11 +210,11 @@ pub fn install(name: &str, zip: Option<PathBuf>, verbose: bool) -> Result<u64> {
                 let st = std::process::Command::new(
                     crate::helpers::which("curl").unwrap_or_else(|| PathBuf::from("curl")),
                 )
-                    .args(["-sSL", "-o"])
-                    .arg(&p)
-                    .arg(sp.payload().url)
-                    .status()
-                    .context("running curl")?;
+                .args(["-sSL", "-o"])
+                .arg(&p)
+                .arg(sp.payload().url)
+                .status()
+                .context("running curl")?;
                 if !st.success() {
                     let _ = std::fs::remove_file(&p);
                     bail!("download failed");
@@ -308,9 +308,7 @@ fn build_inner(image: &Path, src_dir: &Path, dest_name: Option<&str>, size: u64)
     let mut buf = BufStream::new(slice);
     fatfs::format_volume(
         &mut buf,
-        FormatVolumeOptions::new()
-            .fat_type(FatType::Fat32)
-            .volume_label(*b"WQCAPS     "),
+        FormatVolumeOptions::new().fat_type(FatType::Fat32).volume_label(*b"WQCAPS     "),
     )
     .context("formatting capability volume")?;
     let fs = FileSystem::new(&mut buf, FsOptions::new())?;
@@ -450,12 +448,14 @@ fn collect_unsupported(dir: &Path, bad: &mut Vec<PathBuf>) {
 /// Mirrors what the filesystem layer will accept, so the check and the failure
 /// agree.
 fn name_fits_fat(name: &str) -> bool {
-    name.chars().all(|c| match c {
-        'a'..='z' | 'A'..='Z' | '0'..='9' => true,
-        '\u{80}'..='\u{FFFF}' => true,
-        '$' | '%' | '\'' | '-' | '_' | '@' | '~' | '`' | '!' | '(' | ')' | '{' | '}' | '.'
-        | ' ' | '+' | ',' | ';' | '=' | '[' | ']' | '^' | '#' | '&' => true,
-        _ => false,
+    name.chars().all(|c| {
+        matches!(
+            c,
+            'a'..='z' | 'A'..='Z' | '0'..='9'
+                | '\u{80}'..='\u{FFFF}'
+                | '$' | '%' | '\'' | '-' | '_' | '@' | '~' | '`' | '!' | '(' | ')' | '{' | '}'
+                | '.' | ' ' | '+' | ',' | ';' | '=' | '[' | ']' | '^' | '#' | '&'
+        )
     })
 }
 
@@ -470,11 +470,8 @@ pub fn reject_unsupported_names(root: &Path, what: &str) -> Result<()> {
         .take(10)
         .map(|p| format!("  {}", p.strip_prefix(root).unwrap_or(p).display()))
         .collect();
-    let more = if bad.len() > 10 {
-        format!("\n  ...and {} more", bad.len() - 10)
-    } else {
-        String::new()
-    };
+    let more =
+        if bad.len() > 10 { format!("\n  ...and {} more", bad.len() - 10) } else { String::new() };
     bail!(
         "{what} contains {} file name(s) the Windows volume cannot hold:\n{}{more}\n\n\
          Names may use accents, CJK, Cyrillic and Greek, but not characters outside the\n\
@@ -498,10 +495,9 @@ fn copy_tree<T: fatfs::ReadWriteSeek>(src: &Path, dst: &fatfs::Dir<T>) -> Result
         } else if md.is_file() {
             let mut f = dst.create_file(&name)?;
             f.truncate()?;
-            let data = std::fs::read(&path)
-                .with_context(|| format!("reading {}", path.display()))?;
-            f.write_all(&data)
-                .with_context(|| format!("writing {name} into the volume"))?;
+            let data =
+                std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+            f.write_all(&data).with_context(|| format!("writing {name} into the volume"))?;
         }
     }
     Ok(())
@@ -767,8 +763,7 @@ pub fn nuget_add(raw_specs: &[String], verbose: bool) -> Result<SyncResult> {
     if raw_specs.is_empty() {
         bail!("name at least one package, as `Name` or `Name@1.2.3`");
     }
-    let specs: Vec<PackageSpec> =
-        raw_specs.iter().map(|s| parse_spec(s)).collect::<Result<_>>()?;
+    let specs: Vec<PackageSpec> = raw_specs.iter().map(|s| parse_spec(s)).collect::<Result<_>>()?;
     let cache = nuget_dir()?;
     std::fs::create_dir_all(&cache)?;
     if which("dotnet").is_none() {
@@ -1011,10 +1006,7 @@ mod tests {
         let staged = ProjectCopy::new(&root.join("App/App.csproj")).unwrap();
         assert!(staged.path().is_file());
         assert_eq!(staged.path().file_name().unwrap(), "App.csproj");
-        assert!(
-            staged.path().parent().unwrap().join("bin").exists() == false,
-            "bin is skipped here too"
-        );
+        assert!(!staged.path().parent().unwrap().join("bin").exists(), "bin is skipped here too");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1070,17 +1062,17 @@ mod tests {
     #[test]
     fn a_pinned_package_is_downloaded_and_a_bare_one_referenced() {
         let pinned = add_project(&[parse_spec("A.B@1.0.3").unwrap()]);
-        assert!(pinned.contains("<PackageDownload Include=\"A.B\" Version=\"[1.0.3]\" />"), "{pinned}");
+        assert!(
+            pinned.contains("<PackageDownload Include=\"A.B\" Version=\"[1.0.3]\" />"),
+            "{pinned}"
+        );
         assert!(!pinned.contains("PackageReference"), "{pinned}");
 
         let bare = add_project(&[parse_spec("A.B").unwrap()]);
         assert!(bare.contains("<PackageReference Include=\"A.B\" Version=\"*\" />"), "{bare}");
 
         // Several at once, in one restore.
-        let both = add_project(&[
-            parse_spec("A@1.0.0").unwrap(),
-            parse_spec("B").unwrap(),
-        ]);
+        let both = add_project(&[parse_spec("A@1.0.0").unwrap(), parse_spec("B").unwrap()]);
         assert!(both.contains("Include=\"A\""), "{both}");
         assert!(both.contains("Include=\"B\""), "{both}");
     }

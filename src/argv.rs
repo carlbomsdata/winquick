@@ -207,7 +207,10 @@ mod tests {
     /// still has to reach cmd as one argument.
     #[test]
     fn cmd_groups_an_unquoted_argument_containing_spaces() {
-        assert_eq!(j(&["cmd", "/c", "dir", r"C:\Program Files"]), r#"cmd /c dir "C:\Program Files""#);
+        assert_eq!(
+            j(&["cmd", "/c", "dir", r"C:\Program Files"]),
+            r#"cmd /c dir "C:\Program Files""#
+        );
     }
 
     /// Operators are the point of asking for cmd in the first place.
@@ -293,10 +296,7 @@ mod tests {
     fn metacharacters_reaching_a_native_program_are_protected() {
         for meta in ["a&b", "a|b", "a>b", "a<b", "a^b", "a(b)c"] {
             let line = j(&["app.exe", meta]);
-            assert!(
-                !cmd_would_split(&line),
-                "{meta} reached cmd unprotected as {line}"
-            );
+            assert!(!cmd_would_split(&line), "{meta} reached cmd unprotected as {line}");
         }
         assert_eq!(j(&["app.exe", "a&b"]), r"app.exe a^&b");
         assert_eq!(j(&["app.exe", "a & b"]), r#"app.exe "a & b""#);
@@ -343,8 +343,10 @@ mod tests {
     #[test]
     fn percent_is_passed_through_unchanged() {
         assert_eq!(j(&["cmd", "/c", "echo %PATH%"]), "cmd /c echo %PATH%");
-        assert_eq!(j(&["cmd", "/c", "for /L %%i in (1,1,3) do @echo %%i"]),
-                   "cmd /c for /L %%i in (1,1,3) do @echo %%i");
+        assert_eq!(
+            j(&["cmd", "/c", "for /L %%i in (1,1,3) do @echo %%i"]),
+            "cmd /c for /L %%i in (1,1,3) do @echo %%i"
+        );
     }
 
     /// The whole point of the two contexts: the same argument is rendered

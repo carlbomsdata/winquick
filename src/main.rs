@@ -108,7 +108,9 @@ Add optional tools at the same time:
     },
 
     /// Run a command inside a throwaway Windows environment
-    #[command(trailing_var_arg = true, after_help = "\
+    #[command(
+        trailing_var_arg = true,
+        after_help = "\
 Arguments work like `docker run`: the program and its arguments are separate
 words, and anything containing spaces stays one argument.
 
@@ -121,7 +123,8 @@ becomes the working directory. It is copied in, never copied back, so the guest
 cannot change your source. Ask for output explicitly with --artifact.
 
   winquick run -w . -- dotnet test
-  winquick run -w . -a \"TestResults/**\" -- dotnet test")]
+  winquick run -w . -a \"TestResults/**\" -- dotnet test"
+    )]
     Run {
         /// Expose this host directory to Windows as C:\workspace
         #[arg(short = 'w', long, value_name = "DIR")]
@@ -454,19 +457,19 @@ fn dispatch(cli: Cli) -> Result<i32> {
         } => {
             artifact_patterns::validate(&artifacts)?;
             runner::run(
-            &argv::join(&argv),
-            &runner::Options {
-                memory_mb: memory,
-                cpus,
-                timeout: Duration::from_secs(timeout),
-                verbose,
-                force_cold: cold,
-                workspace,
-                artifacts,
-                artifacts_dir: artifacts_dir.unwrap_or_else(artifact::default_dest),
-                artifact_overwrite,
-            },
-        )
+                &argv::join(&argv),
+                &runner::Options {
+                    memory_mb: memory,
+                    cpus,
+                    timeout: Duration::from_secs(timeout),
+                    verbose,
+                    force_cold: cold,
+                    workspace,
+                    artifacts,
+                    artifacts_dir: artifacts_dir.unwrap_or_else(artifact::default_dest),
+                    artifact_overwrite,
+                },
+            )
         }
 
         Cmd::Desktop { action } => desktop_cmd(action, verbose),
@@ -488,20 +491,6 @@ fn dispatch(cli: Cli) -> Result<i32> {
     }
 }
 
-// ------------------------------------------------------------------ argv
-
-/// Turn argv back into a single Windows command line.
-///
-/// `winquick run -- a b c` runs program `a` with arguments `b` and `c`, the way
-/// `docker run` does. An argument containing spaces has to stay one argument, so
-/// it gets quoted — without this, `pwsh -Command 'Write-Output "hi"'` arrives at
-/// PowerShell as several arguments and is re-parsed into something else.
-///
-/// Quoting follows the Windows C runtime rules, which `pwsh.exe` and most other
-/// Windows programs use to split the command line back up: a backslash is only
-/// special immediately before a quote, so a run of N backslashes before a quote
-/// becomes 2N+1 (the extra one escaping the quote), and a run at the end of a
-/// quoted argument becomes 2N so it does not escape the closing quote.
 // ------------------------------------------------------------ subcommands
 
 /// Build or accept an application, drive its UI, and report.
@@ -523,21 +512,16 @@ fn ui_test(
     }
 
     // A project has to be built first; a directory is taken as already published.
-    let published = if app.is_dir() {
-        app.to_path_buf()
-    } else {
-        build_project(app, verbose)?
-    };
+    let published = if app.is_dir() { app.to_path_buf() } else { build_project(app, verbose)? };
     let exe = sole_executable(&published)?;
 
     let text = match script {
-        Some(p) => std::fs::read_to_string(p)
-            .with_context(|| format!("reading {}", p.display()))?,
+        Some(p) => {
+            std::fs::read_to_string(p).with_context(|| format!("reading {}", p.display()))?
+        }
         // Without a script the useful thing to prove is that it starts and
         // draws something.
-        None => format!(
-            "launch app\\{exe}\nsleep 4000\nscreenshot launched.png\nwindows\n"
-        ),
+        None => format!("launch app\\{exe}\nsleep 4000\nscreenshot launched.png\nwindows\n"),
     };
     let parsed = uiscript::parse(&text)?;
 
@@ -578,10 +562,8 @@ fn ui_test(
 
 /// Publish a project inside Windows and bring the output back.
 fn build_project(project: &std::path::Path, verbose: bool) -> Result<PathBuf> {
-    let dir = project
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(std::path::Path::new("."));
+    let dir =
+        project.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
     let name = project
         .file_name()
         .and_then(|n| n.to_str())
@@ -766,10 +748,12 @@ fn capability_cmd(action: CapabilityCmd, verbose: bool) -> Result<i32> {
     match action {
         CapabilityCmd::List => {
             let installed = capability::installed()?;
-            println!("{:<16} {:<10} {:<42} {}", "NAME", "VERSION", "WHAT IT ADDS", "STATUS");
+            println!("{:<16} {:<10} {:<42} STATUS", "NAME", "VERSION", "WHAT IT ADDS");
             for sp in capability::SPECS {
                 let status = match installed.iter().find(|i| i.name == sp.name) {
-                    Some(i) => format!("installed, {}", helpers::human(helpers::allocated(&i.image))),
+                    Some(i) => {
+                        format!("installed, {}", helpers::human(helpers::allocated(&i.image)))
+                    }
                     None => "not installed".to_string(),
                 };
                 println!("{:<16} {:<10} {:<42} {}", sp.name, sp.version, sp.description, status);
@@ -904,7 +888,10 @@ fn cache_cmd(action: CacheCmd, verbose: bool) -> Result<i32> {
             let packages = std::fs::read_dir(&dir)
                 .map(|d| d.filter_map(|e| e.ok()).filter(|e| e.path().is_dir()).count())
                 .unwrap_or(0);
-            println!("Package cache: {packages} packages, {}", helpers::human(helpers::allocated(&img)));
+            println!(
+                "Package cache: {packages} packages, {}",
+                helpers::human(helpers::allocated(&img))
+            );
             println!("  restored on this Mac into {}", dir.display());
             println!("  Windows sees a throwaway copy, so a build cannot change it");
             Ok(0)
@@ -1050,9 +1037,12 @@ fn smoke_opts() -> runner::Options {
 }
 
 fn tick(ok: bool) -> &'static str {
-    if ok { "ok  " } else { "FAIL" }
+    if ok {
+        "ok  "
+    } else {
+        "FAIL"
+    }
 }
-
 
 fn clean(all: bool, dry_run: bool) -> Result<i32> {
     let root = paths::root()?;
@@ -1120,8 +1110,9 @@ fn clean(all: bool, dry_run: bool) -> Result<i32> {
     if all {
         println!("Run `winquick setup` to install Windows again.");
     } else {
-        println!("The Windows runtime is still installed; the next run rebuilds the prepared guest.");
+        println!(
+            "The Windows runtime is still installed; the next run rebuilds the prepared guest."
+        );
     }
     Ok(0)
 }
-

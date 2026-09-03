@@ -52,46 +52,48 @@ pub const TOOLS: &[Tool] = &[
              a NuGet restore that needs to reach the network fails with NU1301: run \
              `winquick cache sync` on the Mac once to make packages available offline, or add a \
              NuGet.config to a project that needs no packages.",
-        schema: || json!({
-            "type": "object",
-            "properties": {
-                "program": {
-                    "type": "string",
-                    "description": "Executable to run, e.g. \"cmd\", \"pwsh\", \"dotnet\"."
+        schema: || {
+            json!({
+                "type": "object",
+                "properties": {
+                    "program": {
+                        "type": "string",
+                        "description": "Executable to run, e.g. \"cmd\", \"pwsh\", \"dotnet\"."
+                    },
+                    "args": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Arguments, one array element each. Do not pre-quote them; \
+                                        WinQuick quotes correctly for cmd and for native programs."
+                    },
+                    "workspace": {
+                        "type": "string",
+                        "description": "Absolute host directory to expose as C:\\workspace. Copied \
+                                        in, never copied back."
+                    },
+                    "artifacts": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Glob patterns, relative to the workspace, for files to \
+                                        bring back to the host: \"bin/**/*.exe\", \"**/*.dll\", \
+                                        \"logs/*.txt\". A single * is one directory level; ** \
+                                        recurses. Collected even when the command fails."
+                    },
+                    "artifactsDir": {
+                        "type": "string",
+                        "description": "Absolute host directory for retrieved files. \
+                                        Defaults to ./winquick-artifacts."
+                    },
+                    "timeoutSeconds": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Give up after this long. Default 300."
+                    }
                 },
-                "args": {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "Arguments, one array element each. Do not pre-quote them; \
-                                    WinQuick quotes correctly for cmd and for native programs."
-                },
-                "workspace": {
-                    "type": "string",
-                    "description": "Absolute host directory to expose as C:\\workspace. Copied \
-                                    in, never copied back."
-                },
-                "artifacts": {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "Glob patterns, relative to the workspace, for files to \
-                                    bring back to the host: \"bin/**/*.exe\", \"**/*.dll\", \
-                                    \"logs/*.txt\". A single * is one directory level; ** \
-                                    recurses. Collected even when the command fails."
-                },
-                "artifactsDir": {
-                    "type": "string",
-                    "description": "Absolute host directory for retrieved files. \
-                                    Defaults to ./winquick-artifacts."
-                },
-                "timeoutSeconds": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "description": "Give up after this long. Default 300."
-                }
-            },
-            "required": ["program"],
-            "additionalProperties": false
-        }),
+                "required": ["program"],
+                "additionalProperties": false
+            })
+        },
     },
     Tool {
         name: "desktop_start",
@@ -103,18 +105,20 @@ pub const TOOLS: &[Tool] = &[
              running returns the existing session rather than a second one. Requires the \
              desktop capability (`winquick capability install desktop`). Point `app` at a \
              published build directory to make it available inside Windows as `app`.",
-        schema: || json!({
-            "type": "object",
-            "properties": {
-                "app": {
-                    "type": "string",
-                    "description": "Absolute host path to a published application directory. \
-                                    Appears inside Windows as `app`, so an executable is then \
-                                    launched as \"app\\\\YourApp.exe\"."
-                }
-            },
-            "additionalProperties": false
-        }),
+        schema: || {
+            json!({
+                "type": "object",
+                "properties": {
+                    "app": {
+                        "type": "string",
+                        "description": "Absolute host path to a published application directory. \
+                                        Appears inside Windows as `app`, so an executable is then \
+                                        launched as \"app\\\\YourApp.exe\"."
+                    }
+                },
+                "additionalProperties": false
+            })
+        },
     },
     Tool {
         name: "desktop_stop",
@@ -139,18 +143,20 @@ pub const TOOLS: &[Tool] = &[
              given an `app` directory — and its arguments separately. Follow this with \
              desktop_wait_window before inspecting the UI: launching returns as soon as the \
              process starts, which is before its window exists.",
-        schema: || json!({
-            "type": "object",
-            "properties": {
-                "program": {
-                    "type": "string",
-                    "description": "Windows path of the executable, e.g. \"app\\\\Demo.exe\"."
+        schema: || {
+            json!({
+                "type": "object",
+                "properties": {
+                    "program": {
+                        "type": "string",
+                        "description": "Windows path of the executable, e.g. \"app\\\\Demo.exe\"."
+                    },
+                    "args": { "type": "array", "items": { "type": "string" } }
                 },
-                "args": { "type": "array", "items": { "type": "string" } }
-            },
-            "required": ["program"],
-            "additionalProperties": false
-        }),
+                "required": ["program"],
+                "additionalProperties": false
+            })
+        },
     },
     Tool {
         name: "desktop_wait_window",
@@ -158,22 +164,24 @@ pub const TOOLS: &[Tool] = &[
             "Wait until a window whose title contains the given text exists, and return its \
              handle. Use this after desktop_launch, before reading or driving the UI. A timeout \
              is reported as a tool error with the time waited, not as a crash.",
-        schema: || json!({
-            "type": "object",
-            "properties": {
-                "title": {
-                    "type": "string",
-                    "description": "Text the window title must contain."
+        schema: || {
+            json!({
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Text the window title must contain."
+                    },
+                    "timeoutMs": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "How long to wait. Default 60000."
+                    }
                 },
-                "timeoutMs": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "description": "How long to wait. Default 60000."
-                }
-            },
-            "required": ["title"],
-            "additionalProperties": false
-        }),
+                "required": ["title"],
+                "additionalProperties": false
+            })
+        },
     },
     Tool {
         name: "ui_tree",
@@ -184,16 +192,18 @@ pub const TOOLS: &[Tool] = &[
              address it by. Read the tree first, then use its automationId values with ui_click \
              and ui_type. Scope it with `title` or `hwnd` to one window, and use `depth` to keep \
              it small.",
-        schema: || json!({
-            "type": "object",
-            "properties": {
-                "title": { "type": "string", "description": "Limit to the window whose title contains this." },
-                "hwnd": { "type": "integer", "description": "Limit to this window handle." },
-                "automationId": { "type": "string", "description": "Start from this element instead of the window root." },
-                "depth": { "type": "integer", "minimum": 1, "description": "Maximum levels to descend." }
-            },
-            "additionalProperties": false
-        }),
+        schema: || {
+            json!({
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string", "description": "Limit to the window whose title contains this." },
+                    "hwnd": { "type": "integer", "description": "Limit to this window handle." },
+                    "automationId": { "type": "string", "description": "Start from this element instead of the window root." },
+                    "depth": { "type": "integer", "minimum": 1, "description": "Maximum levels to descend." }
+                },
+                "additionalProperties": false
+            })
+        },
     },
     Tool {
         name: "ui_get",
@@ -205,18 +215,20 @@ pub const TOOLS: &[Tool] = &[
              listing the candidates rather than a guess. Note that WPF derives automationId \
              from x:Name automatically, while WinForms only exposes one if Control.Name was set \
              — so for WinForms, name plus controlType is often the reliable selector.",
-        schema: || json!({
-            "type": "object",
-            "properties": {
-                "automationId": { "type": "string" },
-                "name": { "type": "string", "description": "The element's accessible name." },
-                "controlType": { "type": "string", "description": "Button, Edit, Text, CheckBox, ComboBox, List ..." },
-                "className": { "type": "string" },
-                "title": { "type": "string", "description": "Limit the search to this window." },
-                "hwnd": { "type": "integer" }
-            },
-            "additionalProperties": false
-        }),
+        schema: || {
+            json!({
+                "type": "object",
+                "properties": {
+                    "automationId": { "type": "string" },
+                    "name": { "type": "string", "description": "The element's accessible name." },
+                    "controlType": { "type": "string", "description": "Button, Edit, Text, CheckBox, ComboBox, List ..." },
+                    "className": { "type": "string" },
+                    "title": { "type": "string", "description": "Limit the search to this window." },
+                    "hwnd": { "type": "integer" }
+                },
+                "additionalProperties": false
+            })
+        },
     },
     Tool {
         name: "ui_click",
@@ -224,39 +236,42 @@ pub const TOOLS: &[Tool] = &[
             "Click a UI element, addressed semantically rather than by coordinates. Prefer \
              automationId; fall back to name plus controlType. If the element is disabled the \
              tool says so explicitly instead of silently doing nothing.",
-        schema: || json!({
-            "type": "object",
-            "properties": {
-                "automationId": { "type": "string" },
-                "name": { "type": "string" },
-                "controlType": { "type": "string" },
-                "className": { "type": "string" },
-                "title": { "type": "string", "description": "Limit the search to this window." },
-                "hwnd": { "type": "integer" },
-                "right": { "type": "boolean", "description": "Right-click instead of left." }
-            },
-            "additionalProperties": false
-        }),
+        schema: || {
+            json!({
+                "type": "object",
+                "properties": {
+                    "automationId": { "type": "string" },
+                    "name": { "type": "string" },
+                    "controlType": { "type": "string" },
+                    "className": { "type": "string" },
+                    "title": { "type": "string", "description": "Limit the search to this window." },
+                    "hwnd": { "type": "integer" },
+                    "right": { "type": "boolean", "description": "Right-click instead of left." }
+                },
+                "additionalProperties": false
+            })
+        },
     },
     Tool {
         name: "ui_type",
-        description:
-            "Type text into a UI element, addressed the same way as ui_click. Unicode is \
+        description: "Type text into a UI element, addressed the same way as ui_click. Unicode is \
              supported. Use this to fill in text boxes before clicking a button.",
-        schema: || json!({
-            "type": "object",
-            "properties": {
-                "text": { "type": "string", "description": "The text to type." },
-                "automationId": { "type": "string" },
-                "name": { "type": "string" },
-                "controlType": { "type": "string" },
-                "className": { "type": "string" },
-                "title": { "type": "string" },
-                "hwnd": { "type": "integer" }
-            },
-            "required": ["text"],
-            "additionalProperties": false
-        }),
+        schema: || {
+            json!({
+                "type": "object",
+                "properties": {
+                    "text": { "type": "string", "description": "The text to type." },
+                    "automationId": { "type": "string" },
+                    "name": { "type": "string" },
+                    "controlType": { "type": "string" },
+                    "className": { "type": "string" },
+                    "title": { "type": "string" },
+                    "hwnd": { "type": "integer" }
+                },
+                "required": ["text"],
+                "additionalProperties": false
+            })
+        },
     },
     Tool {
         name: "ui_screenshot",
@@ -266,19 +281,20 @@ pub const TOOLS: &[Tool] = &[
              whether a control is visible at all. The image is captured inside Windows, so it \
              shows the real composited desktop. Pass `title` or `hwnd` to frame a single \
              window, which is also how you disambiguate two windows sharing a title.",
-        schema: || json!({
-            "type": "object",
-            "properties": {
-                "title": { "type": "string", "description": "Capture the window whose title contains this." },
-                "hwnd": { "type": "integer", "description": "Capture this exact window." }
-            },
-            "additionalProperties": false
-        }),
+        schema: || {
+            json!({
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string", "description": "Capture the window whose title contains this." },
+                    "hwnd": { "type": "integer", "description": "Capture this exact window." }
+                },
+                "additionalProperties": false
+            })
+        },
     },
     Tool {
         name: "winquick_info",
-        description:
-            "Report what is installed: WinQuick version, the Windows runtime, optional \
+        description: "Report what is installed: WinQuick version, the Windows runtime, optional \
              capabilities such as PowerShell and the .NET SDK, and whether the desktop \
              capability and a session are available. Use it to find out whether a capability \
              you need is present before relying on it.",
@@ -298,11 +314,13 @@ pub const TOOLS: &[Tool] = &[
 pub fn list() -> Value {
     let tools: Vec<Value> = TOOLS
         .iter()
-        .map(|t| json!({
-            "name": t.name,
-            "description": t.description,
-            "inputSchema": (t.schema)()
-        }))
+        .map(|t| {
+            json!({
+                "name": t.name,
+                "description": t.description,
+                "inputSchema": (t.schema)()
+            })
+        })
         .collect();
     json!({ "tools": tools })
 }
@@ -372,7 +390,9 @@ fn windows_run(args: &Value) -> Value {
         Some(w) => {
             let p = PathBuf::from(w);
             if !p.is_absolute() {
-                return tool_error(format!("`workspace` must be an absolute host path, got {w:?}."));
+                return tool_error(format!(
+                    "`workspace` must be an absolute host path, got {w:?}."
+                ));
             }
             if !p.is_dir() {
                 return tool_error(format!("`workspace` is not a directory: {w}"));
@@ -390,7 +410,9 @@ fn windows_run(args: &Value) -> Value {
                 for x in a {
                     match x.as_str() {
                         Some(s) => artifacts.push(s.to_string()),
-                        None => return tool_error("every element of `artifacts` must be a string."),
+                        None => {
+                            return tool_error("every element of `artifacts` must be a string.")
+                        }
                     }
                 }
             }
@@ -399,7 +421,9 @@ fn windows_run(args: &Value) -> Value {
     }
     if !artifacts.is_empty() {
         if workspace.is_none() {
-            return tool_error("`artifacts` only makes sense with a `workspace` to collect them from.");
+            return tool_error(
+                "`artifacts` only makes sense with a `workspace` to collect them from.",
+            );
         }
         // Traversal is refused here, before a run is paid for, using exactly
         // the rules the CLI uses.
@@ -412,10 +436,7 @@ fn windows_run(args: &Value) -> Value {
         Some(d) => PathBuf::from(d),
         None => artifact::default_dest(),
     };
-    let timeout = args
-        .get("timeoutSeconds")
-        .and_then(Value::as_u64)
-        .unwrap_or(300);
+    let timeout = args.get("timeoutSeconds").and_then(Value::as_u64).unwrap_or(300);
 
     let opts = runner::Options {
         memory_mb: runner::DEFAULT_MEMORY_MB,
@@ -694,14 +715,10 @@ fn ui_screenshot(args: &Value) -> Value {
     }
     // The bridge writes a PNG to a host path; MCP then carries the bytes
     // themselves, so the agent never has to open a file to see the screen.
-    let dir = match std::env::temp_dir().join("winquick-mcp-shots") {
-        d => {
-            if let Err(e) = std::fs::create_dir_all(&d) {
-                return tool_error(format!("cannot prepare a place for the screenshot: {e}"));
-            }
-            d
-        }
-    };
+    let dir = std::env::temp_dir().join("winquick-mcp-shots");
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        return tool_error(format!("cannot prepare a place for the screenshot: {e}"));
+    }
     let file = dir.join(format!("shot-{}.png", std::process::id()));
     let mut extra = Vec::new();
     if let Some(t) = args.get("title").and_then(Value::as_str) {
@@ -827,7 +844,11 @@ mod tests {
                 let props = s["properties"].as_object().unwrap();
                 for r in req {
                     let key = r.as_str().unwrap();
-                    assert!(props.contains_key(key), "{}: required `{key}` is not a property", t.name);
+                    assert!(
+                        props.contains_key(key),
+                        "{}: required `{key}` is not a property",
+                        t.name
+                    );
                 }
             }
         }
@@ -908,8 +929,20 @@ mod tests {
         }));
         assert_eq!(
             s,
-            vec!["--automation-id", "SaveButton", "--name", "Save", "--control-type", "Button",
-                 "--class", "Button", "--title", "My App", "--hwnd", "1234"]
+            vec![
+                "--automation-id",
+                "SaveButton",
+                "--name",
+                "Save",
+                "--control-type",
+                "Button",
+                "--class",
+                "Button",
+                "--title",
+                "My App",
+                "--hwnd",
+                "1234"
+            ]
         );
         assert!(selector(&json!({})).is_empty());
     }

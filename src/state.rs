@@ -452,14 +452,7 @@ impl DesktopReady {
         self.dir.join("ready-control.img")
     }
     pub fn files(&self) -> [PathBuf; 6] {
-        [
-            self.state_file(),
-            self.disk(),
-            self.vars(),
-            self.mailbox(),
-            self.bridge(),
-            self.app(),
-        ]
+        [self.state_file(), self.disk(), self.vars(), self.mailbox(), self.bridge(), self.app()]
     }
 }
 
@@ -576,21 +569,44 @@ mod desktop_tests {
     /// could otherwise be run.
     #[test]
     fn every_input_that_changes_the_machine_invalidates_the_state() {
-        let cases: Vec<(&str, Box<dyn Fn(&mut DesktopFingerprint)>)> = vec![
-            ("winquick version", Box::new(|f: &mut DesktopFingerprint| f.winquick_version = "0.3.0".into())),
+        /// A named change to one field of the fingerprint.
+        type Case = (&'static str, Box<dyn Fn(&mut DesktopFingerprint)>);
+        let cases: Vec<Case> = vec![
+            (
+                "winquick version",
+                Box::new(|f: &mut DesktopFingerprint| f.winquick_version = "0.3.0".into()),
+            ),
             ("mailbox protocol", Box::new(|f: &mut DesktopFingerprint| f.protocol_version = 2)),
-            ("control protocol", Box::new(|f: &mut DesktopFingerprint| f.control_protocol_version = 2)),
-            ("desktop image", Box::new(|f: &mut DesktopFingerprint| f.desktop_image = id("desktop.qcow2", 101))),
+            (
+                "control protocol",
+                Box::new(|f: &mut DesktopFingerprint| f.control_protocol_version = 2),
+            ),
+            (
+                "desktop image",
+                Box::new(|f: &mut DesktopFingerprint| f.desktop_image = id("desktop.qcow2", 101)),
+            ),
             ("guest agent", Box::new(|f: &mut DesktopFingerprint| f.agent_hash = "cccc".into())),
             ("guest bridge", Box::new(|f: &mut DesktopFingerprint| f.bridge_hash = "dddd".into())),
             ("qemu binary", Box::new(|f: &mut DesktopFingerprint| f.qemu_binary = id("qemu", 11))),
-            ("qemu version", Box::new(|f: &mut DesktopFingerprint| f.qemu_version = "QEMU 12".into())),
-            ("uefi firmware", Box::new(|f: &mut DesktopFingerprint| f.firmware = id("edk2.fd", 21))),
+            (
+                "qemu version",
+                Box::new(|f: &mut DesktopFingerprint| f.qemu_version = "QEMU 12".into()),
+            ),
+            (
+                "uefi firmware",
+                Box::new(|f: &mut DesktopFingerprint| f.firmware = id("edk2.fd", 21)),
+            ),
             ("guest memory", Box::new(|f: &mut DesktopFingerprint| f.memory_mb = 4096)),
             ("vcpu count", Box::new(|f: &mut DesktopFingerprint| f.cpus = 4)),
             ("machine type", Box::new(|f: &mut DesktopFingerprint| f.machine = "virt-9".into())),
-            ("installed capabilities", Box::new(|f: &mut DesktopFingerprint| f.capabilities.clear())),
-            ("device configuration", Box::new(|f: &mut DesktopFingerprint| f.devices = "other".into())),
+            (
+                "installed capabilities",
+                Box::new(|f: &mut DesktopFingerprint| f.capabilities.clear()),
+            ),
+            (
+                "device configuration",
+                Box::new(|f: &mut DesktopFingerprint| f.devices = "other".into()),
+            ),
         ];
 
         for (label, mutate) in cases {
@@ -647,8 +663,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join("ready.state"), vec![7u8; state_len]).unwrap();
-        for f in ["ready-disk.qcow2", "ready-vars.fd", "ready-mailbox.img",
-                  "ready-workspace.img", "ready-artifacts.img"] {
+        for f in [
+            "ready-disk.qcow2",
+            "ready-vars.fd",
+            "ready-mailbox.img",
+            "ready-workspace.img",
+            "ready-artifacts.img",
+        ] {
             std::fs::write(d.join(f), b"x").unwrap();
         }
         let mut cap_json = Vec::new();

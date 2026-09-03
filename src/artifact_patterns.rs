@@ -90,7 +90,7 @@ pub fn parse(raw: &str) -> Result<Pattern> {
         // nothing. `**/bin/Release/**` is the natural way to write "every
         // project's Release output" and it is worth saying why it cannot work
         // rather than returning an empty artifacts directory.
-        if parts[..parts.len() - 1].iter().any(|p| *p == "**") {
+        if parts[..parts.len() - 1].contains(&"**") {
             bail!(
                 "artifact pattern {raw:?}: `**` works once, either as the trailing \
                  tree or before the file pattern.\nFor every project's output, \
@@ -101,7 +101,7 @@ pub fn parse(raw: &str) -> Result<Pattern> {
         return Ok(Pattern::Tree { dir: parts[..parts.len() - 1].join("\\") });
     }
     if let Some(i) = parts.iter().position(|p| *p == "**") {
-        if parts[i + 1..parts.len() - 1].iter().any(|p| *p == "**") {
+        if parts[i + 1..parts.len() - 1].contains(&"**") {
             bail!("artifact pattern {raw:?}: use `**` once");
         }
         if parts[i + 1..parts.len() - 1].iter().any(|p| p.contains(['*', '?'])) {
@@ -282,10 +282,7 @@ mod tests {
 
     #[test]
     fn a_wildcard_at_every_depth() {
-        assert_eq!(
-            p("**/*.dll"),
-            Pattern::Recursive { dir: String::new(), glob: "*.dll".into() }
-        );
+        assert_eq!(p("**/*.dll"), Pattern::Recursive { dir: String::new(), glob: "*.dll".into() });
         assert_eq!(
             p("bin/**/*.exe"),
             Pattern::Recursive { dir: "bin".into(), glob: "*.exe".into() }
@@ -338,13 +335,9 @@ mod tests {
     /// climb out is refused here, before it reaches the guest at all.
     #[test]
     fn traversal_is_refused() {
-        for bad in [
-            "../outside.txt",
-            "bin/../../etc/passwd",
-            "..",
-            "bin/**/../x",
-            r"..\windows\system32",
-        ] {
+        for bad in
+            ["../outside.txt", "bin/../../etc/passwd", "..", "bin/**/../x", r"..\windows\system32"]
+        {
             assert!(parse(bad).is_err(), "{bad} was accepted");
         }
     }
@@ -411,10 +404,7 @@ mod tests {
     fn a_named_file_under_a_recursive_wildcard_walks_the_tree() {
         let s = script(&["**/App.Core.dll".to_string()]);
         assert!(s.contains("for /r"), "a literal name must be searched for:\n{s}");
-        assert!(
-            !s.contains("xcopy \"C:\\workspace\\App.Core.dll\""),
-            "xcopy cannot do this:\n{s}"
-        );
+        assert!(!s.contains("xcopy \"C:\\workspace\\App.Core.dll\""), "xcopy cannot do this:\n{s}");
         assert!(s.contains(":wqdeep"), "the copy helper must be reachable:\n{s}");
 
         // A real glob keeps the xcopy path, which does recurse and is what the

@@ -34,8 +34,7 @@ fn open_fs(path: &Path) -> Result<FileSystem<BufStream<StreamSlice<File>>>> {
         .with_context(|| format!("opening artifact volume {}", path.display()))?;
     let len = img.metadata()?.len();
     let slice = StreamSlice::new(img, PART_START_LBA * SECTOR, len)?;
-    FileSystem::new(BufStream::new(slice), FsOptions::new())
-        .context("reading artifact volume")
+    FileSystem::new(BufStream::new(slice), FsOptions::new()).context("reading artifact volume")
 }
 
 pub struct Extracted {
@@ -108,8 +107,7 @@ fn copy_out<T: fatfs::ReadWriteSeek>(
             let mut f = src.open_file(&name)?;
             let mut buf = Vec::new();
             f.read_to_end(&mut buf)?;
-            std::fs::write(&out, &buf)
-                .with_context(|| format!("writing {}", out.display()))?;
+            std::fs::write(&out, &buf).with_context(|| format!("writing {}", out.display()))?;
             *files += 1;
             *bytes += buf.len() as u64;
         }
@@ -137,7 +135,6 @@ pub fn prepare_dest(dest: &Path, overwrite: bool) -> Result<()> {
             );
         }
     }
-    std::fs::create_dir_all(dest)
-        .with_context(|| format!("creating {}", dest.display()))?;
+    std::fs::create_dir_all(dest).with_context(|| format!("creating {}", dest.display()))?;
     Ok(())
 }

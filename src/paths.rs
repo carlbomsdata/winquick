@@ -73,11 +73,6 @@ pub fn uefi_code() -> Option<PathBuf> {
     crate::helpers::uefi_firmware()
 }
 
-/// Transient per-run state. Everything here is deleted when a run ends.
-pub fn run_root() -> Result<PathBuf> {
-    Ok(root()?.join("run"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -93,10 +88,7 @@ mod tests {
         assert_ne!(base, netfx);
         // Siblings under `images/`, so removing the capability is removing one
         // directory and nothing else.
-        assert_eq!(
-            base.parent().and_then(|p| p.parent()),
-            netfx.parent().and_then(|p| p.parent())
-        );
+        assert_eq!(base.parent().and_then(|p| p.parent()), netfx.parent().and_then(|p| p.parent()));
     }
 
     /// A run boots the serviced image when it is installed and the pristine

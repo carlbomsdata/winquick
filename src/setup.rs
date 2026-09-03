@@ -133,10 +133,7 @@ pub fn setup(opts: &Options) -> Result<()> {
     state::discard()?;
     let _ = std::fs::remove_dir_all(&work);
 
-    println!(
-        "\nWindows runtime installed ({}).",
-        helpers::human(helpers::allocated(&base))
-    );
+    println!("\nWindows runtime installed ({}).", helpers::human(helpers::allocated(&base)));
 
     install_capabilities(&opts.with, opts.verbose)?;
     smoke_test()
@@ -339,10 +336,8 @@ fn existing_mount(image: &Path) -> Option<PathBuf> {
     let mut matched = false;
     for line in text.lines() {
         if line.starts_with("image-path") {
-            matched = line
-                .split_once(':')
-                .map(|(_, p)| Path::new(p.trim()) == want)
-                .unwrap_or(false);
+            matched =
+                line.split_once(':').map(|(_, p)| Path::new(p.trim()) == want).unwrap_or(false);
         } else if matched {
             if let Some(mp) = line.split_whitespace().last() {
                 if mp.starts_with('/') && Path::new(mp).is_dir() {
@@ -399,7 +394,7 @@ impl Volume {
 }
 
 fn run_ok(c: &mut Command, what: &str) -> Result<()> {
-    let out = c.output().with_context(|| format!("{what}"))?;
+    let out = c.output().with_context(|| what.to_string())?;
     if !out.status.success() {
         bail!("{what} failed: {}", String::from_utf8_lossy(&out.stderr).trim());
     }

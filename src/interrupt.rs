@@ -121,8 +121,10 @@ mod imp {
     }
 
     extern "system" {
-        fn SetConsoleCtrlHandler(handler: Option<unsafe extern "system" fn(u32) -> i32>, add: i32)
-            -> i32;
+        fn SetConsoleCtrlHandler(
+            handler: Option<unsafe extern "system" fn(u32) -> i32>,
+            add: i32,
+        ) -> i32;
         fn CreateJobObjectW(attrs: *const u8, name: *const u16) -> isize;
         fn SetInformationJobObject(job: isize, class: i32, info: *const u8, len: u32) -> i32;
         fn AssignProcessToJobObject(job: isize, process: isize) -> i32;

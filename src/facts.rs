@@ -80,10 +80,8 @@ pub fn info() -> Result<Info> {
         .collect();
     // The package cache is an internal volume, not something you install, so it
     // is reported separately rather than as a capability.
-    let package_cache_bytes = installed
-        .iter()
-        .find(|c| c.name == "nuget-cache")
-        .map(|c| helpers::allocated(&c.image));
+    let package_cache_bytes =
+        installed.iter().find(|c| c.name == "nuget-cache").map(|c| helpers::allocated(&c.image));
 
     let desk = desktop::base_image()?;
     let desk_installed = desk.exists();
@@ -161,7 +159,13 @@ impl Builder {
     fn note(&mut self, section: &'static str, name: &str, message: impl Into<String>) {
         self.add(section, name, Status::Note, message.into());
     }
-    fn fail(&mut self, section: &'static str, name: &str, message: impl Into<String>, problem: impl Into<String>) {
+    fn fail(
+        &mut self,
+        section: &'static str,
+        name: &str,
+        message: impl Into<String>,
+        problem: impl Into<String>,
+    ) {
         self.add(section, name, Status::Fail, message.into());
         self.problems.push(problem.into());
     }
@@ -183,9 +187,7 @@ pub fn doctor() -> Result<Doctor> {
         ("windows", "x86_64") => b.ok("Host", "cpu", format!("x86_64 ({arch})")),
         // Linux hosts the same product against KVM. Both architectures work the
         // same way -- the guest follows the host -- so neither is special-cased.
-        ("linux", "x86_64") | ("linux", "aarch64") => {
-            b.ok("Host", "cpu", format!("{arch} (kvm)"))
-        }
+        ("linux", "x86_64") | ("linux", "aarch64") => b.ok("Host", "cpu", format!("{arch} (kvm)")),
         ("linux", _) => b.fail(
             "Host",
             "cpu",
@@ -245,12 +247,16 @@ pub fn doctor() -> Result<Doctor> {
     }
     match helpers::uefi_firmware() {
         Some(p) => b.ok("Tools", "uefi firmware", p.display().to_string()),
-        None => b.fail("Tools", "uefi firmware", "missing",
-                       if cfg!(target_os = "linux") {
-                           "QEMU's UEFI firmware is missing. apt install qemu-efi-aarch64 (or ovmf on x86_64)"
-                       } else {
-                           "QEMU's UEFI firmware is missing. brew reinstall qemu"
-                       }),
+        None => b.fail(
+            "Tools",
+            "uefi firmware",
+            "missing",
+            if cfg!(target_os = "linux") {
+                "QEMU's UEFI firmware is missing. apt install qemu-efi-aarch64 (or ovmf on x86_64)"
+            } else {
+                "QEMU's UEFI firmware is missing. brew reinstall qemu"
+            },
+        ),
     }
 
     // -- runtime
@@ -258,8 +264,12 @@ pub fn doctor() -> Result<Doctor> {
     if base.exists() {
         b.ok("Runtime", "windows runtime", helpers::human(helpers::allocated(&base)));
         if let Err(e) = state::check_base_meta(&base, setup::AGENT) {
-            b.fail("Runtime", "runtime version",
-                   "runtime is from a different WinQuick version", format!("{e:#}"));
+            b.fail(
+                "Runtime",
+                "runtime version",
+                "runtime is from a different WinQuick version",
+                format!("{e:#}"),
+            );
         }
         // Which image a command actually boots is the first thing to know when
         // a build behaves differently from the one you remember.
@@ -271,13 +281,21 @@ pub fn doctor() -> Result<Doctor> {
                 format!("{}, and `run` boots it", helpers::human(helpers::allocated(&netfx))),
             );
             if let Err(e) = state::check_base_meta(&netfx, setup::AGENT) {
-                b.fail("Runtime", ".NET Framework image",
-                       "serviced from a different WinQuick version", format!("{e:#}"));
+                b.fail(
+                    "Runtime",
+                    ".NET Framework image",
+                    "serviced from a different WinQuick version",
+                    format!("{e:#}"),
+                );
             }
         }
     } else {
-        b.fail("Runtime", "windows runtime", "not installed",
-               "No Windows runtime. Run `winquick setup`.");
+        b.fail(
+            "Runtime",
+            "windows runtime",
+            "not installed",
+            "No Windows runtime. Run `winquick setup`.",
+        );
     }
     let prepared = state::state_dir().map(|d| d.join("ready.json").exists()).unwrap_or(false);
     let restore_off = state::restore_note().map(|p| p.exists()).unwrap_or(false);
@@ -326,8 +344,7 @@ pub fn doctor() -> Result<Doctor> {
     if desk.exists() {
         b.ok("Desktop", "desktop image", helpers::human(helpers::allocated(&desk)));
     } else {
-        b.note("Desktop", "desktop image",
-               "not installed (winquick capability install desktop)");
+        b.note("Desktop", "desktop image", "not installed (winquick capability install desktop)");
     }
     match desktop::running() {
         Some(s) => b.ok("Desktop", "session", format!("running as pid {}", s.pid)),
@@ -335,7 +352,11 @@ pub fn doctor() -> Result<Doctor> {
     }
     let dstate = state::desktop_state_dir()?;
     if dstate.join("ready.json").exists() {
-        b.ok("Desktop", "session state", format!("prepared ({})", helpers::human(dir_size(&dstate))));
+        b.ok(
+            "Desktop",
+            "session state",
+            format!("prepared ({})", helpers::human(dir_size(&dstate))),
+        );
     } else if desk.exists() {
         b.note("Desktop", "session state", "not prepared yet (the first start takes ~20s)");
     }
@@ -358,8 +379,12 @@ pub fn doctor() -> Result<Doctor> {
     }
     match servicing::bridge_source() {
         Ok(p) => b.ok("Desktop", "bridge sources", p.display().to_string()),
-        Err(_) => b.add("Desktop", "bridge sources", Status::Fail,
-                        "missing (the installation is incomplete)".into()),
+        Err(_) => b.add(
+            "Desktop",
+            "bridge sources",
+            Status::Fail,
+            "missing (the installation is incomplete)".into(),
+        ),
     }
 
     // -- disk
@@ -368,9 +393,12 @@ pub fn doctor() -> Result<Doctor> {
     if free > 8 * 1024 * 1024 * 1024 {
         b.ok("Disk", "free space", format!("{} free in {}", helpers::human(free), root.display()));
     } else {
-        b.fail("Disk", "free space",
-               format!("{} free in {}", helpers::human(free), root.display()),
-               "Less than 8 GiB free. Setup and capabilities need room.");
+        b.fail(
+            "Disk",
+            "free space",
+            format!("{} free in {}", helpers::human(free), root.display()),
+            "Less than 8 GiB free. Setup and capabilities need room.",
+        );
     }
 
     Ok(Doctor { healthy: b.problems.is_empty(), checks: b.checks, problems: b.problems })
@@ -461,8 +489,7 @@ pub fn free_bytes(p: &Path) -> Option<u64> {
     while !dir.exists() {
         dir = dir.parent()?;
     }
-    let wide: Vec<u16> =
-        dir.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let wide: Vec<u16> = dir.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
     let mut free: u64 = 0;
     let ok = unsafe {
         GetDiskFreeSpaceExW(wide.as_ptr(), &mut free, std::ptr::null_mut(), std::ptr::null_mut())
@@ -497,7 +524,10 @@ mod tests {
         // install without adding a second, duplicate instruction.
         if failed && d.problems.is_empty() {
             assert!(
-                d.checks.iter().filter(|c| c.status == Status::Fail).all(|c| c.name == "bridge sources"),
+                d.checks
+                    .iter()
+                    .filter(|c| c.status == Status::Fail)
+                    .all(|c| c.name == "bridge sources"),
                 "a failing check produced no problem to act on"
             );
         }
