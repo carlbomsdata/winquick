@@ -746,7 +746,7 @@ pub fn check_verb(verb: Option<&str>) -> Result<()> {
 /// Run one bridge verb in the live session and return its JSON.
 pub fn call(argv: &[String], timeout: Duration) -> Result<CallResult> {
     let session = running().ok_or_else(|| {
-        anyhow!("no desktop session is running.\n\nStart one with:\n    winquick desktop start")
+        anyhow!("no desktop session is running.\n\nStart one with:\n    winquick start")
     })?;
     let mut channel = crate::control::Channel::open(&control_path()?)?;
     let pid = session.pid;
@@ -952,7 +952,7 @@ pub fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
 /// `--host` asks otherwise.
 pub fn host_screenshot(dest: &Path) -> Result<u64> {
     let session = running().ok_or_else(|| {
-        anyhow!("no desktop session is running.\n\nStart one with:\n    winquick desktop start")
+        anyhow!("no desktop session is running.\n\nStart one with:\n    winquick start")
     })?;
     let _ = session;
 

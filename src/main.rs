@@ -155,6 +155,45 @@ cannot change your source. Ask for output explicitly with --artifact.
         argv: Vec<String>,
     },
 
+    /// Start a Windows session and leave it running
+    #[command(after_help = "\
+`run` boots Windows, runs one command and throws it away. A session boots it
+once and leaves it up, so each following command is a round trip rather than a
+boot. The session is disposable in exactly the same way: it writes to a
+throwaway disk, and `winquick stop` deletes it.
+
+  winquick start                      a session with nothing in it
+  winquick start --app ./publish      with a publish directory inside Windows
+
+Then drive it with the `winquick desktop` verbs, and finish with `winquick
+stop`. `winquick status` says whether one is running.")]
+    Start {
+        /// Publish directory to make available inside Windows as the `app` folder
+        #[arg(long, value_name = "DIR")]
+        app: Option<PathBuf>,
+        /// Guest memory in MiB
+        #[arg(long, default_value_t = desktop::DEFAULT_MEMORY_MB, value_name = "MIB")]
+        memory: u32,
+        /// Guest processors
+        #[arg(long, default_value_t = desktop::DEFAULT_CPUS)]
+        cpus: u32,
+    },
+
+    /// Stop the running Windows session and discard it
+    #[command(after_help = "\
+Shuts Windows down and deletes the session's disposable disk. Nothing the
+session wrote survives; copy anything you want out with `winquick desktop pull`
+first.
+
+Stopping when nothing is running is not an error.")]
+    Stop,
+
+    /// Report whether a Windows session is running
+    #[command(after_help = "\
+This is about the session. `winquick info` is about the installation, and
+`winquick doctor` is about whether the installation works.")]
+    Status,
+
     /// Drive a real Windows desktop: launch apps, inspect and click their UI
     #[command(after_help = "\
 A desktop session boots Windows once and stays up, so each verb is a round
@@ -473,6 +512,14 @@ fn dispatch(cli: Cli) -> Result<i32> {
         }
 
         Cmd::Desktop { action } => desktop_cmd(action, verbose),
+        // The session lifecycle is one implementation with two spellings: the
+        // top-level verbs are what a new user reaches for, and the `desktop`
+        // ones keep working for anything already written against them.
+        Cmd::Start { app, memory, cpus } => {
+            desktop_cmd(DesktopCmd::Start { app, memory, cpus }, verbose)
+        }
+        Cmd::Stop => desktop_cmd(DesktopCmd::Stop, verbose),
+        Cmd::Status => desktop_cmd(DesktopCmd::Status, verbose),
         Cmd::UiTest { app, script, out, keep, memory } => {
             ui_test(&app, script.as_deref(), &out, keep, memory, verbose)
         }
@@ -555,7 +602,7 @@ fn ui_test(
         }
     }
     if keep {
-        println!("\nThe desktop session is still running; stop it with `winquick desktop stop`.");
+        println!("\nThe desktop session is still running; stop it with `winquick stop`.");
     }
     Ok(if report.failed.is_empty() { 0 } else { 1 })
 }
@@ -665,7 +712,7 @@ fn desktop_cmd(action: DesktopCmd, verbose: bool) -> Result<i32> {
             }
             None => {
                 println!("No desktop session is running.");
-                println!("Start one with:  winquick desktop start");
+                println!("Start one with:  winquick start");
                 Ok(1)
             }
         },
