@@ -126,7 +126,7 @@ pub const SPECS: &[Spec] = &[
 /// non-interactive install.
 fn unzip(archive: &Path, into: &Path) -> Result<()> {
     let mut c = if cfg!(windows) {
-        let mut c = std::process::Command::new("tar");
+        let mut c = crate::helpers::program("tar");
         c.arg("-xf").arg(archive).arg("-C").arg(into);
         c
     } else {
@@ -220,26 +220,24 @@ pub fn install(name: &str, zip: Option<PathBuf>, verbose: bool) -> Result<u64> {
                 // page to the file and exits 0, and the failure surfaces as a
                 // checksum mismatch rather than as "404".
                 let partial = p.with_extension("partial");
-                let st = std::process::Command::new(
-                    crate::helpers::which("curl").unwrap_or_else(|| PathBuf::from("curl")),
-                )
-                .args([
-                    "-fL",
-                    "--progress-bar",
-                    // A redirect must not be able to downgrade the transport.
-                    "--proto",
-                    "=https",
-                    "--proto-redir",
-                    "=https",
-                    // Resume a partial download rather than starting over.
-                    "-C",
-                    "-",
-                    "-o",
-                ])
-                .arg(&partial)
-                .arg(sp.payload().url)
-                .status()
-                .context("running curl")?;
+                let st = crate::helpers::program("curl")
+                    .args([
+                        "-fL",
+                        "--progress-bar",
+                        // A redirect must not be able to downgrade the transport.
+                        "--proto",
+                        "=https",
+                        "--proto-redir",
+                        "=https",
+                        // Resume a partial download rather than starting over.
+                        "-C",
+                        "-",
+                        "-o",
+                    ])
+                    .arg(&partial)
+                    .arg(sp.payload().url)
+                    .status()
+                    .context("running curl")?;
                 if !st.success() {
                     bail!(
                         "downloading {} failed.\n\nRe-run to resume, or fetch it yourself and \
@@ -714,7 +712,7 @@ pub fn nuget_sync(project: &Path, rid: &str, verbose: bool) -> Result<SyncResult
     // WinQuick's whole promise is that it does not touch your source. Doing it
     // in a copy also means a half-finished sync leaves nothing behind.
     let staged = ProjectCopy::new(project)?;
-    let out = std::process::Command::new("dotnet")
+    let out = crate::helpers::program("dotnet")
         .arg("restore")
         .arg(staged.path())
         .args(["-r", rid])
@@ -824,7 +822,7 @@ pub fn nuget_add(raw_specs: &[String], verbose: bool) -> Result<SyncResult> {
     if verbose {
         eprintln!("winquick: fetching {} into {}", raw_specs.join(", "), cache.display());
     }
-    let out = std::process::Command::new("dotnet")
+    let out = crate::helpers::program("dotnet")
         .arg("restore")
         .arg(&proj)
         .arg("--packages")

@@ -442,7 +442,7 @@ fn host_version(b: &mut Builder) {
     }
     #[cfg(target_os = "windows")]
     {
-        let ver = std::process::Command::new("cmd")
+        let ver = crate::helpers::program("cmd")
             .args(["/c", "ver"])
             .output()
             .ok()

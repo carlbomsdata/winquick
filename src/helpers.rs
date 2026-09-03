@@ -85,6 +85,19 @@ pub fn which(bin: &str) -> Option<PathBuf> {
     std::env::split_paths(&path).map(|d| d.join(&file)).find(|c| is_executable(c))
 }
 
+/// A [`std::process::Command`] for a program found on `PATH`.
+///
+/// Not `Command::new(name)`: Windows resolves a bare program name by searching
+/// the directory the process was started from *before* it searches `PATH`, so
+/// running `winquick` inside a project that happens to contain a `tar.exe`
+/// would run that one. [`which`] reads `PATH` and nothing else.
+///
+/// Falls back to the bare name when nothing is found, so the failure the user
+/// sees is still "no such program" rather than something more obscure.
+pub fn program(name: &str) -> std::process::Command {
+    std::process::Command::new(which(name).unwrap_or_else(|| PathBuf::from(name)))
+}
+
 #[cfg(unix)]
 fn is_executable(p: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;

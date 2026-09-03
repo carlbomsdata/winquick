@@ -238,7 +238,7 @@ fn acquire_image(opts: &Options) -> Result<PathBuf> {
     println!("Downloading Microsoft Validation OS for {} (about 2.4 GB)...", platform::GUEST_ARCH);
     println!("  from {VALIDATION_OS_URL}");
     let tmp = cache.join(format!("validationos-{}.iso.part", platform::GUEST_ARCH));
-    let st = Command::new(helpers::which("curl").unwrap_or_else(|| PathBuf::from("curl")))
+    let st = helpers::program("curl")
         // `--proto`: this download has no pinned checksum -- Microsoft revises
         // the image in place -- so HTTPS all the way through, including across
         // the aka.ms redirect, is the only integrity guarantee there is.
