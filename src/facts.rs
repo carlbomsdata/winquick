@@ -215,6 +215,9 @@ pub fn doctor() -> Result<Doctor> {
         ),
     }
     host_version(&mut b);
+    if let Some(vmm) = nested_hypervisor() {
+        b.note("Host", "virtualisation", format!("nested: this machine is itself a guest ({vmm})"));
+    }
 
     // A QEMU too old to migrate its own NVMe device turns every run cold
     // without saying why, so doctor says why.
@@ -439,6 +442,68 @@ pub fn dir_size(p: &Path) -> u64 {
 /// The host operating system's own version, as a note rather than a check:
 /// nothing depends on it, but it is the first thing worth knowing in a bug
 /// report.
+/// The hypervisor WinQuick is running inside, if it is running inside one.
+///
+/// Worth saying out loud. WinQuick asks the host for hardware virtualisation,
+/// and here it would be getting it from a layer that is itself virtualised.
+/// Nesting is not always complete: measured on an aarch64 Linux guest of
+/// Apple's Virtualization.framework, where KVM runs the guest firmware
+/// perfectly well and then neither Windows' boot manager nor a plain Linux
+/// kernel reaches its first line of output -- the guest takes an undefined
+/// instruction for a feature `-cpu host` advertised and the layer underneath
+/// does not implement.
+///
+/// Plenty of other nesting stacks are fine, so this is a note and not a
+/// refusal. It is here because when a guest will not boot it is the first thing
+/// worth knowing, and because nothing else on the host says it.
+fn nested_hypervisor() -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        // systemd-detect-virt names the hypervisor and is on every systemd
+        // distribution. Where it is missing, the DMI vendor is the same answer
+        // by another route.
+        if let Ok(out) = crate::helpers::program("systemd-detect-virt").output() {
+            if let Some(v) = parse_detect_virt(&String::from_utf8_lossy(&out.stdout)) {
+                return Some(v);
+            }
+        }
+        let vendor = std::fs::read_to_string("/sys/class/dmi/id/sys_vendor").ok()?;
+        let vendor = vendor.trim();
+        for known in ["QEMU", "Apple", "Microsoft", "VMware", "Xen", "innotek", "Parallels"] {
+            if vendor.contains(known) {
+                return Some(vendor.to_string());
+            }
+        }
+        None
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // 1 when macOS itself is running under a virtual machine monitor.
+        let out = std::process::Command::new("/usr/sbin/sysctl")
+            .args(["-n", "kern.hv_vmm_present"])
+            .output()
+            .ok()?;
+        (String::from_utf8_lossy(&out.stdout).trim() == "1").then(|| "virtual machine".to_string())
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        None
+    }
+}
+
+/// What `systemd-detect-virt` said, if it said anything meaningful.
+///
+/// It prints the hypervisor's name and exits 0, or prints `none` and exits 1.
+/// Split out so the answer can be tested without a hypervisor to hand.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn parse_detect_virt(stdout: &str) -> Option<String> {
+    let v = stdout.trim();
+    if v.is_empty() || v == "none" {
+        return None;
+    }
+    Some(v.to_string())
+}
+
 fn host_version(b: &mut Builder) {
     #[cfg(target_os = "macos")]
     {
@@ -571,6 +636,22 @@ mod tests {
             failed.is_empty() || !d.problems.is_empty(),
             "failing checks with nothing to act on: {failed:?}"
         );
+    }
+
+    /// Running inside a VM is worth mentioning and is never a fault: nesting
+    /// works on plenty of stacks, and refusing to run on all of them would be
+    /// wrong.
+    #[test]
+    fn a_hypervisor_is_named_when_there_is_one() {
+        assert_eq!(super::parse_detect_virt("apple\n").as_deref(), Some("apple"));
+        assert_eq!(super::parse_detect_virt("kvm").as_deref(), Some("kvm"));
+        assert_eq!(super::parse_detect_virt("none\n"), None);
+        assert_eq!(super::parse_detect_virt(""), None);
+        assert_eq!(super::parse_detect_virt("  \n"), None);
+
+        // And whatever this machine is, saying so must not make it unhealthy.
+        let d = doctor().expect("doctor runs");
+        assert!(!d.checks.iter().any(|c| c.name == "virtualisation" && c.status == Status::Fail));
     }
 
     /// A note is advice, not a fault; it must never make the host unhealthy.

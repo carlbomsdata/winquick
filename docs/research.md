@@ -2056,6 +2056,35 @@ silent and reports the firmware fault, rather than suggesting a longer timeout
 that cannot help; and it names running inside another virtual machine as the
 usual cause, because that is what was measured here.
 
+One more measurement settles what the layer can and cannot do. Under the same
+nested KVM, with the Windows image out of the picture entirely, the host's own
+Linux kernel was booted as a guest:
+
+    qemu-system-aarch64 -M virt -accel kvm -cpu host -smp 2 -m 2048 \
+      -kernel /boot/vmlinuz-7.0.0-30-generic -initrd ... \
+      -append "console=ttyAMA0 earlycon panic=1"
+
+It produced **not one byte** of console output in sixty seconds. `earlycon`
+prints before almost anything else in a kernel's life, so this is a fault
+before the first line of output — the same place Windows fails, and nothing to
+do with Windows. Meanwhile edk2 boots on the same accelerator every time and
+reaches its network stack.
+
+So the layer runs the guest firmware and cannot run a guest operating system,
+of either family. The exception confirms the shape of it: `ESR 0x02000000` is
+EC 0, "unknown reason", which on AArch64 is what an undefined instruction
+raises. `-cpu host` under KVM passes the host's ID registers through, so the
+guest is told it has every feature an M4 Pro has, executes one, and the layer
+underneath does not implement it. TCG has no such gap because it implements
+what it advertises. Masking what QEMU allows to be masked -- `pauth=off`,
+`sve=off`, both together, `-smp 1`, `virtualization=off` -- changes nothing;
+the fault stays at the same address with the same syndrome every time.
+
+`winquick doctor` now reports when it is running inside a hypervisor, because
+this is the first thing worth knowing when a guest will not boot and nothing
+else on the host says it. It is a note rather than a refusal: nesting works on
+plenty of other stacks, and this result is about one of them.
+
 What is still unmeasured is a Linux host on real hardware. Nothing in this
 result says anything against one — the failure is in the layer underneath — but
 no bare-metal Linux machine was available, and an x86_64 Linux VM on Apple
