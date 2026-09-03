@@ -723,6 +723,40 @@ fn guest_was_silent(e: &anyhow::Error) -> bool {
     e.chain().any(|c| c.downcast_ref::<GuestSilent>().is_some())
 }
 
+/// What the guest firmware said, if what it said was fatal.
+///
+/// A guest that never reaches its agent is reported as silence, and the honest
+/// next question is whether Windows started at all. The answer is on the serial
+/// line: edk2 prints a register dump and `Synchronous Exception` when the
+/// firmware or the Windows boot manager faults, and nothing after that can
+/// recover. Saying so is worth more than the alternative, which is telling the
+/// caller to raise a timeout that was never the problem.
+fn firmware_fault(serial: &Path) -> Option<String> {
+    let text = std::fs::read(serial).ok()?;
+    let text = String::from_utf8_lossy(&text);
+    // "Synchronous Exception at 0x..." says the same thing as the assert that
+    // follows it and says it in one short line, so prefer it. The assert names
+    // a source file inside whoever built this edk2, which helps nobody here.
+    let pick = |needle: &str| text.lines().rev().find(|l| l.contains(needle)).map(str::trim);
+    let line = pick("Synchronous Exception").or_else(|| pick("ASSERT ["))?;
+    // Long enough already; the upstream build path is not evidence.
+    let line: String = line.chars().take(120).collect();
+    Some(format!(
+        "Windows never started -- the guest firmware faulted ({line}). The usual \
+         cause is a host that cannot give the guest full hardware virtualisation, \
+         which is what running WinQuick inside another virtual machine does"
+    ))
+}
+
+/// Attach that explanation, keeping the original error in the chain so the
+/// caller's retry decisions still see what actually happened.
+fn explain_with_serial(e: anyhow::Error, serial: &Path) -> anyhow::Error {
+    match firmware_fault(serial) {
+        Some(why) => e.context(why),
+        None => e,
+    }
+}
+
 /// The command was picked up and did not finish inside `--timeout`.
 ///
 /// A different thing entirely from a silent guest, and the difference costs
@@ -755,8 +789,13 @@ fn command_timed_out(e: &anyhow::Error) -> bool {
 /// nothing". Only the first one is evidence about the guest: by the time the
 /// command is running, the guest has demonstrably picked it up, and running out
 /// of time after that says something about the command instead.
-fn as_command_timeout(e: anyhow::Error, limit: Duration) -> anyhow::Error {
-    if guest_was_silent(&e) {
+///
+/// Unless the guest never started at all. A firmware fault reaches this point
+/// looking exactly like a slow command -- nothing was written, and time ran out
+/// -- and turning it into "raise the timeout" would contradict the explanation
+/// [`explain_with_serial`] is about to add.
+fn as_command_timeout(e: anyhow::Error, limit: Duration, serial: &Path) -> anyhow::Error {
+    if guest_was_silent(&e) && firmware_fault(serial).is_none() {
         anyhow::Error::new(CommandTimedOut(limit))
     } else {
         e
@@ -1000,7 +1039,7 @@ fn warm_execute(ctx: &Ctx, ready: &state::ReadyState, command: &str) -> Result<O
         }
         let deadline = Instant::now() + ctx.timeout;
         wait_for(&mbox, mailbox::CODE_FILE, &mut child, deadline)
-            .map_err(|e| as_command_timeout(e, ctx.timeout))?;
+            .map_err(|e| as_command_timeout(e, ctx.timeout, &serial))?;
         let t_exec = t0.elapsed();
         let r = mailbox::read_results(&mbox)?;
         if r.nonce.as_deref() != Some(nonce.as_str()) {
@@ -1032,7 +1071,7 @@ fn warm_execute(ctx: &Ctx, ready: &state::ReadyState, command: &str) -> Result<O
     let t_before_kill = Instant::now();
     kill(&mut child);
     ctx.vlog(format!("teardown {:.0}ms", t_before_kill.elapsed().as_secs_f64() * 1000.0));
-    result
+    result.map_err(|e| explain_with_serial(e, &serial))
 }
 
 // ---------------------------------------------------------------- cold paths
@@ -1149,7 +1188,7 @@ fn build_ready_state(ctx: &Ctx, want: &state::Fingerprint) -> Result<state::Read
         Ok(meta) => Ok(state::ReadyState { dir: sdir, meta }),
         Err(e) => {
             let _ = state::discard();
-            Err(e)
+            Err(explain_with_serial(e, &serial))
         }
     }
 }
@@ -1198,7 +1237,7 @@ fn cold_execute(ctx: &Ctx, command: &str) -> Result<Outcome> {
     let result = (|| -> Result<Outcome> {
         let deadline = Instant::now() + ctx.timeout;
         wait_for(&mbox, mailbox::CODE_FILE, &mut child, deadline)
-            .map_err(|e| as_command_timeout(e, ctx.timeout))?;
+            .map_err(|e| as_command_timeout(e, ctx.timeout, &serial))?;
         let r = mailbox::read_results(&mbox)?;
         if r.nonce.as_deref() != Some(nonce.as_str()) {
             bail!("the guest reported a result for a different run (token mismatch)");
@@ -1215,7 +1254,7 @@ fn cold_execute(ctx: &Ctx, command: &str) -> Result<Outcome> {
     })();
 
     kill(&mut child);
-    result
+    result.map_err(|e| explain_with_serial(e, &serial))
 }
 
 fn strip_cr(b: &[u8]) -> Vec<u8> {
@@ -1260,6 +1299,44 @@ mod tests {
         let _ = std::fs::remove_file(&f);
         assert!(e.contains("is a file, not a directory"), "{e}");
         assert!(e.contains("--workspace"), "{e}");
+    }
+
+    /// A guest that never boots must not be reported as a slow command. The
+    /// evidence is on the serial line, and it is the difference between "raise
+    /// the timeout" and "this host cannot boot Windows at all".
+    #[test]
+    fn a_firmware_fault_is_reported_instead_of_a_timeout() {
+        let dir = std::env::temp_dir().join(format!("wq-fw-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let quiet = dir.join("quiet.log");
+        std::fs::write(&quiet, b"UEFI firmware (version 2025.11)\r\nBdsDxe: loading Boot0001\r\n")
+            .unwrap();
+        assert!(super::firmware_fault(&quiet).is_none(), "an ordinary boot is not a fault");
+        assert!(super::firmware_fault(&dir.join("absent.log")).is_none());
+
+        let crashed = dir.join("crashed.log");
+        std::fs::write(
+            &crashed,
+            b"Booting...\r\nSynchronous Exception at 0x000000007C16DDD4\r\n              ASSERT [ArmCpuDxe] DefaultExceptionHandler.c(343): ((BOOLEAN)(0==1))\r\n",
+        )
+        .unwrap();
+        let why = super::firmware_fault(&crashed).expect("a firmware fault should be recognised");
+        assert!(why.contains("Windows never started"), "{why}");
+        assert!(why.contains("hardware virtualisation"), "the message must name a cause: {why}");
+        // The short exception line is preferred over the assert, which names a
+        // source file inside whoever built the firmware.
+        assert!(why.contains("Synchronous Exception at 0x000000007C16DDD4"), "{why}");
+        assert!(!why.contains("DefaultExceptionHandler.c"), "{why}");
+
+        // The original error stays in the chain, because the retry logic reads
+        // it to decide whether another attempt is worth making.
+        let silent = anyhow::Error::new(super::GuestSilent("WQREADY.TXT".into()));
+        let enriched = super::explain_with_serial(silent, &crashed);
+        assert!(super::guest_was_silent(&enriched), "the cause must survive the explanation");
+        assert!(format!("{enriched:#}").contains("WQREADY.TXT"), "{enriched:#}");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A run whose process is gone leaves a qcow2 overlay behind, and only a
@@ -1330,8 +1407,15 @@ mod tests {
     #[test]
     fn a_slow_command_is_not_a_bad_guest() {
         let limit = Duration::from_secs(300);
-        let e =
-            as_command_timeout(anyhow::Error::new(GuestSilent(mailbox::CODE_FILE.into())), limit);
+        // A serial log with nothing wrong in it: the guest booted, so silence
+        // here really is the command taking too long.
+        let quiet = std::env::temp_dir().join(format!("wq-quiet-{}.log", std::process::id()));
+        std::fs::write(&quiet, b"UEFI firmware\r\nBdsDxe: loading Boot0001\r\n").unwrap();
+        let e = as_command_timeout(
+            anyhow::Error::new(GuestSilent(mailbox::CODE_FILE.into())),
+            limit,
+            &quiet,
+        );
         assert!(command_timed_out(&e), "{e:#}");
         assert!(!guest_was_silent(&e), "a slow command must not look like a dead guest");
         let msg = e.to_string();
@@ -1340,7 +1424,7 @@ mod tests {
 
         // Anything that is not silence passes straight through, so a QEMU that
         // died is still reported as a QEMU that died.
-        let other = as_command_timeout(anyhow!("qemu exited (exit code: 1)"), limit);
+        let other = as_command_timeout(anyhow!("qemu exited (exit code: 1)"), limit, &quiet);
         assert!(!command_timed_out(&other), "{other:#}");
         assert_eq!(other.to_string(), "qemu exited (exit code: 1)");
 
@@ -1349,6 +1433,21 @@ mod tests {
         let first = anyhow::Error::new(GuestSilent(mailbox::GO.into()));
         assert!(guest_was_silent(&first));
         assert!(!command_timed_out(&first));
+
+        // A guest that never booted is not a slow command, whatever the wait
+        // looked like from here.
+        let crashed = std::env::temp_dir().join(format!("wq-crash-{}.log", std::process::id()));
+        std::fs::write(&crashed, b"Synchronous Exception at 0x000000007C16DDD4\r\n").unwrap();
+        let never = as_command_timeout(
+            anyhow::Error::new(GuestSilent(mailbox::CODE_FILE.into())),
+            limit,
+            &crashed,
+        );
+        assert!(!command_timed_out(&never), "a firmware fault is not a command timeout: {never:#}");
+        assert!(guest_was_silent(&never));
+
+        let _ = std::fs::remove_file(&quiet);
+        let _ = std::fs::remove_file(&crashed);
     }
 
     /// The message is what a user sees; it should name what was waited for.
