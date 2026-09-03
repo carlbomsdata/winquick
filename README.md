@@ -3,8 +3,8 @@
 **Instant disposable Windows environments.**
 
 Run a real Windows command from macOS, Linux or Windows in a clean Windows
-that is thrown away afterwards — in about a third of a second on the reference
-host.
+that is thrown away afterwards — in rather under a third of a second on the
+reference host.
 
 ```console
 $ winquick run -- cmd /c ver
@@ -20,9 +20,9 @@ image and leaves nothing behind.
 
 | | |
 |---|---|
-| Windows command | **~330 ms** |
-| PowerShell command | ~750 ms |
-| Desktop session start | **~400 ms** |
+| Windows command | **~280 ms** |
+| PowerShell command | ~650 ms |
+| Desktop session start | **~350 ms** |
 | UI automation step in a session | ~20 ms |
 | Host | Apple Silicon macOS; Windows x86_64; Linux |
 
@@ -151,13 +151,14 @@ Setup finishes by booting Windows and running a real command, so it only says
 
 | Host | Accelerator | Guest | Per-run cost | Verified |
 |---|---|---|---|---|
-| Apple Silicon macOS 13+ | HVF | Windows ARM64 | **~330 ms** | fully; the reference host |
+| Apple Silicon macOS 13+ | HVF | Windows ARM64 | **~280 ms** | fully; the reference host |
 | Windows x86_64 | WHPX | Windows x64 | ~17 s | fully, on Windows 11 26200 |
 | Linux x86_64 / arm64 | KVM | matches the host | not measured | build, tests and diagnostics only |
 
 macOS is the host WinQuick is developed on and the one these numbers come from.
 A prepared guest resumes into a fresh QEMU process and a command comes back in
-about a third of a second.
+rather under a third of a second: 100 consecutive `winquick run -- cmd /c ver`
+measured p50 287 ms, p99 304 ms, zero failures.
 
 **Windows boots cold on every run, deliberately.** A resumed WHPX guest runs
 fine until something *waits*, and then it waits far longer than it was asked
@@ -380,11 +381,11 @@ a skill that teaches an agent when to reach for Windows.
 |---|---|
 | Windows | Microsoft Validation OS, build 10.0.26100 ARM64 |
 | Runtime size | 763 MiB |
-| Trivial command | ~330 ms |
-| PowerShell command | ~750 ms |
-| `dotnet --version` | ~545 ms |
+| Trivial command | ~280 ms |
+| PowerShell command | ~650 ms |
+| `dotnet --version` | ~450 ms |
 | `dotnet test` on a small project | ~10 s |
-| Desktop session start | ~400 ms, then ~20 ms per UI step |
+| Desktop session start | ~350 ms, then ~20 ms per UI step |
 
 Optional capabilities, installed only if you ask:
 
@@ -442,7 +443,7 @@ boundary — [docs/security.md](docs/security.md) is precise about what is.
 offline.
 
 **Separate runtimes, on purpose.** The base runtime carries no graphics stack
-at all, which is what keeps it at 763 MiB and a command at ~300 ms; it is for
+at all, which is what keeps it at 763 MiB and a command at ~280 ms; it is for
 commands, builds and tests. `dotnet-framework` adds .NET Framework and the
 classic MSBuild toolchain to the image `run` boots; `desktop` adds WPF,
 WinForms, UI Automation and screenshots on top of that. Each is a separate
