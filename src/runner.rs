@@ -322,8 +322,11 @@ fn execute(command: &str, opts: &Options) -> Result<Outcome> {
                 let _ = state::discard();
             }
         }
-    } else {
+    } else if opts.force_cold {
         ctx.vlog("--cold: skipping the warm path");
+        // The other two reasons for being here -- this host not resuming by
+        // default, and a QEMU that cannot restore -- have already said so
+        // above, and saying "--cold" as well would name a flag nobody passed.
     }
 
     // Cold. Build a ready state first so future runs are fast, then use it — which
