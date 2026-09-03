@@ -81,7 +81,9 @@ NTFS_VER="2022.10.3"
 curl -sSL -o "$DIST/ntfs-3g_ntfsprogs-${NTFS_VER}.tgz" \
   "https://tuxera.com/opensource/ntfs-3g_ntfsprogs-${NTFS_VER}.tgz"
 
-( cd "$DIST" && shasum -a 256 ./*.tar.gz ./*.tgz > SHA256SUMS )
+# Named rather than globbed: dist/ accumulates archives from earlier versions,
+# and a SHA256SUMS listing those describes a release that is not this one.
+( cd "$DIST" && shasum -a 256 "$NAME.tar.gz" "ntfs-3g_ntfsprogs-${NTFS_VER}.tgz" > SHA256SUMS )
 
 echo
 echo "==> dist/"
