@@ -159,6 +159,34 @@ pub fn backend_signature() -> String {
 /// `--cold` is the documented way out rather than a silent fallback.
 pub const MAX_PREPARED_CPUS: Option<u32> = if cfg!(target_os = "windows") { Some(2) } else { None };
 
+/// Whether resuming a prepared guest is the right default on this host.
+///
+/// Everywhere but Windows it plainly is: a command comes back in well under a
+/// second instead of tens of them, and nothing about the guest behaves
+/// differently for having been resumed.
+///
+/// Windows is the exception, and the reason is the same synthetic-timer problem
+/// that [`MAX_PREPARED_CPUS`] describes, seen from the other side. A resumed
+/// WHPX guest runs perfectly well right up until something *waits*, and then it
+/// waits far longer than it was asked to. Measured on Windows 11 26200 with the
+/// patched QEMU 11.1, two processors, against the same guest booted cold:
+///
+/// | command | resumed | cold |
+/// |---|---|---|
+/// | `cmd /c ver` | 2.0 s | 16.8 s |
+/// | `cmd /c ping -n 4 127.0.0.1` | **212 s** | 20.2 s |
+///
+/// So the fast path is eight times faster for a command that never sleeps and
+/// ten times slower for one that does -- and a build, a test or anything
+/// involving PowerShell sleeps constantly. Defaulting to it means most real
+/// commands get the bad half of that trade, unpredictably, with no indication
+/// why. Booting cold is slower than the best case and much faster than the
+/// common one, and it is the same every time.
+///
+/// `winquick run --warm` still asks for it, for the narrow case where a command
+/// is known not to wait.
+pub const RESUME_PREPARED_BY_DEFAULT: bool = !cfg!(target_os = "windows");
+
 /// Refuses a vCPU count this host cannot restore a prepared state onto.
 ///
 /// Called only on the path that actually reuses a prepared state. A cold run is
@@ -251,6 +279,19 @@ mod tests {
             assert!(check_prepared_cpus(4).is_ok());
             assert!(check_prepared_cpus(64).is_ok());
         }
+    }
+
+    /// The two Windows facts are the same fact, so they must agree: a host that
+    /// needs a processor cap to resume at all is not a host to resume on by
+    /// default.
+    #[test]
+    fn windows_does_not_resume_a_prepared_guest_by_default() {
+        assert_eq!(
+            RESUME_PREPARED_BY_DEFAULT,
+            MAX_PREPARED_CPUS.is_none(),
+            "a host that needs a processor cap to resume a guest at all is not a host to \
+             resume on by default: both come from the same synthetic-timer behaviour"
+        );
     }
 
     #[test]

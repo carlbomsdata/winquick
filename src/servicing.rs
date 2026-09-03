@@ -585,6 +585,11 @@ fn build_bridge(verbose: bool) -> Result<()> {
         timeout: Duration::from_secs(900),
         verbose,
         force_cold: false,
+        // The prepared guest, where this host uses one. Building a Windows
+        // application is exactly the kind of work that waits on timers, so on
+        // a host that boots cold by default this must not quietly ask for the
+        // warm path back.
+        force_warm: false,
         workspace: Some(src),
         artifacts: vec!["publish/**".to_string()],
         artifacts_dir: dest.clone(),

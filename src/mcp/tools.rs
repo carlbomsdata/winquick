@@ -444,6 +444,7 @@ fn windows_run(args: &Value) -> Value {
         timeout: Duration::from_secs(timeout),
         verbose: false,
         force_cold: false,
+        force_warm: false,
         workspace,
         artifacts: artifacts.clone(),
         artifacts_dir: artifacts_dir.clone(),

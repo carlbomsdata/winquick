@@ -165,6 +165,7 @@ fn smoke_test() -> Result<()> {
             timeout: std::time::Duration::from_secs(300),
             verbose: false,
             force_cold: false,
+            force_warm: false,
             workspace: None,
             artifacts: Vec::new(),
             artifacts_dir: crate::artifact::default_dest(),

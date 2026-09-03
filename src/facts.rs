@@ -320,14 +320,22 @@ pub fn doctor() -> Result<Doctor> {
             format!("incomplete ({why})"),
             "The prepared guest is incomplete. Rebuild it with `winquick reset`.",
         );
+    } else if !crate::platform::RESUME_PREPARED_BY_DEFAULT {
+        // Saying "not built yet; the first run will build it" here would be
+        // false: on this host no run builds one unless asked.
+        b.note("Runtime", "prepared guest", "not used on this host; every run boots cold");
     } else if prepared {
         b.ok("Runtime", "prepared guest", "ready (runs are fast)");
     } else {
         b.note("Runtime", "prepared guest", "not built yet; the first run will build it");
     }
-    // Also when the fast path has already been switched off: that is exactly
-    // when knowing which patch turns it back on is worth most.
-    if crate::platform::NEEDS_PATCHED_QEMU && (restore_off || !prepared) {
+    if !crate::platform::RESUME_PREPARED_BY_DEFAULT {
+        b.note(
+            "Runtime",
+            "fast path",
+            "`winquick run --warm` resumes one anyway; only worth it for a command that never waits",
+        );
+    } else if crate::platform::NEEDS_PATCHED_QEMU && (restore_off || !prepared) {
         b.note(
             "Runtime",
             "fast path",

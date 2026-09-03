@@ -147,8 +147,11 @@ cannot change your source. Ask for output explicitly with --artifact.
         #[arg(long, default_value_t = runner::DEFAULT_CPUS)]
         cpus: u32,
         /// Start Windows from scratch instead of resuming the prepared guest
-        #[arg(long)]
+        #[arg(long, conflicts_with = "warm")]
         cold: bool,
+        /// Resume the prepared guest on a host that boots cold by default
+        #[arg(long)]
+        warm: bool,
         /// The command to run, after `--`
         #[arg(required = true, value_name = "COMMAND")]
         argv: Vec<String>,
@@ -491,6 +494,7 @@ fn dispatch(cli: Cli) -> Result<i32> {
             memory,
             cpus,
             cold,
+            warm,
             argv,
         } => {
             artifact_patterns::validate(&artifacts)?;
@@ -502,6 +506,7 @@ fn dispatch(cli: Cli) -> Result<i32> {
                     timeout: Duration::from_secs(timeout),
                     verbose,
                     force_cold: cold,
+                    force_warm: warm,
                     workspace,
                     artifacts,
                     artifacts_dir: artifacts_dir.unwrap_or_else(artifact::default_dest),
@@ -632,6 +637,9 @@ fn build_project(project: &std::path::Path, verbose: bool) -> Result<PathBuf> {
             timeout: Duration::from_secs(900),
             verbose,
             force_cold: false,
+            // Building a Windows application waits on timers constantly, which
+            // is the case a cold-by-default host is cold for.
+            force_warm: false,
             workspace: Some(dir.to_path_buf()),
             artifacts: vec!["publish/**".to_string()],
             artifacts_dir: dest.clone(),
@@ -1078,6 +1086,7 @@ fn smoke_opts() -> runner::Options {
         timeout: Duration::from_secs(300),
         verbose: false,
         force_cold: false,
+        force_warm: false,
         workspace: None,
         artifacts: Vec::new(),
         artifacts_dir: artifact::default_dest(),

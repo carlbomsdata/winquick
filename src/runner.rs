@@ -46,6 +46,9 @@ pub struct Options {
     pub verbose: bool,
     /// Skip the warm path entirely. For benchmarking and for `--cold`.
     pub force_cold: bool,
+    /// Take the warm path on a host that does not use it by default. For
+    /// `--warm` on Windows; ignored everywhere else, where it is the default.
+    pub force_warm: bool,
     /// Host directory to expose to the guest at `C:\workspace`.
     pub workspace: Option<PathBuf>,
     /// Patterns, relative to the workspace root, to retrieve after the command.
@@ -250,11 +253,17 @@ fn execute(command: &str, opts: &Options) -> Result<Outcome> {
         crate::artifact::prepare_dest(&ctx.artifacts_dir, opts.artifact_overwrite)?;
     }
     state::check_base_meta(&ctx.base, crate::setup::AGENT)?;
+    // Whether this run will try to resume a prepared guest. On Windows it will
+    // not unless asked: see `platform::RESUME_PREPARED_BY_DEFAULT` for the
+    // measurement behind that.
+    let warm_wanted = crate::platform::RESUME_PREPARED_BY_DEFAULT || opts.force_warm;
+
     // A fast run resumes a prepared guest. Some hosts cannot rebuild a partition
     // of any size from one, and saying so is better than restoring something
     // that hangs -- or than quietly cold-booting and letting the user believe
-    // the fast path worked.
-    if !opts.force_cold {
+    // the fast path worked. Only a run that is actually going to resume needs
+    // to care: a cold boot supports any processor count.
+    if !opts.force_cold && warm_wanted {
         crate::platform::check_prepared_cpus(ctx.opts_cpus)?;
     }
     let want = fingerprint(&ctx)?;
@@ -279,7 +288,13 @@ fn execute(command: &str, opts: &Options) -> Result<Outcome> {
         ctx.vlog("prepared guests do not restore with this QEMU; booting cold");
     }
 
-    if !opts.force_cold && can_restore {
+    if !warm_wanted && !opts.force_cold {
+        ctx.vlog(
+            "this host does not resume a prepared guest by default (see --warm); booting cold",
+        );
+    }
+
+    if !opts.force_cold && warm_wanted && can_restore {
         match state::load_valid(&want) {
             Ok(Some(ready)) => {
                 ctx.vlog("using existing ready state");
@@ -317,7 +332,7 @@ fn execute(command: &str, opts: &Options) -> Result<Outcome> {
     // The lock is held across both the re-check and the build: several runs can
     // start at once with nothing prepared, and a run must never read a ready
     // state that another process is still writing.
-    if !opts.force_cold && can_restore {
+    if !opts.force_cold && warm_wanted && can_restore {
         match crate::lock::acquire_build(Duration::from_secs(600))? {
             Some(_guard) => {
                 // Someone may have built it while we waited.
