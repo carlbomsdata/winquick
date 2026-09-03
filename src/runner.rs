@@ -571,6 +571,39 @@ fn run_nonce() -> String {
     format!("n{:x}{:x}", std::process::id(), t)
 }
 
+/// Remove run directories left behind by processes that are gone.
+///
+/// A run deletes its own directory on the way out -- on success, on error and
+/// on panic -- but nothing survives `SIGKILL`, a crash or a power cut, and what
+/// is left behind is a qcow2 overlay, which is not small. Found on a Windows
+/// lab machine: a run directory from an interrupted run three days earlier,
+/// which nothing but `winquick clean` would ever have removed.
+///
+/// The directory name carries the pid that created it, so a directory whose
+/// creator is no longer running is finished with by definition. A name that
+/// does not parse is left alone: WinQuick did not create it, and guessing is
+/// how a cleanup deletes something it should not.
+fn sweep_stale_run_dirs(run_root: &Path) {
+    let Ok(entries) = std::fs::read_dir(run_root) else { return };
+    for e in entries.flatten() {
+        let path = e.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = e.file_name();
+        let Some((pid, millis)) = name.to_str().and_then(|n| n.split_once('-')) else { continue };
+        let (Ok(pid), Ok(_)) = (pid.parse::<u32>(), millis.parse::<u128>()) else { continue };
+        // A live pid is either another run in progress or an unrelated process
+        // that inherited the number. Both mean leave it: the cost of waiting is
+        // one stale directory until next time, and the cost of being wrong is
+        // deleting a running run's disk out from under it.
+        if crate::proc::is_alive(pid) {
+            continue;
+        }
+        let _ = std::fs::remove_dir_all(&path);
+    }
+}
+
 fn new_run_dir() -> Result<PathBuf> {
     let id = format!(
         "{}-{}",
@@ -578,6 +611,9 @@ fn new_run_dir() -> Result<PathBuf> {
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis()
     );
     let dir = paths::run_dir(&id)?;
+    if let Some(root) = dir.parent() {
+        sweep_stale_run_dirs(root);
+    }
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("creating run directory {}", dir.display()))?;
     Ok(dir)
@@ -1224,6 +1260,42 @@ mod tests {
         let _ = std::fs::remove_file(&f);
         assert!(e.contains("is a file, not a directory"), "{e}");
         assert!(e.contains("--workspace"), "{e}");
+    }
+
+    /// A run whose process is gone leaves a qcow2 overlay behind, and only a
+    /// later run is in a position to notice. It has to be equally sure not to
+    /// touch a run that is still going, or anything it did not create.
+    #[test]
+    fn stale_run_directories_are_swept_and_live_ones_are_not() {
+        let root = std::env::temp_dir().join(format!(
+            "wq-sweep-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        // Nothing on any host is running as pid 4294967294.
+        let dead = root.join("4294967294-1700000000000");
+        let live = root.join(format!("{}-1700000000000", std::process::id()));
+        let odd = root.join("not-a-run-directory");
+        let no_millis = root.join("12345-notanumber");
+        for d in [&dead, &live, &odd, &no_millis] {
+            std::fs::create_dir_all(d).unwrap();
+            std::fs::write(d.join("overlay.qcow2"), b"x").unwrap();
+        }
+        let loose = root.join("47-1700000000000");
+        std::fs::write(&loose, b"a file, not a run").unwrap();
+
+        super::sweep_stale_run_dirs(&root);
+
+        assert!(!dead.exists(), "a run whose process is gone should be reclaimed");
+        assert!(live.exists(), "a run still in progress must be left alone");
+        assert!(odd.exists(), "a directory WinQuick did not create must be left alone");
+        assert!(no_millis.exists(), "an unparseable name must be left alone");
+        assert!(loose.exists(), "a plain file must be left alone");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// The common cases must stay silent: no workspace at all, and a real one.
