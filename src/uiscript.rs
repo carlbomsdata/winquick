@@ -2,7 +2,7 @@
 //!
 //! A UI test is a sequence of the same verbs `winquick desktop` takes, one per
 //! line, plus two things that only make sense in a script: `screenshot`, whose
-//! output has to land on the Mac rather than in the guest, and `expect`, which
+//! output has to land on the host rather than in the guest, and `expect`, which
 //! turns a UI Automation property into a pass or a fail.
 //!
 //! ```text

@@ -261,7 +261,7 @@ fn acquisition_message(cached: &Path) -> String {
          2. Download it yourself (about 2.4 GB) and point WinQuick at the file:\n\
          \x20      {VALIDATION_OS_URL}\n\
          \x20      winquick setup --from ~/Downloads/<the-downloaded>.iso\n\n\
-         Either way the image and everything built from it stay on this Mac.\n\
+         Either way the image and everything built from it stay on this machine.\n\
          Microsoft's terms and background:\n\
          \x20  {VALIDATION_OS_PAGE}\n\n\
          If you download it manually you can also just save it as:\n\

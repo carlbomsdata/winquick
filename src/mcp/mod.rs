@@ -251,7 +251,7 @@ impl Server {
                         },
                         "instructions":
                             "WinQuick runs commands and GUI applications inside a real, \
-                             disposable Windows environment on this Mac. Use windows_run for \
+                             disposable Windows environment on this machine. Use windows_run for \
                              builds, tests and any Windows command. Use the desktop_* and ui_* \
                              tools only when graphical behaviour has to be verified: start a \
                              session, launch the application, wait for its window, then read it \

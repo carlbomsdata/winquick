@@ -527,7 +527,7 @@ fn sha256_file(p: &Path) -> Result<String> {
     crate::sha256::hex_of_file(p)
 }
 
-/// Populate the canonical NuGet cache from macOS, then rebuild the volume the
+/// Populate the canonical NuGet cache from the host, then rebuild the volume the
 /// guest sees.
 ///
 /// Only host-side tooling ever writes the canonical cache. The guest gets a
@@ -659,7 +659,7 @@ pub fn nuget_sync(project: &Path, rid: &str, verbose: bool) -> Result<SyncResult
     std::fs::create_dir_all(&cache)?;
     if which("dotnet").is_none() {
         bail!(
-            "The .NET SDK is not installed on this Mac, so packages cannot be restored here.\n\n\
+            "The .NET SDK is not installed here, so packages cannot be restored on this host.\n\n\
              Install it from https://dotnet.microsoft.com/download, or `brew install dotnet-sdk`."
         );
     }
@@ -688,7 +688,7 @@ pub fn nuget_sync(project: &Path, rid: &str, verbose: bool) -> Result<SyncResult
         .context("running `dotnet restore` on the host — is the .NET SDK installed?")?;
     if !out.status.success() {
         bail!(
-            "restoring packages on this Mac failed:\n{}{}",
+            "restoring packages here failed:\n{}{}",
             staged.unstage(&String::from_utf8_lossy(&out.stdout)).trim(),
             staged.unstage(&String::from_utf8_lossy(&out.stderr)).trim()
         );
@@ -768,7 +768,7 @@ pub fn nuget_add(raw_specs: &[String], verbose: bool) -> Result<SyncResult> {
     std::fs::create_dir_all(&cache)?;
     if which("dotnet").is_none() {
         bail!(
-            "The .NET SDK is not installed on this Mac, so packages cannot be restored here.\n\n\
+            "The .NET SDK is not installed here, so packages cannot be restored on this host.\n\n\
              Install it from https://dotnet.microsoft.com/download, or `brew install dotnet-sdk`."
         );
     }

@@ -1,7 +1,7 @@
 //! Deciding which files a run should hand back.
 //!
 //! The workspace is one-way on purpose: the guest gets a throwaway copy and
-//! nothing it writes reaches the Mac. Retrieving build output is therefore a
+//! nothing it writes reaches the host. Retrieving build output is therefore a
 //! separate, explicit request, and this module is what `--artifact` patterns
 //! mean.
 //!

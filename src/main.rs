@@ -1,4 +1,4 @@
-//! WinQuick — run real Windows commands on an Apple Silicon Mac.
+//! WinQuick — run real Windows commands from macOS, Linux or Windows.
 
 mod argv;
 mod artifact;
@@ -62,9 +62,8 @@ access; see `winquick cache --help` for offline package restore.";
 #[command(
     name = "winquick",
     version,
-    about = "Run real Windows commands on an Apple Silicon Mac",
-    long_about = "Run a command inside a real, disposable Windows environment on an Apple \
-                  Silicon Mac.\n\nThink `docker run`, with a real Windows kernel on the other \
+    about = "Run commands inside a real, disposable Windows environment",
+    long_about = "Run a command inside a real, disposable Windows environment.\n\nThink `docker run`, with a real Windows kernel on the other \
                   end. Each run starts from a clean Windows, executes the command, returns its \
                   stdout, stderr and exit code, and throws the environment away.",
     after_help = AFTER_HELP,
@@ -231,7 +230,7 @@ without a session running.")]
     #[command(after_help = "\
 Takes a project file or an already-published directory, starts a desktop
 session, runs a script of UI steps against the real application, and writes
-the screenshots to this Mac.
+the screenshots to this machine.
 
   winquick ui-test examples/WpfDemo/DemoApp.csproj --script examples/WpfDemo/demo.uitest
   winquick ui-test ./publish --script smoke.uitest --out ./shots
@@ -283,7 +282,7 @@ For example:
 
     /// Manage the offline package cache used by `dotnet`
     #[command(after_help = "\
-Windows has no network access. Packages are restored on your Mac and shared with
+Windows has no network access. Packages are restored here and shared with
 Windows through a cache that persists between runs.
 
   cd MyProject
@@ -366,7 +365,7 @@ enum DesktopCmd {
     Stop,
     /// Report whether a desktop session is running
     Status,
-    /// Capture the screen, or one window, as a PNG on this Mac
+    /// Capture the screen, or one window, as a PNG on this machine
     Screenshot {
         /// Where to write the PNG
         #[arg(value_name = "FILE")]
@@ -385,12 +384,12 @@ enum DesktopCmd {
         #[arg(long)]
         host: bool,
     },
-    /// Copy a file the application produced back to this Mac
+    /// Copy a file the application produced back to this machine
     Pull {
         /// The file inside Windows, e.g. `app\out\page.png`
         #[arg(value_name = "GUEST-PATH")]
         guest_path: String,
-        /// Where to write it on this Mac
+        /// Where to write it on this machine
         #[arg(value_name = "FILE")]
         file: PathBuf,
     },
@@ -423,7 +422,7 @@ enum CapabilityCmd {
 
 #[derive(Subcommand)]
 enum CacheCmd {
-    /// Restore a project's packages on this Mac and share them with Windows
+    /// Restore a project's packages here and share them with Windows
     Sync {
         /// Project or solution directory [default: .]
         path: Option<PathBuf>,
@@ -939,7 +938,7 @@ fn cache_cmd(action: CacheCmd, verbose: bool) -> Result<i32> {
                 "Package cache: {packages} packages, {}",
                 helpers::human(helpers::allocated(&img))
             );
-            println!("  restored on this Mac into {}", dir.display());
+            println!("  restored here into {}", dir.display());
             println!("  Windows sees a throwaway copy, so a build cannot change it");
             Ok(0)
         }

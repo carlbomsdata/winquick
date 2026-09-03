@@ -176,11 +176,12 @@ pub fn doctor() -> Result<Doctor> {
 
     // -- host
     //
-    // Two hosts are supported, and each one only in the shape that gives real
+    // Three hosts are supported, and each one only in the shape that gives real
     // hardware virtualisation: an Apple Silicon Mac running an ARM64 guest
-    // through Hypervisor.framework, and an x86_64 PC running an x64 guest
-    // through the Windows Hypervisor Platform. Emulating a guest of the other
-    // architecture would work and would not be this product.
+    // through Hypervisor.framework, an x86_64 PC running an x64 guest through
+    // the Windows Hypervisor Platform, and a Linux machine of either
+    // architecture running the matching guest through KVM. Emulating a guest of
+    // the other architecture would work and would not be this product.
     let arch = std::env::consts::ARCH;
     match (std::env::consts::OS, arch) {
         ("macos", "aarch64") => b.ok("Host", "cpu", format!("Apple Silicon ({arch})")),

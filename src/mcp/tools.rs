@@ -50,7 +50,7 @@ pub const TOOLS: &[Tool] = &[
              and is the working directory. The host directory is copied in and never written \
              back, so use `artifacts` to bring build output home. Because the guest is offline, \
              a NuGet restore that needs to reach the network fails with NU1301: run \
-             `winquick cache sync` on the Mac once to make packages available offline, or add a \
+             `winquick cache sync` on the host once to make packages available offline, or add a \
              NuGet.config to a project that needs no packages.",
         schema: || {
             json!({

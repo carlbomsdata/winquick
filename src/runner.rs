@@ -428,7 +428,7 @@ fn nuget_hint(o: &Outcome) -> Option<String> {
     };
     Some(format!(
         "\nwinquick: {what}, and the guest has no network by design.\n\
-         winquick: populate the cache from this Mac, then run again:\n\
+         winquick: populate the cache from this machine, then run again:\n\
          winquick:     winquick cache sync <project>\n"
     ))
 }

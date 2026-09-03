@@ -680,7 +680,7 @@ pub const VERB_HELP: &[(&str, &str, &str)] = &[
     ),
     (
         "pull",
-        "Copy a file the application produced back to this Mac",
+        "Copy a file the application produced back to this machine",
         "<guest-path> <local-file>   (e.g. app\\out\\page.png)",
     ),
     ("get", "Read one element", "<selector>"),
@@ -810,7 +810,7 @@ pub fn screenshot(dest: &Path, extra: &[String], timeout: Duration) -> Result<Va
     Ok(json)
 }
 
-/// Bring a file the application produced back to this Mac.
+/// Bring a file the application produced back to this machine.
 ///
 /// A session could already show you a picture of what happened but not give you
 /// the thing that happened — the converted page, the exported report, the log
@@ -838,7 +838,9 @@ pub fn pull(guest_path: &str, dest: &Path, timeout: Duration) -> Result<Value> {
     if let Some(want) = json.get("sha256").and_then(Value::as_str) {
         let got = sha256_hex(&bytes);
         if got != want {
-            bail!("{guest_path} arrived corrupted: the guest hashed {want}, this Mac has {got}");
+            bail!(
+                "{guest_path} arrived corrupted: the guest hashed {want}, this machine has {got}"
+            );
         }
     }
 
