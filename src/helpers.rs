@@ -59,7 +59,21 @@ fn exe_name(name: &str) -> String {
     format!("{name}{}", std::env::consts::EXE_SUFFIX)
 }
 
-fn find(name: &str, env_override: &str) -> Option<PathBuf> {
+/// Locate a helper.
+///
+/// `allow_path` decides whether a copy found on `PATH` is acceptable. For
+/// `hivexsh` it is: the distributions' package is the one WinQuick wants. For
+/// `ntfscp` and `ntfscat` it is not, and the difference is not cosmetic --
+/// WinQuick addresses a partition *inside* a whole-disk image by setting
+/// `NTFS_IMAGE_OFFSET`, which only this project's patch honours. A stock
+/// ntfsprogs ignores the variable and writes at offset zero instead, over the
+/// partition table of the image it was asked to edit. It reports success while
+/// doing it, so nothing downstream notices until Windows will not boot.
+///
+/// There is no way to tell the two apart by asking: the patch changes no
+/// version string and prints nothing new. So the bundled copy is the only one
+/// accepted, and `WINQUICK_NTFSCP` remains for anyone who has built their own.
+fn find(name: &str, env_override: &str, allow_path: bool) -> Option<PathBuf> {
     if let Some(p) = std::env::var_os(env_override).map(PathBuf::from) {
         if p.is_file() {
             return Some(p);
@@ -72,7 +86,11 @@ fn find(name: &str, env_override: &str) -> Option<PathBuf> {
             return Some(c);
         }
     }
-    which(name)
+    if allow_path {
+        which(name)
+    } else {
+        None
+    }
 }
 
 /// Find an executable on `PATH`.
@@ -114,20 +132,22 @@ fn is_executable(p: &Path) -> bool {
 }
 
 pub fn find_ntfscp() -> Option<PathBuf> {
-    find("ntfscp", "WINQUICK_NTFSCP")
+    find("ntfscp", "WINQUICK_NTFSCP", false)
 }
 pub fn find_ntfscat() -> Option<PathBuf> {
-    // Conventionally installed beside ntfscp; prefer that before searching PATH.
+    // Conventionally installed beside ntfscp; prefer that.
     if let Some(cp) = find_ntfscp() {
         let sibling = cp.with_file_name(exe_name("ntfscat"));
         if sibling.is_file() {
             return Some(sibling);
         }
     }
-    find("ntfscat", "WINQUICK_NTFSCAT")
+    find("ntfscat", "WINQUICK_NTFSCAT", false)
 }
 pub fn find_hivexsh() -> Option<PathBuf> {
-    find("hivexsh", "WINQUICK_HIVEXSH")
+    // Unpatched upstream hivexsh is exactly what WinQuick wants, so the
+    // distributions' package counts.
+    find("hivexsh", "WINQUICK_HIVEXSH", true)
 }
 
 /// Resolve everything `setup` needs, or explain exactly what to install.
@@ -169,8 +189,10 @@ pub fn setup_tools() -> Result<SetupTools> {
     }
     if missing.contains(&"ntfsprogs") {
         msg.push_str(
-            "  ntfsprogs  normally ships with WinQuick. If you are running from a\n\
-             \x20            source checkout, build it once with:\n\
+            "  ntfsprogs  ships with WinQuick, patched. Your distribution's package\n\
+             \x20            will not do -- it ignores the offset WinQuick needs to\n\
+             \x20            address a partition inside a disk image. From a source\n\
+             \x20            checkout, build it once with:\n\
              \x20                ./scripts/build-ntfs-helpers.sh\n",
         );
     }
@@ -215,13 +237,15 @@ pub fn survey() -> Vec<ToolStatus> {
             name: "ntfscp",
             path: find_ntfscp(),
             needed_for: "setup only",
-            install_hint: "ships with WinQuick; ./scripts/build-ntfs-helpers.sh from source",
+            install_hint:
+                "ships with WinQuick, patched; ./scripts/build-ntfs-helpers.sh from source",
         },
         ToolStatus {
             name: "ntfscat",
             path: find_ntfscat(),
             needed_for: "setup only",
-            install_hint: "ships with WinQuick; ./scripts/build-ntfs-helpers.sh from source",
+            install_hint:
+                "ships with WinQuick, patched; ./scripts/build-ntfs-helpers.sh from source",
         },
         ToolStatus {
             name: "hivexsh",
