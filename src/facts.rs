@@ -308,7 +308,7 @@ pub fn doctor() -> Result<Doctor> {
         b.note(
             "Runtime",
             "prepared guest",
-            "disabled: this QEMU restores a guest that never resumes, so every run boots cold",
+            "disabled: this QEMU cannot save and restore a guest, so every run boots cold",
         );
     } else if let Some(why) = state::structural_problem() {
         // The files are there but they do not describe a finished freeze.
@@ -325,7 +325,9 @@ pub fn doctor() -> Result<Doctor> {
     } else {
         b.note("Runtime", "prepared guest", "not built yet; the first run will build it");
     }
-    if crate::platform::NEEDS_PATCHED_QEMU && !restore_off && !prepared {
+    // Also when the fast path has already been switched off: that is exactly
+    // when knowing which patch turns it back on is worth most.
+    if crate::platform::NEEDS_PATCHED_QEMU && (restore_off || !prepared) {
         b.note(
             "Runtime",
             "fast path",

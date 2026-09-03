@@ -394,6 +394,17 @@ fn execute(command: &str, opts: &Options) -> Result<Outcome> {
                         Err(e) if crate::interrupt::interrupted() => return Err(e),
                         Err(e) => {
                             ctx.vlog(format!("could not build a ready state: {e:#}"));
+                            // A QEMU that refuses the save says so outright, and
+                            // will say it again every time. Remember it, so the
+                            // next run boots cold immediately instead of paying
+                            // for a prepared guest it is not allowed to keep.
+                            if save_state_blocked(&e) {
+                                let _ = state::mark_restore_unsupported(&backend);
+                                ctx.vlog(
+                                    "this QEMU refuses to save guest state; later runs will \
+                                     boot cold without trying",
+                                );
+                            }
                             break;
                         }
                     }
@@ -721,6 +732,22 @@ impl std::error::Error for GuestSilent {}
 /// Did this failure mean "the guest resumed and never executed"?
 fn guest_was_silent(e: &anyhow::Error) -> bool {
     e.chain().any(|c| c.downcast_ref::<GuestSilent>().is_some())
+}
+
+/// Did QEMU refuse to save the guest's state at all?
+///
+/// QEMU answers a `migrate` it cannot perform with a blocker, and says which
+/// kind: "State blocked by non-migratable device ..." when a device cannot be
+/// serialised, "State blocked due to missing dirty memory tracking support ..."
+/// when the accelerator cannot. Neither is bad luck on one attempt -- both are
+/// settled facts about this QEMU and this accelerator, and both will be true
+/// again on the next run.
+///
+/// Measured on Windows with a stock QEMU under WHPX: every single run spent
+/// about sixteen seconds booting a guest to freeze, was refused, threw it away
+/// and cold-booted a second one. Recording the refusal costs that once.
+fn save_state_blocked(e: &anyhow::Error) -> bool {
+    format!("{e:#}").contains("State blocked")
 }
 
 /// What the guest firmware said, if what it said was fatal.
@@ -1299,6 +1326,33 @@ mod tests {
         let _ = std::fs::remove_file(&f);
         assert!(e.contains("is a file, not a directory"), "{e}");
         assert!(e.contains("--workspace"), "{e}");
+    }
+
+    /// A QEMU that cannot save state must be believed the first time. Left
+    /// undetected it costs a full prepare-and-throw-away on every single run.
+    #[test]
+    fn a_refused_save_is_recognised_as_a_property_of_this_qemu() {
+        let device = anyhow!(
+            "QMP migrate failed: {{\"class\":\"GenericError\",\"desc\":\"State blocked by \
+             non-migratable device '0000:00:02.0/nvme'\"}}"
+        );
+        let accel = anyhow!(
+            "QMP migrate failed: {{\"class\":\"GenericError\",\"desc\":\"State blocked due to \
+             missing dirty memory tracking support,And some system register/state save-restore\"}}"
+        );
+        assert!(super::save_state_blocked(&device), "a non-migratable device is a settled fact");
+        assert!(super::save_state_blocked(&accel), "an accelerator that cannot is too");
+
+        // Everything else is an accident of one attempt and must not switch the
+        // fast path off for good.
+        for transient in [
+            "qemu exited (exit status: 1) before the migration finished",
+            "QEMU closed the QMP connection during migrate",
+            "timed out waiting for WQREADY.TXT from the guest",
+            "No space left on device (os error 28)",
+        ] {
+            assert!(!super::save_state_blocked(&anyhow!("{transient}")), "{transient}");
+        }
     }
 
     /// A guest that never boots must not be reported as a slow command. The
