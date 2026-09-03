@@ -92,10 +92,20 @@ else
   # default operations is switched to match in the patch.
   sed -i 's/win32_io\.lo/unix_io.lo/g; s/win32_io\.c/unix_io.c/g' libntfs-3g/Makefile
 
+  # The shim is compiled against from a copy inside the work directory, not
+  # from the checkout. `make` re-splits CPPFLAGS on whitespace before handing it
+  # to the compiler, so a checkout under a path containing a space -- which is
+  # what `C:\Users\First Last\...` is, and therefore the normal case on Windows
+  # -- turned `-I<dir>` into two arguments and every file failed to compile with
+  # "cannot specify '-o' with '-c' ... with multiple files". `mktemp -d` has no
+  # spaces in it.
+  cp -R "$SHIM" "$WORK/wqshim"
+  WSHIM="$WORK/wqshim"
+
   # _FILE_OFFSET_BITS=64 gives mingw a struct stat that can describe a disk
   # image; without it stat() fails outright on anything over 2 GB.
   MAKEFLAGS_EXTRA=(
-    CPPFLAGS="-I$SHIM -include $SHIM/wqtypes.h -D_FILE_OFFSET_BITS=64"
+    CPPFLAGS="-I$WSHIM -include $WSHIM/wqtypes.h -D_FILE_OFFSET_BITS=64"
     LDFLAGS="-all-static"
   )
 fi
