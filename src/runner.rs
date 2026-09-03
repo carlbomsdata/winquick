@@ -597,6 +597,43 @@ fn run_nonce() -> String {
     format!("n{:x}{:x}", std::process::id(), t)
 }
 
+/// Record which QEMU belongs to this run directory.
+///
+/// Only ever read by [`sweep_stale_run_dirs`], and only for a run whose own
+/// process is gone. Best effort: a run that cannot write this file still works,
+/// it just leaves a little more behind if it is killed outright.
+fn note_qemu_pid(dir: &Path, pid: u32) {
+    let _ = std::fs::write(dir.join(QEMU_PID_FILE), pid.to_string());
+}
+
+const QEMU_PID_FILE: &str = "qemu.pid";
+
+/// Stop the QEMU a dead run left running, if it is still there.
+///
+/// A run kills its own QEMU on the way out, but `SIGKILL` gives it no chance
+/// to, and the orphan then sits holding a gigabyte of memory for ever --
+/// reparented to init, with nothing left that knows what it was for.
+///
+/// The pid is checked before anything is sent to it. Pids are reused, and this
+/// one was written by a process that has since died, so it may name something
+/// else entirely by now. Leaving one QEMU running is a much smaller mistake
+/// than killing an unrelated process.
+fn reap_orphaned_qemu(dir: &Path) {
+    let Ok(text) = std::fs::read_to_string(dir.join(QEMU_PID_FILE)) else { return };
+    let Ok(pid) = text.trim().parse::<u32>() else { return };
+    if !crate::proc::is_alive(pid) || !crate::proc::looks_like_qemu(pid) {
+        return;
+    }
+    crate::proc::terminate(pid);
+    for _ in 0..20 {
+        if !crate::proc::is_alive(pid) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    crate::proc::force_kill(pid);
+}
+
 /// Remove run directories left behind by processes that are gone.
 ///
 /// A run deletes its own directory on the way out -- on success, on error and
@@ -626,6 +663,8 @@ fn sweep_stale_run_dirs(run_root: &Path) {
         if crate::proc::is_alive(pid) {
             continue;
         }
+        // Before the disks go, whatever is still reading them.
+        reap_orphaned_qemu(&path);
         let _ = std::fs::remove_dir_all(&path);
     }
 }
@@ -1034,6 +1073,7 @@ fn warm_execute(ctx: &Ctx, ready: &state::ReadyState, command: &str) -> Result<O
         incoming: Some(&ready.state_file()),
     })?;
     crate::interrupt::watch_child(child.id());
+    note_qemu_pid(&dir, child.id());
 
     let result = (|| -> Result<Outcome> {
         let mut q = qmp::Qmp::connect(&qmp_sock, Duration::from_secs(10))?;
@@ -1155,6 +1195,7 @@ fn build_ready_state(ctx: &Ctx, want: &state::Fingerprint) -> Result<state::Read
         incoming: None,
     })?;
     crate::interrupt::watch_child(child.id());
+    note_qemu_pid(&dir, child.id());
 
     let sdir = state::state_dir()?;
     let build = (|| -> Result<state::ReadyMeta> {
@@ -1275,6 +1316,7 @@ fn cold_execute(ctx: &Ctx, command: &str) -> Result<Outcome> {
         incoming: None,
     })?;
     crate::interrupt::watch_child(child.id());
+    note_qemu_pid(&dir, child.id());
 
     let result = (|| -> Result<Outcome> {
         let deadline = Instant::now() + ctx.timeout;
@@ -1368,6 +1410,34 @@ mod tests {
         ] {
             assert!(!super::save_state_blocked(&anyhow!("{transient}")), "{transient}");
         }
+    }
+
+    /// Reaping an orphan means signalling a pid written down by a process that
+    /// has since died, so the pid may have been reused by something with no
+    /// connection to WinQuick. It must check what it is about to kill.
+    ///
+    /// This test points the reaper at *itself*. If the check is ever dropped,
+    /// the test binary gets a SIGTERM and the whole suite dies, which is a
+    /// failure nobody can overlook.
+    #[test]
+    fn the_reaper_refuses_a_pid_that_is_not_a_qemu() {
+        let dir = std::env::temp_dir().join(format!("wq-reap-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        assert!(!crate::proc::looks_like_qemu(std::process::id()), "the test binary is not QEMU");
+        std::fs::write(dir.join(super::QEMU_PID_FILE), std::process::id().to_string()).unwrap();
+        super::reap_orphaned_qemu(&dir);
+        assert!(crate::proc::is_alive(std::process::id()), "still here");
+
+        // Nonsense and absence are both simply ignored.
+        for content in ["", "not-a-number", "4294967294"] {
+            std::fs::write(dir.join(super::QEMU_PID_FILE), content).unwrap();
+            super::reap_orphaned_qemu(&dir);
+        }
+        std::fs::remove_file(dir.join(super::QEMU_PID_FILE)).unwrap();
+        super::reap_orphaned_qemu(&dir);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A guest that never boots must not be reported as a slow command. The

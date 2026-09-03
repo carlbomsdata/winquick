@@ -31,6 +31,41 @@ extern "C" {
     fn libc_kill(pid: i32, sig: i32) -> i32;
 }
 
+/// Is this pid a QEMU?
+///
+/// Asked before signalling a process WinQuick did not spawn and cannot prove it
+/// owns. Pids are reused, and a run directory left behind by a killed run names
+/// a pid that may since have become something else entirely -- so the name is
+/// checked before anything is sent to it. Killing the wrong process because a
+/// number came round again is far worse than leaving one QEMU running.
+#[cfg(unix)]
+pub fn looks_like_qemu(pid: u32) -> bool {
+    let Ok(out) = std::process::Command::new("/bin/ps")
+        .args(["-o", "comm=", "-p", &pid.to_string()])
+        .output()
+    else {
+        return false;
+    };
+    let name = String::from_utf8_lossy(&out.stdout);
+    // `ps -o comm=` gives the full path on macOS and the bare name on Linux.
+    name.trim().rsplit('/').next().unwrap_or("").starts_with("qemu-system")
+}
+
+/// Windows has no `ps`, and `tasklist` reports the image name but not the
+/// command line, which is enough for this question.
+#[cfg(windows)]
+pub fn looks_like_qemu(pid: u32) -> bool {
+    let Ok(out) = std::process::Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+        .output()
+    else {
+        return false;
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    // `"qemu-system-x86_64.exe","1234",...`
+    text.trim_start().trim_start_matches('"').starts_with("qemu-system")
+}
+
 // ------------------------------------------------------------------ Windows
 
 #[cfg(windows)]
