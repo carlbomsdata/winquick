@@ -472,7 +472,17 @@ fn host_version(b: &mut Builder) {
 
 #[cfg(unix)]
 pub fn free_bytes(p: &Path) -> Option<u64> {
-    let out = std::process::Command::new("/bin/df").arg("-k").arg(p).output().ok()?;
+    // The path has to exist for `df` to answer; walk up until it does, so a
+    // missing ~/.winquick still reports the volume it would live on. Without
+    // this every brand-new installation failed its own disk check on the first
+    // `winquick doctor`, reporting 0 B free on a half-empty disk -- the one
+    // moment the check is most likely to be read and least likely to be
+    // doubted. The Windows implementation below always did this.
+    let mut dir = p;
+    while !dir.exists() {
+        dir = dir.parent()?;
+    }
+    let out = std::process::Command::new("/bin/df").arg("-k").arg(dir).output().ok()?;
     let text = String::from_utf8_lossy(&out.stdout);
     let line = text.lines().nth(1)?;
     let blocks: u64 = line.split_whitespace().nth(3)?.parse().ok()?;
@@ -510,6 +520,25 @@ pub fn free_bytes(p: &Path) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+    /// The disk check runs before `~/.winquick` exists, which is exactly the
+    /// case a machine that has never run WinQuick is in. Reporting 0 B there
+    /// failed the check on a half-empty disk and told the user to free space
+    /// they already had.
+    #[test]
+    fn free_space_is_reported_for_a_directory_that_does_not_exist_yet() {
+        let real = std::env::temp_dir();
+        assert!(super::free_bytes(&real).is_some_and(|n| n > 0), "an existing directory reports");
+
+        let missing = real.join("winquick-not-created-yet").join("nor-this").join("nor-this");
+        assert!(!missing.exists());
+        let walked = super::free_bytes(&missing).expect("a missing directory must still report");
+        // Deliberately not compared with the reading above: the two `df` calls
+        // are seconds apart on a machine running the rest of this suite, which
+        // writes and deletes gigabytes. What matters is that it answers for the
+        // volume the directory would live on rather than for nothing at all.
+        assert!(walked > 0, "a missing directory must not report an empty disk");
+    }
+
     use super::*;
 
     /// Every check carries a section and a name, because the CLI groups by the
