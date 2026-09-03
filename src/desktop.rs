@@ -395,7 +395,7 @@ fn build_prepared_state(
     want: &crate::state::DesktopFingerprint,
 ) -> Result<crate::state::DesktopReady> {
     let t0 = Instant::now();
-    let work = paths::root()?.join("work").join("desktop-state");
+    let work = paths::work()?.join("desktop-state");
     let _ = std::fs::remove_dir_all(&work);
     std::fs::create_dir_all(&work)?;
 
@@ -507,7 +507,7 @@ fn build_bridge_volume(image: &Path) -> Result<()> {
             src.display()
         );
     }
-    let staging = paths::root()?.join("work").join("bridge-volume");
+    let staging = paths::work()?.join("bridge-volume");
     let _ = std::fs::remove_dir_all(&staging);
     std::fs::create_dir_all(&staging)?;
     copy_tree(&src, &staging.join("bridge"))?;

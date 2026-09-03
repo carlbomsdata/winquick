@@ -3,7 +3,7 @@
 //! Everything lives under `~/.winquick`. Nothing here is shared with other
 //! users and nothing generated from Microsoft software ever leaves it.
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use std::path::PathBuf;
 
 /// The runtime directory name, which carries the guest architecture: an x64
@@ -18,10 +18,31 @@ pub const IMAGE_NAME: &str =
 /// `winquick.exe` started from cmd.exe or Explorer sees only `USERPROFILE`.
 /// Preferring `HOME` keeps a deliberately overridden home working on both.
 pub fn home() -> Result<PathBuf> {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
-        .ok_or_else(|| anyhow!("neither HOME nor USERPROFILE is set"))
+    check_home(
+        std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from),
+    )
+}
+
+/// The rule [`home`] applies, separated from where the value comes from so it
+/// can be tested without mutating the environment of a parallel test binary.
+///
+/// Every path WinQuick writes to or deletes is derived from the home directory.
+/// An empty or relative one would put `~/.winquick` somewhere that depends on
+/// the current directory, which would make `winquick clean` delete a `.winquick`
+/// in whatever directory it happened to be run from. Refusing is the only safe
+/// answer, and it is not a situation a working shell produces.
+fn check_home(home: Option<PathBuf>) -> Result<PathBuf> {
+    let home = home.ok_or_else(|| anyhow!("neither HOME nor USERPROFILE is set"))?;
+    if home.as_os_str().is_empty() {
+        bail!("HOME is set but empty, so WinQuick cannot tell where to keep its data");
+    }
+    if !home.is_absolute() {
+        bail!(
+            "HOME is not an absolute path ({}), so WinQuick cannot tell where to keep its data",
+            home.display()
+        );
+    }
+    Ok(home)
 }
 
 pub fn root() -> Result<PathBuf> {
@@ -63,6 +84,18 @@ pub fn cache() -> Result<PathBuf> {
     Ok(root()?.join("cache"))
 }
 
+/// Scratch space for work in progress: unpacked archives, staged volumes,
+/// build output on its way somewhere else.
+///
+/// Deliberately here rather than in the system temporary directory. On a
+/// multi-user Linux host `/tmp` is world-writable, so a fixed name under it can
+/// be pre-created by someone else as a symlink pointing anywhere they like, and
+/// WinQuick would write through it. `~/.winquick` belongs to one user, and
+/// `winquick clean` already knows to empty this.
+pub fn work() -> Result<PathBuf> {
+    Ok(root()?.join("work"))
+}
+
 /// Transient per-run state. Deleted after every run.
 pub fn run_dir(id: &str) -> Result<PathBuf> {
     Ok(root()?.join("run").join(id))
@@ -89,6 +122,22 @@ mod tests {
         // Siblings under `images/`, so removing the capability is removing one
         // directory and nothing else.
         assert_eq!(base.parent().and_then(|p| p.parent()), netfx.parent().and_then(|p| p.parent()));
+    }
+
+    /// `winquick clean` deletes directories under `root()`, and `root()` is
+    /// `home()` plus one component. A home that is empty or relative would aim
+    /// that at the current directory, so it is refused outright.
+    #[test]
+    fn a_home_winquick_cannot_trust_is_refused() {
+        assert!(check_home(None).is_err(), "an unset home is not usable");
+        for bad in ["", "relative/home", ".", ".."] {
+            assert!(
+                check_home(Some(PathBuf::from(bad))).is_err(),
+                "{bad:?} should not be accepted as a home"
+            );
+        }
+        let good = if cfg!(windows) { "C:\\Users\\someone" } else { "/home/someone" };
+        assert_eq!(check_home(Some(PathBuf::from(good))).unwrap(), PathBuf::from(good));
     }
 
     /// A run boots the serviced image when it is installed and the pristine

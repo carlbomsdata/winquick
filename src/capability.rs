@@ -200,25 +200,56 @@ pub fn install(name: &str, zip: Option<PathBuf>, verbose: bool) -> Result<u64> {
     let cache = paths::cache()?;
     std::fs::create_dir_all(&cache)?;
 
+    // Whether the archive is WinQuick's to throw away. A file the user pointed
+    // at with `--from` is theirs, and a failed check must not delete it.
+    let mut ours = false;
     let archive = match zip {
         Some(p) => p,
         None => {
             let file = sp.payload().url.rsplit('/').next().unwrap();
             let p = cache.join(file);
+            ours = true;
             if !p.exists() {
-                println!("Downloading {} {} from Microsoft...", sp.description, sp.version);
+                println!("Downloading {} {}...", sp.description, sp.version);
+                // Downloaded beside the target and renamed into place, so an
+                // interrupted download cannot be mistaken for a finished one on
+                // the next run -- which used to leave a truncated archive in the
+                // cache that every later attempt rejected as corrupt.
+                //
+                // `-f` matters as much: without it curl writes an HTTP error
+                // page to the file and exits 0, and the failure surfaces as a
+                // checksum mismatch rather than as "404".
+                let partial = p.with_extension("partial");
                 let st = std::process::Command::new(
                     crate::helpers::which("curl").unwrap_or_else(|| PathBuf::from("curl")),
                 )
-                .args(["-sSL", "-o"])
-                .arg(&p)
+                .args([
+                    "-fL",
+                    "--progress-bar",
+                    // A redirect must not be able to downgrade the transport.
+                    "--proto",
+                    "=https",
+                    "--proto-redir",
+                    "=https",
+                    // Resume a partial download rather than starting over.
+                    "-C",
+                    "-",
+                    "-o",
+                ])
+                .arg(&partial)
                 .arg(sp.payload().url)
                 .status()
                 .context("running curl")?;
                 if !st.success() {
-                    let _ = std::fs::remove_file(&p);
-                    bail!("download failed");
+                    bail!(
+                        "downloading {} failed.\n\nRe-run to resume, or fetch it yourself and \
+                         pass it with --from:\n  {}",
+                        sp.description,
+                        sp.payload().url
+                    );
                 }
+                std::fs::rename(&partial, &p)
+                    .with_context(|| format!("moving the download into {}", p.display()))?;
             }
             p
         }
@@ -227,8 +258,18 @@ pub fn install(name: &str, zip: Option<PathBuf>, verbose: bool) -> Result<u64> {
     if !sp.payload().sha256.is_empty() {
         let got = sha256_file(&archive)?;
         if got != sp.payload().sha256 {
+            // A cached archive that no longer matches is worthless, and leaving
+            // it in place would make every later attempt fail the same way with
+            // no way out but deleting it by hand.
+            let recovery = if ours {
+                let _ = std::fs::remove_file(&archive);
+                "\n\nThe cached download has been discarded; run the same command again to \
+                 fetch it afresh."
+            } else {
+                ""
+            };
             bail!(
-                "checksum mismatch for {}\n  expected {}\n  got      {got}",
+                "checksum mismatch for {}\n  expected {}\n  got      {got}{recovery}",
                 archive.display(),
                 sp.payload().sha256
             );
@@ -240,7 +281,7 @@ pub fn install(name: &str, zip: Option<PathBuf>, verbose: bool) -> Result<u64> {
         eprintln!("winquick: no pinned checksum for {name}; trusting HTTPS from Microsoft");
     }
 
-    let work = paths::root()?.join("work").join(name);
+    let work = paths::work()?.join(name);
     let _ = std::fs::remove_dir_all(&work);
     std::fs::create_dir_all(&work)?;
     unzip(&archive, &work)?;
@@ -580,7 +621,7 @@ impl ProjectCopy {
                 project.file_name().map(|n| n.to_os_string()),
             )
         };
-        let work = paths::root()?.join("work");
+        let work = paths::work()?;
         std::fs::create_dir_all(&work)?;
         // Unique per call, not just per process: nothing stops two syncs, or two
         // tests, from staging at once, and one deleting the other's copy would
@@ -774,7 +815,7 @@ pub fn nuget_add(raw_specs: &[String], verbose: bool) -> Result<SyncResult> {
     }
     let before = count_packages(&cache);
 
-    let work = paths::root()?.join("work").join(format!("add-{}", std::process::id()));
+    let work = paths::work()?.join(format!("add-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&work);
     std::fs::create_dir_all(&work)?;
     let scratch = Scratch(work.clone());

@@ -28,7 +28,7 @@ mod state;
 mod udf;
 mod uiscript;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -614,7 +614,10 @@ fn build_project(project: &std::path::Path, verbose: bool) -> Result<PathBuf> {
         .file_name()
         .and_then(|n| n.to_str())
         .ok_or_else(|| anyhow::anyhow!("{} is not a project file", project.display()))?;
-    let dest = std::env::temp_dir().join(format!("winquick-uitest-{}", std::process::id()));
+    // Under WinQuick's own directory rather than the system temporary one, so
+    // that `winquick clean` reclaims it and no other local user can have
+    // pre-created the path as a symlink.
+    let dest = paths::work()?.join(format!("uitest-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dest);
 
     println!("Building {} inside Windows...", project.display());
@@ -1111,7 +1114,7 @@ fn clean(all: bool, dry_run: bool) -> Result<i32> {
         (state::state_dir()?, "prepared guest"),
         (state::desktop_state_dir()?, "prepared desktop"),
         (root.join("run"), "leftover run directories"),
-        (root.join("work"), "temporary build files"),
+        (paths::work()?, "temporary build files"),
         (desktop::dir()?, "desktop session"),
         (paths::cache()?, "downloaded installers"),
         // `clean` is the "forget what you worked out about this machine"
@@ -1125,6 +1128,18 @@ fn clean(all: bool, dry_run: bool) -> Result<i32> {
         targets.push((capability::dir()?, "capabilities"));
         targets.push((root.join("caches"), "package cache"));
         targets.push((desktop::bridge_dir()?, "desktop bridge"));
+    }
+
+    // This is the only place in WinQuick that deletes directories recursively.
+    // Every target above is derived from `paths`, so all of them are already
+    // under `root` -- but that is an invariant of code somewhere else, and the
+    // cost of being wrong here is deleting a directory belonging to the user.
+    // So it is checked rather than assumed, before anything is removed and
+    // before `--dry-run` prints a list that would be a lie.
+    for (p, what) in &targets {
+        if !p.starts_with(&root) {
+            bail!("refusing to clean {} ({what}): it is outside {}", p.display(), root.display());
+        }
     }
 
     let mut total = 0u64;

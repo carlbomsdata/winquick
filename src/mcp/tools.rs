@@ -715,7 +715,13 @@ fn ui_screenshot(args: &Value) -> Value {
     }
     // The bridge writes a PNG to a host path; MCP then carries the bytes
     // themselves, so the agent never has to open a file to see the screen.
-    let dir = std::env::temp_dir().join("winquick-mcp-shots");
+    // Under WinQuick's own directory rather than the system temporary one: this
+    // name is fixed, and a fixed name in a world-writable `/tmp` can be
+    // pre-created by another local user as a symlink to somewhere else.
+    let dir = match crate::paths::work() {
+        Ok(w) => w.join("mcp-shots"),
+        Err(e) => return tool_error(format!("cannot prepare a place for the screenshot: {e}")),
+    };
     if let Err(e) = std::fs::create_dir_all(&dir) {
         return tool_error(format!("cannot prepare a place for the screenshot: {e}"));
     }

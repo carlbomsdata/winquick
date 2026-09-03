@@ -162,7 +162,7 @@ pub fn install_framework(opts: &Options) -> Result<()> {
         return Ok(());
     }
 
-    let work = paths::root()?.join("work").join("framework");
+    let work = paths::work()?.join("framework");
     let _ = std::fs::remove_dir_all(&work);
     std::fs::create_dir_all(&work)?;
 
@@ -236,7 +236,7 @@ pub fn install(opts: &Options) -> Result<()> {
         );
     }
 
-    let work = paths::root()?.join("work").join("desktop");
+    let work = paths::work()?.join("desktop");
     let _ = std::fs::remove_dir_all(&work);
     std::fs::create_dir_all(&work)?;
 

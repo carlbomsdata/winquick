@@ -67,7 +67,7 @@ pub fn setup(opts: &Options) -> Result<()> {
 
     let vhdx = acquire_image(opts)?;
 
-    let work = paths::root()?.join("work");
+    let work = paths::work()?;
     std::fs::create_dir_all(&work)?;
     std::fs::create_dir_all(base.parent().unwrap())?;
     // Build into a temporary file and move it into place at the end, so an
@@ -239,7 +239,20 @@ fn acquire_image(opts: &Options) -> Result<PathBuf> {
     println!("  from {VALIDATION_OS_URL}");
     let tmp = cache.join(format!("validationos-{}.iso.part", platform::GUEST_ARCH));
     let st = Command::new(helpers::which("curl").unwrap_or_else(|| PathBuf::from("curl")))
-        .args(["-fL", "--progress-bar", "-C", "-", "-o"])
+        // `--proto`: this download has no pinned checksum -- Microsoft revises
+        // the image in place -- so HTTPS all the way through, including across
+        // the aka.ms redirect, is the only integrity guarantee there is.
+        .args([
+            "-fL",
+            "--progress-bar",
+            "--proto",
+            "=https",
+            "--proto-redir",
+            "=https",
+            "-C",
+            "-",
+            "-o",
+        ])
         .arg(&tmp)
         .arg(VALIDATION_OS_URL)
         .status()
