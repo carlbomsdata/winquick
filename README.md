@@ -2,8 +2,9 @@
 
 **Instant disposable Windows environments.**
 
-Run a real Windows command from a Mac or a Linux box in about a third of a
-second, in a clean Windows that is thrown away afterwards.
+Run a real Windows command from macOS, Linux or Windows in a clean Windows
+that is thrown away afterwards — in about a third of a second on the reference
+host.
 
 ```console
 $ winquick run -- cmd /c ver
@@ -19,14 +20,15 @@ image and leaves nothing behind.
 
 | | |
 |---|---|
-| Windows command | **~350 ms** |
-| PowerShell command | ~920 ms |
-| Desktop session start | **~380 ms** |
+| Windows command | **~330 ms** |
+| PowerShell command | ~750 ms |
+| Desktop session start | **~400 ms** |
 | UI automation step in a session | ~20 ms |
-| Host | Apple Silicon macOS; Linux x86_64; Windows x86_64 (limited) |
+| Host | Apple Silicon macOS; Windows x86_64; Linux |
 
-Times are medians observed on the development host (Apple Silicon, macOS 26,
-QEMU 11.1), not guaranteed latencies.
+Times are medians observed on the reference host (Apple Silicon M4 Pro, macOS
+26, QEMU 11.1), not guaranteed latencies. Windows hosts are much slower per
+run and predictably so — see [which hosts this runs on](#which-hosts-this-runs-on).
 
 ```console
 brew install carlbomsdata/tap/winquick
@@ -35,10 +37,11 @@ winquick setup
 
 ## Why
 
-Building or testing Windows software from a Mac usually means keeping a Windows
-VM alive: tens of gigabytes, minutes of boot, snapshots that rot, a desktop to
-click through. That is far too heavy for "run the test suite once" — and much too
-heavy for a coding agent that wants to do it fifty times an hour.
+Building or testing Windows software without a Windows box usually means
+keeping a Windows VM alive: tens of gigabytes, minutes of boot, snapshots that
+rot, a desktop to click through. That is far too heavy for "run the test suite
+once" — and much too heavy for a coding agent that wants to do it fifty times
+an hour.
 
 WinQuick does the narrow thing that matters for builds, tests and automation: run
 one command inside a genuine Windows environment, get the exact output and exit
@@ -55,20 +58,25 @@ under their licence.
 
 | | macOS | Linux | Windows |
 |---|---|---|---|
-| CPU | Apple Silicon (M1 or newer) | x86_64 | x86_64 |
-| OS | macOS 13 or later | tested on Ubuntu 24.04 | Windows 10/11 |
+| CPU | Apple Silicon (M1 or newer) | x86_64 or arm64 | x86_64 |
+| OS | macOS 13 or later | any with KVM | Windows 10/11 |
 | Accelerator | Hypervisor Framework | KVM, `/dev/kvm` readable and writable | Windows Hypervisor Platform |
-| QEMU | 11 or newer | **11 or newer** | 11 or newer, patched |
-| Also needs | hivex | `libhivex-bin`, `ovmf` | none |
+| QEMU | 11 or newer | **11 or newer** | 11 or newer |
+| Also needs | hivex | `libhivex-bin`, `ovmf` | nothing extra |
 
-Two things catch people out. On Linux, Ubuntu 24.04 ships QEMU 8.2.2, which
+Three things catch people out. On Linux, Ubuntu 24.04 ships QEMU 8.2.2, which
 cannot migrate the NVMe device the guest boots from, so every run would boot
-cold; `winquick doctor` checks the version and says so. And if `/dev/kvm` is not
+cold; `winquick doctor` checks the version and says so. If `/dev/kvm` is not
 writable by you, `sudo usermod -aG kvm $USER` and log in again.
 
 On Windows the requirement is the **Windows Hypervisor Platform** feature, which
-is not the same thing as installing the Hyper-V role. Windows hosts run commands
-but do not get the fast path; see the table further down.
+is not the same thing as installing the Hyper-V role.
+
+**Run WinQuick on the machine itself, not inside a virtual machine.** Windows
+needs real hardware virtualisation, and a nested hypervisor does not reliably
+provide it: measured under Apple's Virtualization.framework, the Windows boot
+manager faults in the guest firmware before Windows starts at all. WinQuick
+reads the serial log and says so rather than looking like a hang.
 
 WinQuick does not use libvirt and does not run a daemon on any host.
 
@@ -102,10 +110,24 @@ Or install the release archive by hand — see
 browser download needs:
 
 ```console
-tar -xzf winquick-0.2.1-darwin-arm64.tar.gz
-sudo cp -R winquick-0.2.1-darwin-arm64/* /usr/local/
+tar -xzf winquick-0.3.0-darwin-arm64.tar.gz
+sudo cp -R winquick-0.3.0-darwin-arm64/* /usr/local/
 winquick setup
 ```
+
+### Windows
+
+Install QEMU 11 or newer and put it on `PATH`, then unpack the archive and put
+the folder on `PATH` too:
+
+```console
+tar -xf winquick-0.3.0-windows-x86_64.zip
+winquick setup
+```
+
+`winquick.exe` finds `ntfscp.exe`, `ntfscat.exe` and `hivexsh.exe` beside it, so
+there is nothing else to install. Enable the Windows Hypervisor Platform feature
+if it is off; `winquick doctor` checks.
 
 Setup needs Microsoft's Windows validation runtime, which Microsoft distributes
 under its own licence — WinQuick cannot ship it for you. It will offer to
@@ -121,30 +143,47 @@ Setup finishes by booting Windows and running a real command, so it only says
 
 ### Which hosts this runs on
 
-| Host | Accelerator | Guest | Fast path | State |
+| Host | Accelerator | Guest | Per-run cost | Verified |
 |---|---|---|---|---|
-| Apple Silicon macOS 13+ | HVF | Windows ARM64 | yes | the reference host |
-| Linux x86_64 | KVM | Windows x64 | yes | runs, capabilities, desktop, MCP; needs QEMU 11+ |
-| Windows x86_64 | WHPX | Windows x64 | **no** | cold runs only |
+| Apple Silicon macOS 13+ | HVF | Windows ARM64 | **~330 ms** | fully; the reference host |
+| Windows x86_64 | WHPX | Windows x64 | ~17 s | fully, on Windows 11 26200 |
+| Linux x86_64 / arm64 | KVM | matches the host | not measured | build, tests and diagnostics only |
 
-On macOS and Linux a prepared guest resumes into a fresh QEMU process and a
-command comes back in well under a second on the reference host.
+macOS is the host WinQuick is developed on and the one these numbers come from.
+A prepared guest resumes into a fresh QEMU process and a command comes back in
+about a third of a second.
 
-**Windows hosts do not get the fast path.** A restored WHPX guest executes but
-cannot wait: the first thing that sleeps on a timer stalls for minutes, so
-anything real, a build or a test or PowerShell, is no faster than booting from
-scratch, and often slower. The cause is that Windows parks idle processors on
-Hyper-V synthetic timers whose expiry is absolute in the source partition's
-reference-time domain, and public WHP exposes no way to read either partition's
-reference count and rebase them. It is a property of the platform, not a bug
-waiting to be fixed, and the evidence is in
-[docs/whpx-resume.md](docs/whpx-resume.md). Cold runs on Windows are correct;
-use `--cold`.
+**Windows boots cold on every run, deliberately.** A resumed WHPX guest runs
+fine until something *waits*, and then it waits far longer than it was asked
+to. Measured on Windows 11 26200 with a patched QEMU 11.1 and two processors,
+against the same guest booted cold:
 
-Linux needs QEMU 11 or newer. Ubuntu 24.04 ships 8.2.2, whose NVMe device
-cannot be migrated, so every run would boot cold — `winquick doctor` checks the
-version and says so. See [docs/windows-host.md](docs/windows-host.md) for the
-Windows story in full.
+| command | resumed | cold |
+|---|---|---|
+| `cmd /c ver` | 2.0 s | 16.8 s |
+| `cmd /c ping -n 4 127.0.0.1` | **212 s** | 20.2 s |
+
+Eight times faster for a command that never sleeps, ten times slower for one
+that does — and builds, tests and PowerShell sleep constantly. So Windows takes
+the predictable half of that trade. `winquick run --warm` asks for the prepared
+guest anyway, for a command you know does not wait; it needs a QEMU carrying
+`patches/whpx-stop-and-copy.patch`.
+
+The cause is that Windows parks idle processors on Hyper-V synthetic timers
+whose expiry is absolute in the source partition's reference-time domain, and
+public WHP exposes no way to read either partition's reference count and rebase
+them. It is a property of the platform, not a bug waiting to be fixed;
+[docs/whpx-resume.md](docs/whpx-resume.md) has the evidence and
+[docs/windows-host.md](docs/windows-host.md) the Windows story in full.
+
+**Linux is verified as far as the host side goes, and no further.** WinQuick
+builds there, the full test suite passes, and `winquick doctor` reports the
+host, its tools and its QEMU correctly — including refusing a QEMU too old to
+migrate. What has not been verified is a guest actually booting, because the
+only Linux machine available was itself a virtual machine, and Windows does not
+boot under a nested hypervisor. Nothing measured argues against a Linux host on
+real hardware; it simply has not been run there. The measurement is in
+[docs/research.md](docs/research.md).
 
 See [docs/install.md](docs/install.md) for details.
 
@@ -173,7 +212,7 @@ winquick run -- pwsh -NoProfile -Command '$PSVersionTable'
 ```console
 winquick capability install dotnet-sdk
 cd MyProject
-winquick cache sync                      # restore packages on your Mac, once
+winquick cache sync                      # restore packages on the host, once
 winquick run -w . -- dotnet test
 ```
 
@@ -279,7 +318,7 @@ screenshot after.png
 ```
 
 `ui-test` builds the project inside Windows first, so no .NET SDK is needed on
-your Mac. See [docs/desktop.md](docs/desktop.md).
+the host. See [docs/desktop.md](docs/desktop.md).
 
 **Coding agents**
 
@@ -335,11 +374,11 @@ a skill that teaches an agent when to reach for Windows.
 |---|---|
 | Windows | Microsoft Validation OS, build 10.0.26100 ARM64 |
 | Runtime size | 763 MiB |
-| Trivial command | ~300 ms |
-| PowerShell command | ~870 ms |
-| `dotnet --version` | ~550 ms |
+| Trivial command | ~330 ms |
+| PowerShell command | ~750 ms |
+| `dotnet --version` | ~545 ms |
 | `dotnet test` on a small project | ~10 s |
-| Desktop session start | ~380 ms, then ~20 ms per UI step |
+| Desktop session start | ~400 ms, then ~20 ms per UI step |
 
 Optional capabilities, installed only if you ask:
 
@@ -366,27 +405,26 @@ hand to an automated agent that might do anything.
 Measured on the development host: Apple Silicon, macOS 26, QEMU 11.1. Your
 numbers will differ; the shape of them should not.
 
-**Host support.**
+**Host support.** The table under
+[which hosts this runs on](#which-hosts-this-runs-on) is the detail; this is the
+summary.
 
 | Host | Status |
 |---|---|
-| Apple Silicon macOS | Supported |
-| Windows x86_64 | Early — `setup` and `run` work; see [docs/windows-host.md](docs/windows-host.md) |
-| Windows ARM64 | Planned |
-| Linux | Planned |
+| Apple Silicon macOS | Supported; the reference host |
+| Windows x86_64 | Supported, cold runs only — much slower per run, and predictable |
+| Linux x86_64 / arm64 | Host side verified; guest bring-up not yet run on real hardware |
+| Windows ARM64 | Not planned yet |
 | Intel Mac | Not planned |
 
 On Windows, `winquick setup` and `winquick run` work today: a real x64
 Validation OS guest, hardware-accelerated through the Windows Hypervisor
 Platform, driven by the same agent and the same mailbox protocol macOS uses.
 Nothing needs elevation, no disk image is ever mounted, and no exception is
-asked of endpoint security software.
-
-It is *early*, and the honest list of what is missing — architecture-specific
-capability payloads, extracting the VHDX from Microsoft's ISO without mounting
-it, the desktop, packaging — is in
-[docs/windows-host.md](docs/windows-host.md). The fast path also needs a
-patched QEMU there; without it, every run is a cold boot.
+asked of endpoint security software. What is still missing there —
+architecture-specific capability payloads, extracting the VHDX from Microsoft's
+ISO without mounting it, the desktop — is listed in
+[docs/windows-host.md](docs/windows-host.md).
 
 **Offline by default.** The guest has no network adapter unless you give it
 one, and today you cannot: enabling it means servicing the base image the way
@@ -394,7 +432,7 @@ the desktop capability is serviced, which is not done yet. Being offline
 removes a large source of run-to-run variability and keeps the default
 environment disconnected from your network; it is not by itself a security
 boundary — [docs/security.md](docs/security.md) is precise about what is.
-`winquick cache sync` restores NuGet packages on your Mac so builds work
+`winquick cache sync` restores NuGet packages on the host so builds work
 offline.
 
 **Separate runtimes, on purpose.** The base runtime carries no graphics stack
@@ -415,7 +453,7 @@ desktop session is the long-lived alternative, and stays up between commands.
 
 **Output timing.** stdout and stderr are returned, separately and byte-exact,
 when the command finishes rather than streaming as it is produced. The guest
-has no live channel back to the Mac that does not need a driver or a compiled
+has no live channel back to the host that does not need a driver or a compiled
 helper in the guest; see [docs/architecture.md](docs/architecture.md).
 
 **Filenames.** Workspace filenames may use any Unicode character in the basic
@@ -429,9 +467,10 @@ first and names every offending path rather than failing partway through.
 ```
 winquick setup                          install Windows (once)
 winquick run -- <command>               run something
+winquick start|stop|status              a Windows session that stays up
 winquick capability list|install|remove optional tools inside Windows
 winquick cache sync|info|clear          offline packages for dotnet
-winquick desktop start|stop|status|...  drive a real Windows desktop
+winquick desktop <verb>                 drive the session's desktop
 winquick ui-test <project>              build a GUI app and test its UI
 winquick doctor [--smoke]               check the installation
 winquick info                           what is installed
