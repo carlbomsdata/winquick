@@ -101,9 +101,14 @@ jobs:
         shell: bash
         run: echo "VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)" >> "$GITHUB_ENV"
 
+      # libhivex-bin for the runtime; the autotools for building this project's
+      # patched ntfsprogs from source, which a bare Ubuntu cannot do -- measured
+      # on a clean image, where `libtool` was absent and the build stopped.
       - name: install packaging dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libhivex-bin
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libhivex-bin build-essential autoconf automake libtool file
 
       # The Windows helpers are built under MSYS2, which is a build-time
       # dependency only: nothing in the archive links against it.
