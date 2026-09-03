@@ -2,7 +2,7 @@
 name = "winquick"
 version = "0.3.0"
 edition = "2021"
-description = "Run real Windows commands on an Apple Silicon Mac"
+description = "Run commands inside a real, disposable Windows environment"
 repository = "https://github.com/carlbomsdata/winquick"
 homepage = "https://github.com/carlbomsdata/winquick"
 readme = "README.md"

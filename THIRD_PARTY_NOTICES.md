@@ -207,8 +207,8 @@ WinQuick ships no Microsoft software. Microsoft Validation OS, PowerShell and
 
 ## Rust dependencies
 
-Linked into the `winquick` binary under permissive licences (MIT and/or
-Apache-2.0). Run `cargo tree` for the full graph.
+Linked into the `winquick` binary. These are the direct dependencies; run
+`cargo tree` for the full graph.
 
 | Crate | Licence |
 |---|---|
@@ -217,3 +217,26 @@ Apache-2.0). Run `cargo tree` for the full graph.
 | fatfs | MIT |
 | fscommon | MIT |
 | serde, serde_json | MIT OR Apache-2.0 |
+
+Every crate in the transitive graph is permissive, and between them they use
+four licences rather than the two the direct list suggests:
+
+| Licence | Where it appears |
+|---|---|
+| MIT OR Apache-2.0 | the great majority, including everything above |
+| MIT | `fatfs`, `fscommon`, `slab`, `strsim`, `zmij` |
+| Unlicense OR MIT | `byteorder`, `memchr` |
+| (MIT OR Apache-2.0) AND Unicode-3.0 | `unicode-ident` |
+
+`unicode-ident` is the one that is not simply "MIT or Apache-2.0": the Unicode
+licence applies *in addition* to whichever of the two is chosen, because the
+crate embeds character tables derived from the Unicode Character Database. It
+is a permissive licence and its terms are reproduced with the crate, but it is
+a third licence and is named here rather than folded into the other two.
+
+Nothing in the graph is copyleft. That is deliberate and worth keeping: these
+crates are linked statically into a binary WinQuick distributes under
+Apache-2.0, which is exactly the situation where a GPL dependency would not be
+distributable on those terms. The programs that *are* copyleft — QEMU,
+ntfsprogs, hivex — stay separate executables, invoked as child processes, and
+are covered by the sections above.

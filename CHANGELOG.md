@@ -4,6 +4,82 @@
 
 ### Fixed
 
+- **Windows no longer resumes a prepared guest by default.** A resumed WHPX
+  guest runs fine until something *waits*, and then it waits far longer than it
+  was asked to. Measured on Windows 11 26200, patched QEMU 11.1, two
+  processors, against the same guest booted cold:
+
+  | command | resumed | cold |
+  |---|---|---|
+  | `cmd /c ver` | 2.0 s | 16.8 s |
+  | `cmd /c ping -n 4 127.0.0.1` | **212 s** | 20.2 s |
+
+  Eight times faster for a command that never sleeps, ten times slower for one
+  that does, and builds, tests and PowerShell sleep constantly. Windows now
+  boots cold, which is the same every time; `winquick run --warm` asks for the
+  prepared guest where a command is known not to wait. The prepared-guest
+  processor cap now applies only to runs that will actually resume, so a cold
+  run on Windows can use as many processors as it likes again.
+- **A QEMU that cannot save guest state is believed the first time.** QEMU
+  refuses a migration it cannot perform with `State blocked ...`, naming either
+  a non-migratable device or an accelerator without dirty-page tracking. Nothing
+  recorded that, so every run booted a guest to freeze, was refused, threw it
+  away and cold-booted a second one -- about sixteen wasted seconds per command,
+  for ever. Only that specific answer counts: a killed QEMU, a closed
+  connection, a full disk or a silent guest are accidents of one attempt and
+  still do not switch the fast path off.
+- **A guest that never boots says so, instead of blaming the timeout.** A
+  firmware fault reaches the host looking exactly like a slow command, so both
+  came out as "the command did not finish within N s -- raise it with
+  `--timeout`". WinQuick now reads the serial log, reports the `Synchronous
+  Exception` edk2 printed, and names the usual cause: a host that cannot give
+  the guest full hardware virtualisation, which is what running inside another
+  virtual machine does.
+- **A killed run no longer leaves a QEMU running.** A run kills its own QEMU on
+  the way out, but `SIGKILL` gives it no chance to, and the orphan then sat
+  holding a gigabyte of memory indefinitely. Run directories now record their
+  QEMU's pid, and a later run reclaims both the directory and the process --
+  after checking that the pid really is a QEMU, since it was written by a
+  process that has since died and pids are reused.
+- **A fresh installation no longer reports an empty disk.** `df` needs a path
+  that exists, and on a machine that has never run WinQuick `~/.winquick` does
+  not. The very first `winquick doctor` therefore reported 0 B free on a
+  half-empty disk and told the user to make room they already had.
+- **An unpatched `ntfsprogs` on `PATH` is never used.** WinQuick addresses a
+  partition inside a whole-disk image by setting `NTFS_IMAGE_OFFSET`, which only
+  this project's patch honours. A distribution's `ntfscp` ignores it and writes
+  at offset zero instead, over the partition table of the image it was asked to
+  edit, reporting success. Found on a Linux host with `ntfsprogs` installed,
+  where `doctor` called `/usr/sbin/ntfscp` fine. `hivexsh` is unaffected:
+  upstream's is the one WinQuick wants.
+- **An interrupted capability download recovers by itself.** The downloader
+  wrote curl's output straight to its cache path without `-f`, so an HTTP error
+  page or a half-finished transfer became a permanent "checksum mismatch" that
+  only deleting the file by hand could clear. It now downloads beside the target
+  and renames, resumes, and discards a cached archive that fails its digest.
+- **Helper programs are found on `PATH`, not beside your project.** Windows
+  searches the directory a process started from before it searches `PATH`, so
+  running WinQuick inside a project containing a `tar.exe` ran that one. The
+  same applied to `dotnet` and `cmd`.
+
+### Security
+
+- **`clean` checks that what it is about to delete is WinQuick's.** It is the
+  only recursive delete in the product and it trusted that every target handed
+  to it lived under `~/.winquick`. That guarantee starts at `HOME`, so an empty
+  or relative one -- which would resolve `~/.winquick` against the current
+  directory -- is now refused rather than used.
+- **No WinQuick data in the system temporary directory.** The MCP screenshot
+  directory had a fixed name there, which on a multi-user Linux host is
+  world-writable and can be pre-created by someone else as a symlink. It and the
+  `ui-test` publish directory now live under `~/.winquick/work`, which `clean`
+  already reclaims.
+- **Downloads cannot be redirected off HTTPS.** Both downloaders now refuse a
+  redirect that would leave it, which for the Validation OS image is the only
+  integrity check there is: Microsoft revises it in place, so there is no digest
+  to pin.
+
+
 - **Windows x86_64: a prepared guest now restores with more than one
   processor.** It used to resume and then stop, and the reason was two separate
   pieces of per-processor state that the Windows Hypervisor Platform owns and
@@ -150,6 +226,21 @@
 
 ### Added
 
+- **`winquick start`, `winquick stop` and `winquick status`.** Starting a
+  Windows session and stopping it are the first two things anyone does, and both
+  were spelled as sub-verbs of `desktop`, which reads as an optional extra
+  rather than the way in. They delegate to the same implementation, so anything
+  written against `winquick desktop start` keeps working.
+- **`winquick run --warm`**, the counterpart to `--cold`: resume the prepared
+  guest on a host that boots cold by default.
+- **Continuous integration for all three hosts.** There was none, so nothing
+  stopped a change that compiled on macOS from breaking Linux or Windows until
+  someone tried to build there. Formatting and lints run once; building, the
+  unit suite and the real release scripts run on each host.
+- **A Windows release archive.** `scripts/release-windows.sh` produces a zip
+  with `winquick.exe` and the `ntfscp`, `ntfscat` and `hivexsh` helpers beside
+  it. Previously the only way to get a Windows build was to clone the repository
+  and install Rust.
 - **The desktop can run .NET Framework applications.** WinQuick's notes said
   Validation OS "carries no .NET Framework runtime at all", which is true of the
   stock image and had been read as meaning it could not have one. It is on
