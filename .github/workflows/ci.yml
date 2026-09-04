@@ -58,6 +58,26 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
+
+      # The mingw-w64 that ships on the runner has no `libbcryptprimitives.a`,
+      # which Rust's std wants, so it cannot link the GNU target. MSYS2's
+      # toolchain does have it, and is the one `scripts/release-windows.sh`
+      # builds with, so CI uses the same compiler the archive comes from.
+      - uses: msys2/setup-msys2@v2
+        id: msys2
+        if: matrix.target == 'x86_64-pc-windows-gnu'
+        with:
+          msystem: MINGW64
+          update: false
+          install: mingw-w64-x86_64-toolchain
+      - name: link with the MSYS2 mingw toolchain
+        if: matrix.target == 'x86_64-pc-windows-gnu'
+        shell: bash
+        run: |
+          mingw="${{ steps.msys2.outputs.msys2-location }}/mingw64/bin"
+          echo "$mingw" >> "$GITHUB_PATH"
+          echo "CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=$mingw/gcc.exe" >> "$GITHUB_ENV"
+
       - run: cargo build --release --locked --target ${{ matrix.target }}
       - run: cargo test --release --locked --target ${{ matrix.target }}
       - name: the binary runs and reports itself
