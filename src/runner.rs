@@ -477,6 +477,51 @@ fn nuget_hint(o: &Outcome) -> Option<String> {
     ))
 }
 
+/// A program with a window, run where there is no window to give it.
+///
+/// The base runtime carries no graphics stack at all, so a GUI executable does
+/// not fail politely: a native one dies with `STATUS_DLL_NOT_FOUND` and no
+/// output, and a .NET one prints a `DllNotFoundException` stack trace from deep
+/// inside WPF. Neither says the thing the user needs to know, which is that the
+/// program is fine and the environment is the wrong one.
+///
+/// Measured with a self-contained x64 WPF application: under `winquick run` it
+/// threw `MS.Win32.UxThemeWrapper` → `DllNotFoundException`; in a desktop
+/// session the same binary opened its window.
+fn gui_hint(o: &Outcome) -> Option<String> {
+    // 0xC0000135 is STATUS_DLL_NOT_FOUND, which is how a native GUI binary
+    // exits here. The guest reports it as a signed value.
+    const DLL_NOT_FOUND: i32 = -1073741515;
+
+    let text =
+        format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+    let managed_gui = text.contains("DllNotFoundException")
+        && (text.contains("UxTheme")
+            || text.contains("System.Windows")
+            || text.contains("System.Drawing"));
+    if o.exit_code != DLL_NOT_FOUND && !managed_gui {
+        return None;
+    }
+    // The desktop is a serviced image, not a capability volume, so it does not
+    // appear in `capability::installed()`. Telling someone to install what they
+    // already have is its own small insult.
+    let desktop = crate::desktop::base_image().map(|p| p.exists()).unwrap_or(false);
+    let install = if desktop {
+        ""
+    } else {
+        "winquick:     winquick capability install desktop
+"
+    };
+    Some(format!(
+        "\nwinquick: this looks like a program with a window, and `winquick run`\n\
+         winquick: has no graphics stack for it to draw on. Run it in a desktop\n\
+         winquick: session instead:\n\
+         {install}\
+         winquick:     winquick start --app <folder containing it>\n\
+         winquick:     winquick desktop launch 'app\\<program>.exe'\n"
+    ))
+}
+
 /// Windows says "not recognized" for a program that is not there. When that
 /// program is one WinQuick can install, say so rather than leaving the user to
 /// guess which capability provides it.
@@ -553,6 +598,8 @@ fn emit(o: Outcome, t_start: Instant, verbose: bool) -> Result<i32> {
     if let Some(hint) = argv_shape_hint(&o.command, &o) {
         err.write_all(hint.as_bytes())?;
     } else if let Some(hint) = capability_hint(&o.command, &o) {
+        err.write_all(hint.as_bytes())?;
+    } else if let Some(hint) = gui_hint(&o) {
         err.write_all(hint.as_bytes())?;
     }
     err.flush()?;
@@ -1534,6 +1581,41 @@ mod tests {
         super::reap_orphaned_qemu(&dir);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A GUI program under `winquick run` fails in a way that says nothing
+    /// useful. The hint has to fire on both shapes of that failure, and stay
+    /// quiet for an ordinary console program that merely exited non-zero.
+    #[test]
+    fn a_gui_program_is_told_where_it_can_actually_run() {
+        let outcome = |code: i32, out: &str| super::Outcome {
+            stdout: out.as_bytes().to_vec(),
+            stderr: Vec::new(),
+            exit_code: code,
+            warm: true,
+            command: "thing.exe".into(),
+        };
+
+        // A native GUI binary: STATUS_DLL_NOT_FOUND and nothing printed.
+        let native = super::gui_hint(&outcome(-1073741515, "")).expect("native GUI recognised");
+        assert!(native.contains("desktop"), "{native}");
+        assert!(native.contains("winquick start"), "it must say what to do: {native}");
+
+        // A .NET GUI binary: a WPF stack trace, and a plain non-zero exit.
+        let managed = super::gui_hint(&outcome(
+            134,
+            "Unhandled exception. System.TypeInitializationException: \
+             MS.Win32.UxThemeWrapper ---> System.DllNotFoundException",
+        ))
+        .expect("managed GUI recognised");
+        assert!(managed.contains("graphics stack"), "{managed}");
+
+        // An ordinary failing console program must not be told any of this.
+        assert!(super::gui_hint(&outcome(1, "error: file not found")).is_none());
+        assert!(super::gui_hint(&outcome(0, "all good")).is_none());
+        // A DllNotFoundException that is not about drawing is somebody else's
+        // missing library, not this.
+        assert!(super::gui_hint(&outcome(1, "System.DllNotFoundException: libfoo")).is_none());
     }
 
     /// A guest that never boots must not be reported as a slow command. The

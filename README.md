@@ -7,11 +7,12 @@
 > [Hosts](#hosts) for what has actually been verified on which machine. Try it,
 > report what breaks, but do not build a production pipeline on it yet.
 
-**Test Windows software without a Windows machine.**
+**A real Windows, for one command at a time.**
 
-WinQuick runs a command inside a real, disposable Windows environment and gives
-you back its output and exit code. It starts in about a quarter of a second,
-and nothing it does survives the run.
+WinQuick runs your command inside a genuine Windows that starts in about a
+quarter of a second and is destroyed when the command finishes. There is a
+Windows machine involved — there has to be — but you never install, boot,
+patch, snapshot or clean it up. From macOS, Linux or Windows.
 
 ```console
 $ winquick run -- cmd /c ver
