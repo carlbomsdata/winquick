@@ -196,7 +196,7 @@ pub fn run_capture(command: &str, opts: &Options) -> Result<Outcome> {
 pub fn run(command: &str, opts: &Options) -> Result<i32> {
     let t_start = Instant::now();
     let o = execute(command, opts)?;
-    emit(o, t_start, opts.verbose)
+    emit(o, t_start, opts.verbose, opts.workspace.as_deref())
 }
 
 /// Refuse a workspace that cannot be staged, before anything boots.
@@ -495,21 +495,64 @@ fn nuget_hint(o: &Outcome) -> Option<String> {
     ))
 }
 
+/// The subsystem a Windows executable asks for, from its PE header.
+///
+/// `2` is `IMAGE_SUBSYSTEM_WINDOWS_GUI` and `3` is `..._CUI`. The field sits 68
+/// bytes into the optional header for both PE32 and PE32+, because the members
+/// that differ between them all come earlier. `tests/peinfo.py` reads the same
+/// offsets, and the three values below were checked against real binaries.
+fn pe_subsystem(path: &Path) -> Option<u16> {
+    use std::io::Read;
+    let mut head = [0u8; 1024];
+    let read = std::fs::File::open(path).ok()?.read(&mut head).ok()?;
+    let head = &head[..read];
+    let u16_at =
+        |o: usize| -> Option<u16> { Some(u16::from_le_bytes([*head.get(o)?, *head.get(o + 1)?])) };
+    let u32_at = |o: usize| -> Option<u32> {
+        Some(u32::from_le_bytes([
+            *head.get(o)?,
+            *head.get(o + 1)?,
+            *head.get(o + 2)?,
+            *head.get(o + 3)?,
+        ]))
+    };
+    if head.get(..2)? != b"MZ" {
+        return None;
+    }
+    let pe = u32_at(0x3C)? as usize;
+    if head.get(pe..pe + 4)? != b"PE\0\0" {
+        return None;
+    }
+    u16_at(pe + 24 + 68)
+}
+
+/// The program a command line names, as a path on this machine.
+///
+/// Only useful when the workspace carried it in, which is the case that matters:
+/// a program from `C:\Windows` is not on the host to inspect.
+fn program_on_host(command: &str, workspace: Option<&Path>) -> Option<PathBuf> {
+    let ws = workspace?;
+    let first = command.split_whitespace().next()?.trim_matches(['"', '\'']);
+    let rel = first.replace('\\', "/");
+    let candidate = ws.join(&rel);
+    candidate.is_file().then_some(candidate)
+}
+
 /// A program with a window, run where there is no window to give it.
 ///
-/// The base runtime carries no graphics stack at all, so a GUI executable does
-/// not fail politely: a native one dies with `STATUS_DLL_NOT_FOUND` and no
-/// output, and a .NET one prints a `DllNotFoundException` stack trace from deep
-/// inside WPF. Neither says the thing the user needs to know, which is that the
-/// program is fine and the environment is the wrong one.
+/// The base runtime carries no graphics stack, so a GUI executable does not fail
+/// politely: a native one dies with `STATUS_DLL_NOT_FOUND` and no output, and a
+/// .NET one prints a `DllNotFoundException` from inside WPF.
 ///
-/// Measured with a self-contained x64 WPF application: under `winquick run` it
-/// threw `MS.Win32.UxThemeWrapper` → `DllNotFoundException`; in a desktop
-/// session the same binary opened its window.
-fn gui_hint(o: &Outcome) -> Option<String> {
-    // 0xC0000135 is STATUS_DLL_NOT_FOUND, which is how a native GUI binary
-    // exits here. The guest reports it as a signed value.
-    const DLL_NOT_FOUND: i32 = -1073741515;
+/// That exit status on its own proves nothing, though — a console program
+/// missing any DLL at all reports exactly the same thing, and telling its author
+/// to install a desktop would be wrong. So the hint requires positive evidence
+/// that the program wants a window: either a managed exception naming the
+/// graphics stack, or `IMAGE_SUBSYSTEM_WINDOWS_GUI` in the file's own PE header.
+/// Without one of those it says only what is known, which is that a library was
+/// missing.
+fn gui_hint(o: &Outcome, workspace: Option<&Path>) -> Option<String> {
+    const DLL_NOT_FOUND: i32 = -1073741515; // 0xC0000135
 
     let text =
         format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
@@ -517,23 +560,34 @@ fn gui_hint(o: &Outcome) -> Option<String> {
         && (text.contains("UxTheme")
             || text.contains("System.Windows")
             || text.contains("System.Drawing"));
-    if o.exit_code != DLL_NOT_FOUND && !managed_gui {
+    let dll_missing = o.exit_code == DLL_NOT_FOUND;
+    if !managed_gui && !dll_missing {
         return None;
     }
+
+    let native_gui = program_on_host(&o.command, workspace)
+        .and_then(|p| pe_subsystem(&p))
+        .is_some_and(|s| s == 2);
+
+    if !managed_gui && !native_gui {
+        // A library is missing and nothing says the program draws. Say that, and
+        // nothing more.
+        return Some(
+            "\nwinquick: the program could not start because a DLL it needs was not\n\
+             winquick: found. The guest is a minimal Windows, so a dependency it\n\
+             winquick: relies on may simply not be there.\n"
+                .to_string(),
+        );
+    }
+
     // The desktop is a serviced image, not a capability volume, so it does not
     // appear in `capability::installed()`. Telling someone to install what they
     // already have is its own small insult.
     let desktop = crate::desktop::base_image().map(|p| p.exists()).unwrap_or(false);
-    let install = if desktop {
-        ""
-    } else {
-        "winquick:     winquick capability install desktop
-"
-    };
+    let install = if desktop { "" } else { "winquick:     winquick capability install desktop\n" };
     Some(format!(
-        "\nwinquick: this looks like a program with a window, and `winquick run`\n\
-         winquick: has no graphics stack for it to draw on. Run it in a desktop\n\
-         winquick: session instead:\n\
+        "\nwinquick: this program wants a window, and `winquick run` has no graphics\n\
+         winquick: stack for it to draw on. Run it in a desktop session instead:\n\
          {install}\
          winquick:     winquick start --app <folder containing it>\n\
          winquick:     winquick desktop launch 'app\\<program>.exe'\n"
@@ -601,7 +655,7 @@ fn argv_shape_hint(command: &str, o: &Outcome) -> Option<String> {
     ))
 }
 
-fn emit(o: Outcome, t_start: Instant, verbose: bool) -> Result<i32> {
+fn emit(o: Outcome, t_start: Instant, verbose: bool, workspace: Option<&Path>) -> Result<i32> {
     // Pass the guest's streams through, except for the CRLF that every Windows
     // program emits — a Unix caller piping into `grep` should not have to strip
     // carriage returns.
@@ -617,7 +671,7 @@ fn emit(o: Outcome, t_start: Instant, verbose: bool) -> Result<i32> {
         err.write_all(hint.as_bytes())?;
     } else if let Some(hint) = capability_hint(&o.command, &o) {
         err.write_all(hint.as_bytes())?;
-    } else if let Some(hint) = gui_hint(&o) {
+    } else if let Some(hint) = gui_hint(&o, workspace) {
         err.write_all(hint.as_bytes())?;
     }
     err.flush()?;
@@ -1654,39 +1708,101 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A GUI program under `winquick run` fails in a way that says nothing
-    /// useful. The hint has to fire on both shapes of that failure, and stay
-    /// quiet for an ordinary console program that merely exited non-zero.
+    /// Build the smallest PE header that carries a subsystem, so the reader can
+    /// be tested without shipping binaries.
+    #[cfg(test)]
+    fn fake_pe(subsystem: u16) -> Vec<u8> {
+        let mut b = vec![0u8; 512];
+        b[0..2].copy_from_slice(b"MZ");
+        let pe: u32 = 128;
+        b[0x3C..0x40].copy_from_slice(&pe.to_le_bytes());
+        let pe = pe as usize;
+        b[pe..pe + 4].copy_from_slice(b"PE\0\0");
+        b[pe + 24..pe + 26].copy_from_slice(&0x20bu16.to_le_bytes()); // PE32+
+        b[pe + 24 + 68..pe + 24 + 70].copy_from_slice(&subsystem.to_le_bytes());
+        b
+    }
+
+    /// The subsystem field sits at the same offset for PE32 and PE32+, and
+    /// anything that is not a PE file must not be guessed at.
     #[test]
-    fn a_gui_program_is_told_where_it_can_actually_run() {
-        let outcome = |code: i32, out: &str| super::Outcome {
+    fn the_pe_subsystem_is_read_or_declined() {
+        let dir = std::env::temp_dir().join(format!("wq-pe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let gui = dir.join("gui.exe");
+        std::fs::write(&gui, fake_pe(2)).unwrap();
+        assert_eq!(super::pe_subsystem(&gui), Some(2));
+
+        let cui = dir.join("cui.exe");
+        std::fs::write(&cui, fake_pe(3)).unwrap();
+        assert_eq!(super::pe_subsystem(&cui), Some(3));
+
+        let script = dir.join("not-a-pe.sh");
+        std::fs::write(&script, b"#!/bin/sh\necho hi\n").unwrap();
+        assert_eq!(super::pe_subsystem(&script), None, "a non-PE file must not be guessed at");
+        assert_eq!(super::pe_subsystem(&dir.join("absent.exe")), None);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The hint may only claim a program wants a window when something actually
+    /// says so. A console program missing a DLL exits with the very same status,
+    /// and telling its author to install a desktop would be wrong.
+    #[test]
+    fn a_gui_program_is_told_where_it_can_run_and_a_console_one_is_not() {
+        const DLL_NOT_FOUND: i32 = -1073741515;
+        let dir = std::env::temp_dir().join(format!("wq-guihint-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("gui.exe"), fake_pe(2)).unwrap();
+        std::fs::write(dir.join("cli.exe"), fake_pe(3)).unwrap();
+
+        let outcome = |cmd: &str, code: i32, out: &str| super::Outcome {
             stdout: out.as_bytes().to_vec(),
             stderr: Vec::new(),
             exit_code: code,
             warm: true,
-            command: "thing.exe".into(),
+            command: cmd.into(),
         };
+        let ws = Some(dir.as_path());
 
-        // A native GUI binary: STATUS_DLL_NOT_FOUND and nothing printed.
-        let native = super::gui_hint(&outcome(-1073741515, "")).expect("native GUI recognised");
-        assert!(native.contains("desktop"), "{native}");
+        // A native GUI binary: the PE header is the positive evidence.
+        let native = super::gui_hint(&outcome("gui.exe", DLL_NOT_FOUND, ""), ws)
+            .expect("a GUI subsystem must be recognised");
+        assert!(native.contains("wants a window"), "{native}");
         assert!(native.contains("winquick start"), "it must say what to do: {native}");
 
-        // A .NET GUI binary: a WPF stack trace, and a plain non-zero exit.
-        let managed = super::gui_hint(&outcome(
-            134,
-            "Unhandled exception. System.TypeInitializationException: \
-             MS.Win32.UxThemeWrapper ---> System.DllNotFoundException",
-        ))
-        .expect("managed GUI recognised");
-        assert!(managed.contains("graphics stack"), "{managed}");
+        // A console binary with the same status: a missing DLL, and nothing more.
+        let console = super::gui_hint(&outcome("cli.exe", DLL_NOT_FOUND, ""), ws)
+            .expect("a missing DLL is still worth mentioning");
+        assert!(!console.contains("window"), "must not claim a window: {console}");
+        assert!(console.contains("DLL"), "{console}");
 
-        // An ordinary failing console program must not be told any of this.
-        assert!(super::gui_hint(&outcome(1, "error: file not found")).is_none());
-        assert!(super::gui_hint(&outcome(0, "all good")).is_none());
-        // A DllNotFoundException that is not about drawing is somebody else's
-        // missing library, not this.
-        assert!(super::gui_hint(&outcome(1, "System.DllNotFoundException: libfoo")).is_none());
+        // Unknown program, same status: still no window claim.
+        let unknown = super::gui_hint(&outcome("elsewhere.exe", DLL_NOT_FOUND, ""), ws).unwrap();
+        assert!(!unknown.contains("window"), "{unknown}");
+
+        // A managed WPF failure needs no PE file to be recognised.
+        let managed = super::gui_hint(
+            &outcome(
+                "app.exe",
+                134,
+                "System.TypeInitializationException: MS.Win32.UxThemeWrapper ---> \
+                 System.DllNotFoundException",
+            ),
+            None,
+        )
+        .expect("a WPF graphics failure is positive evidence");
+        assert!(managed.contains("wants a window"), "{managed}");
+
+        // Ordinary failures say nothing at all.
+        assert!(super::gui_hint(&outcome("cli.exe", 1, "error: bad input"), ws).is_none());
+        assert!(super::gui_hint(&outcome("cli.exe", 0, "fine"), ws).is_none());
+        assert!(
+            super::gui_hint(&outcome("x", 1, "System.DllNotFoundException: libfoo"), ws).is_none()
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A guest that never boots must not be reported as a slow command. The
