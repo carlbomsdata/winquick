@@ -22,19 +22,14 @@
 set -euo pipefail
 
 # The licence text travels with the binaries it covers, so a release without it
-# is not one that may be distributed. `-f` matters as much as the check: without
-# it curl writes an HTTP error page to the file and exits 0, and the release
-# ships a 404 where the GPL should be.
-fetch_licence() {
-  local url="$1" dest="$2"
-  if ! curl -fsSL --proto '=https' --proto-redir '=https' -o "$dest" "$url"; then
-    echo "could not download $url" >&2
-    echo "  The licence text has to ship beside the binaries it covers, so this" >&2
-    echo "  is not something a release can go without. Check the network and run" >&2
-    echo "  this again, or save the file to $dest yourself." >&2
-    exit 1
-  fi
-  [ -s "$dest" ] || { echo "$dest came back empty" >&2; exit 1; }
+# is not one that may be distributed. It is kept in the repository rather than
+# downloaded: fetching it made the build depend on gnu.org answering at exactly
+# the wrong moment, which it repeatedly did not. See licenses/README.md.
+copy_licence() {
+  local name="$1" dest="$2"
+  local src="$ROOT/licenses/$name"
+  [ -s "$src" ] || { echo "missing licence text $src" >&2; exit 1; }
+  cp "$src" "$dest"
 }
 
 
@@ -97,10 +92,8 @@ cp -R "$ROOT/docs" "$STAGE/doc/docs"
 cp -R "$ROOT/guest/wqui" "$STAGE/wqui"
 rm -rf "$STAGE/wqui/bin" "$STAGE/wqui/obj"
 
-fetch_licence https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt \
-  "$STAGE/doc/LICENSE.ntfsprogs"
-fetch_licence https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt \
-  "$STAGE/doc/LICENSE.hivex"
+copy_licence GPL-2.0.txt "$STAGE/doc/LICENSE.ntfsprogs"
+copy_licence LGPL-2.1.txt "$STAGE/doc/LICENSE.hivex"
 
 # A source tree that has been near macOS carries AppleDouble sidecars, and
 # `cp -R` brings them along. They are not ours to ship.
