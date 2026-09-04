@@ -73,15 +73,12 @@ On Linux, take the archive matching `uname -m`:
 
 ```console
 sudo apt install qemu-system qemu-utils ovmf libhivex-bin
-curl -LO https://github.com/carlbomsdata/winquick/releases/download/v0.4.0/winquick-0.4.0-linux-aarch64.tar.gz
-tar xzf winquick-0.4.0-linux-aarch64.tar.gz
-sudo cp -R winquick-0.4.0-linux-aarch64/* /usr/local/
+curl -LO https://github.com/carlbomsdata/winquick/releases/download/v0.4.0/winquick-0.4.0-linux-x86_64.tar.gz
+tar xzf winquick-0.4.0-linux-x86_64.tar.gz
+sudo cp -R winquick-0.4.0-linux-x86_64/* /usr/local/
 ```
 
-v0.4.0 ships an `aarch64` archive only. The `x86_64` build is produced by CI on
-every push and is otherwise a `./scripts/release-linux.sh 0.4.0` away on any
-x86_64 Linux machine; there was none to hand when this release was cut, and
-publishing an archive nobody had run is worse than not publishing one.
+Both `linux-x86_64` and `linux-aarch64` are published.
 
 On Windows, install QEMU 11 or newer, then unpack the zip and put the folder on
 `PATH`. It is one flat directory: `winquick.exe` with `ntfscp.exe`,
