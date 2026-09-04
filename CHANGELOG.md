@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## v0.4.0 — every host, and the defects that only show up on them
+
+Windows and Linux stop being places WinQuick happens to compile and become
+hosts it is tested on. Most of what follows was found by running the product on
+them rather than by reading the code.
+
 
 ### Fixed
 

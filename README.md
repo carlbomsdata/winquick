@@ -98,8 +98,8 @@ Or install the release archive by hand — see
 browser download needs:
 
 ```console
-tar -xzf winquick-0.3.0-darwin-arm64.tar.gz
-sudo cp -R winquick-0.3.0-darwin-arm64/* /usr/local/
+tar -xzf winquick-0.4.0-darwin-arm64.tar.gz
+sudo cp -R winquick-0.4.0-darwin-arm64/* /usr/local/
 winquick setup
 ```
 
@@ -110,8 +110,8 @@ take the one matching `uname -m`.
 
 ```console
 sudo apt install qemu-system-x86 qemu-utils ovmf libhivex-bin
-tar -xzf winquick-0.3.0-linux-x86_64.tar.gz
-sudo cp -R winquick-0.3.0-linux-x86_64/* /usr/local/
+tar -xzf winquick-0.4.0-linux-x86_64.tar.gz
+sudo cp -R winquick-0.4.0-linux-x86_64/* /usr/local/
 winquick setup
 ```
 
@@ -127,7 +127,7 @@ Install QEMU 11 or newer and put it on `PATH`, then unpack the archive and put
 the folder on `PATH` too:
 
 ```console
-tar -xf winquick-0.3.0-windows-x86_64.zip
+tar -xf winquick-0.4.0-windows-x86_64.zip
 winquick setup
 ```
 

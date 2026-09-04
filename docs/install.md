@@ -10,7 +10,7 @@ Microsoft.
 
 - An Apple Silicon Mac (M1 or newer), macOS 13 (Ventura) or later
 
-### Linux x86_64
+### Linux x86_64 or aarch64
 
 - Hardware virtualisation enabled in firmware, and KVM available:
   `/dev/kvm` must exist and be readable and writable by you. If it is not,
@@ -20,16 +20,28 @@ Microsoft.
   NVMe device the guest boots from; WinQuick would then boot cold on every
   run. `winquick doctor` checks this.
 - `libhivex-bin` for `winquick setup` (`sudo apt install libhivex-bin`)
-- UEFI firmware: `ovmf` on x86_64 (`sudo apt install ovmf`)
+- UEFI firmware: `ovmf` on x86_64, `qemu-efi-aarch64` on arm64
 
 WinQuick does not use libvirt and does not run a daemon.
 
 ### Windows x86_64
 
-Runs, but without the fast path — see the platform table in the README. A
-Windows host needs hardware virtualisation and the **Windows Hypervisor
-Platform** feature (which is not the same thing as installing the Hyper-V
-role).
+- Hardware virtualisation, and the **Windows Hypervisor Platform** feature,
+  which is not the same thing as installing the Hyper-V role
+- QEMU 11 or newer on `PATH`
+
+Windows boots the guest from scratch on every run rather than resuming a
+prepared one, so a command costs about 17 seconds instead of a fraction of a
+second. That is deliberate and measured: see the platform table in the README.
+
+### Not inside a virtual machine
+
+WinQuick needs real hardware virtualisation, and a nested hypervisor does not
+reliably provide it. Measured under Apple's Virtualization.framework, the guest
+firmware runs and then neither Windows nor a plain Linux kernel reaches its
+first line of output. `winquick doctor` reports when the machine is itself a
+guest, and a failed run says so rather than looking like a hang. Nesting works
+on some stacks; it is not something to count on.
 
 ## Homebrew
 
@@ -49,19 +61,33 @@ Homebrew downloads and unpacks the archive itself, so nothing is marked with
 If you would rather not use Homebrew:
 
 ```console
-curl -LO https://github.com/carlbomsdata/winquick/releases/download/v0.3.0/winquick-0.3.0-darwin-arm64.tar.gz
-curl -LO https://github.com/carlbomsdata/winquick/releases/download/v0.3.0/winquick-0.3.0-darwin-arm64.tar.gz.sha256
-shasum -a 256 -c winquick-0.3.0-darwin-arm64.tar.gz.sha256
-tar xzf winquick-0.3.0-darwin-arm64.tar.gz
-sudo cp -R winquick-0.3.0-darwin-arm64/* /usr/local/
+curl -LO https://github.com/carlbomsdata/winquick/releases/download/v0.4.0/winquick-0.4.0-darwin-arm64.tar.gz
+curl -LO https://github.com/carlbomsdata/winquick/releases/download/v0.4.0/winquick-0.4.0-darwin-arm64.tar.gz.sha256
+shasum -a 256 -c winquick-0.4.0-darwin-arm64.tar.gz.sha256
+tar xzf winquick-0.4.0-darwin-arm64.tar.gz
+sudo cp -R winquick-0.4.0-darwin-arm64/* /usr/local/
 brew install qemu hivex
 ```
 
-The archive's SHA-256 is
+On Linux, take the archive matching `uname -m`:
 
+```console
+sudo apt install qemu-system qemu-utils ovmf libhivex-bin
+curl -LO https://github.com/carlbomsdata/winquick/releases/download/v0.4.0/winquick-0.4.0-linux-x86_64.tar.gz
+tar xzf winquick-0.4.0-linux-x86_64.tar.gz
+sudo cp -R winquick-0.4.0-linux-x86_64/* /usr/local/
 ```
-ab8914eff97e0c58f78b50a1f6f49e5f3b357ea8849e83fa9fe32f69aaf3e963
+
+On Windows, install QEMU 11 or newer, then unpack the zip and put the folder on
+`PATH`. It is one flat directory: `winquick.exe` with `ntfscp.exe`,
+`ntfscat.exe` and `hivexsh.exe` beside it, so there is nothing else to install.
+
+```console
+curl.exe -LO https://github.com/carlbomsdata/winquick/releases/download/v0.4.0/winquick-0.4.0-windows-x86_64.zip
+tar -xf winquick-0.4.0-windows-x86_64.zip
 ```
+
+Every archive's SHA-256 is published beside it, and `SHA256SUMS` covers the lot.
 
 WinQuick looks for its helpers next to the binary, in `../libexec/winquick`, or
 in a `winquick-helpers` directory beside the binary — any of those layouts work.
@@ -70,7 +96,7 @@ Then `winquick doctor` to check, and `winquick setup`.
 
 ## Gatekeeper
 
-The v0.3.0 release is **not signed and not notarized** — no Apple Developer ID
+The v0.4.0 release is **not signed and not notarized** — no Apple Developer ID
 was available when it was built.
 
 This only matters for a **browser download**. Safari and other browsers mark

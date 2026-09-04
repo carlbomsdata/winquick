@@ -301,14 +301,29 @@ fn execute(command: &str, opts: &Options) -> Result<Outcome> {
                 match warm_execute(&ctx, &ready, command) {
                     Ok(o) => {
                         let _ = state::mark_restore_works(&backend);
+                        // Whatever the last timeout was about, this state works.
+                        state::clear_strikes();
                         return Ok(o);
                     }
                     Err(e) if crate::interrupt::interrupted() => return Err(e),
-                    // The guest took the command and then ran out of time on
-                    // it. Nothing is wrong with this prepared guest, and
-                    // running the same slow command again cold would only
-                    // spend the timeout a second time.
-                    Err(e) if command_timed_out(&e) => return Err(e),
+                    // The guest ran out of time on the command. Nothing is
+                    // necessarily wrong with this prepared guest, and running
+                    // the same slow command again cold would only spend the
+                    // timeout a second time -- so it is kept and not retried.
+                    //
+                    // Unless the command was still sitting in the mailbox
+                    // untouched, and was the last time too. A slow command does
+                    // not repeat by itself; a guest that resumed wrong does.
+                    Err(e) if command_timed_out(&e) => {
+                        if timed_out_without_taking_it(&e) == Some(true) && state::record_strike() {
+                            ctx.vlog(
+                                "this prepared guest has now timed out twice without ever \
+                                 taking a command; discarding it so the next run rebuilds",
+                            );
+                            let _ = state::discard();
+                        }
+                        return Err(e);
+                    }
                     Err(e) => {
                         ctx.vlog(format!("warm path failed: {e:#}"));
                         ctx.vlog("discarding ready state and falling back to cold boot");
@@ -849,14 +864,20 @@ fn explain_with_serial(e: anyhow::Error, serial: &Path) -> anyhow::Error {
 /// prepared guest, threw that guest away, and then ran the whole thing again
 /// cold -- up to `PREPARE_ATTEMPTS` more times, each paying the full timeout.
 #[derive(Debug)]
-struct CommandTimedOut(Duration);
+struct CommandTimedOut {
+    limit: Duration,
+    /// Whether the guest had taken the command out of the mailbox by the time
+    /// the clock ran out. Not part of the message -- it decides whether this
+    /// prepared guest gets the benefit of the doubt.
+    took_it: bool,
+}
 
 impl std::fmt::Display for CommandTimedOut {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
             "the command did not finish within {} s — raise it with `--timeout`",
-            self.0.as_secs()
+            self.limit.as_secs()
         )
     }
 }
@@ -882,6 +903,12 @@ fn as_command_timeout(e: anyhow::Error, limit: Duration, serial: &Path) -> anyho
     as_command_timeout_if(true, e, limit, serial)
 }
 
+/// Did the guest still have the command sitting in its mailbox when time ran
+/// out? `None` when this was not a command timeout at all.
+fn timed_out_without_taking_it(e: &anyhow::Error) -> Option<bool> {
+    e.chain().find_map(|c| c.downcast_ref::<CommandTimedOut>()).map(|c| !c.took_it)
+}
+
 /// The same, for a caller that knows whether the guest ever took the command.
 ///
 /// `acknowledged` is the whole basis for the reinterpretation. A guest that
@@ -890,23 +917,26 @@ fn as_command_timeout(e: anyhow::Error, limit: Duration, serial: &Path) -> anyho
 /// running the command at all, so calling it a command timeout says the state is
 /// fine when it is the one thing that is not.
 ///
-/// The warm path can reach the second wait without an acknowledgement: when the
-/// first wait times out it falls back to QEMU's byte counters, and a guest that
-/// resumed wrong can still move bytes. Measured over a hundred consecutive warm
-/// runs, one unlucky freeze produced a guest that spun at 98% of a processor,
-/// touched its disk enough to look alive, and never executed. Every following
-/// run restored the same state, waited the full timeout and failed, and because
-/// the failure was labelled a command timeout the state was kept -- for eight
-/// hours, until the machine was interrupted by hand. Nothing short of
-/// `winquick reset` would have cleared it.
+/// The warm path establishes it by looking at the mailbox when the timeout
+/// fires: a command still sitting there was never taken. That is a stronger
+/// question than the one the first wait asks, which gives up after ten seconds
+/// and can be beaten by a busy guest leaving the acknowledgement unflushed.
+///
+/// It matters because the fallback that wait uses -- QEMU's byte counters -- can
+/// be satisfied by a guest that resumed wrong. Measured over a hundred
+/// consecutive warm runs, one unlucky freeze produced a guest that spun at 98%
+/// of a processor, touched its disk enough to look alive and never executed.
+/// Every following run restored the same state, waited the full timeout and
+/// failed, and because the failure was labelled a command timeout the state was
+/// kept -- for eight hours, until the machine was interrupted by hand.
 fn as_command_timeout_if(
     acknowledged: bool,
     e: anyhow::Error,
     limit: Duration,
     serial: &Path,
 ) -> anyhow::Error {
-    if acknowledged && guest_was_silent(&e) && firmware_fault(serial).is_none() {
-        anyhow::Error::new(CommandTimedOut(limit))
+    if guest_was_silent(&e) && firmware_fault(serial).is_none() {
+        anyhow::Error::new(CommandTimedOut { limit, took_it: acknowledged })
     } else {
         e
     }
@@ -1129,10 +1159,6 @@ fn warm_execute(ctx: &Ctx, ready: &state::ReadyState, command: &str) -> Result<O
         // byte counters tell a busy guest from a halted one without asking the
         // guest anything.
         let io_at_resume = guest_io(&mut q);
-        // Whether the guest *took* the command, as opposed to merely looking
-        // busy. The difference decides what a later timeout means, so it is
-        // recorded rather than assumed.
-        let mut acknowledged = true;
         if let Err(e) =
             wait_until_gone(&mbox, mailbox::GO, &mut child, Instant::now() + FIRST_CONTACT)
         {
@@ -1147,15 +1173,22 @@ fn warm_execute(ctx: &Ctx, ready: &state::ReadyState, command: &str) -> Result<O
             } else {
                 return Err(e);
             };
-            acknowledged = false;
             ctx.vlog(format!(
                 "the guest has not acknowledged the command yet but {why} — \
                  it is working, not halted; waiting for the command instead"
             ));
         }
         let deadline = Instant::now() + ctx.timeout;
-        wait_for(&mbox, mailbox::CODE_FILE, &mut child, deadline)
-            .map_err(|e| as_command_timeout_if(acknowledged, e, ctx.timeout, &serial))?;
+        wait_for(&mbox, mailbox::CODE_FILE, &mut child, deadline).map_err(|e| {
+            // Whether the guest ever took the command decides what this timeout
+            // means, and by now it is not a guess: either the command is still
+            // sitting in the mailbox untouched, or the guest picked it up and
+            // was simply slow. Asking here rather than trusting what the first
+            // wait saw matters, because that wait gives up after ten seconds and
+            // a busy guest can leave the acknowledgement unflushed for longer.
+            let took_it = mailbox::probe(&mbox, mailbox::GO).is_none();
+            as_command_timeout_if(took_it, e, ctx.timeout, &serial)
+        })?;
         let t_exec = t0.elapsed();
         let r = mailbox::read_results(&mbox)?;
         if r.nonce.as_deref() != Some(nonce.as_str()) {
@@ -1431,17 +1464,19 @@ mod tests {
         std::fs::write(&quiet, b"UEFI firmware\r\n").unwrap();
         let silent = || anyhow::Error::new(GuestSilent(mailbox::CODE_FILE.into()));
 
-        // Acknowledged: the guest had the command and ran out of time on it.
-        // Nothing is wrong with the prepared state, so it is kept.
+        // Both are command timeouts: neither is retried, and neither throws a
+        // prepared guest away on its own. What differs is the fact recorded
+        // alongside, which is what a second one in a row acts on.
         let slow = as_command_timeout_if(true, silent(), limit, &quiet);
         assert!(command_timed_out(&slow), "{slow:#}");
-        assert!(!guest_was_silent(&slow));
+        assert_eq!(timed_out_without_taking_it(&slow), Some(false));
 
-        // Never acknowledged: the guest was not running the command at all.
-        // This has to stay a silent guest so the caller discards the state.
-        let wedged = as_command_timeout_if(false, silent(), limit, &quiet);
-        assert!(!command_timed_out(&wedged), "{wedged:#}");
-        assert!(guest_was_silent(&wedged), "the caller must still see a silent guest");
+        let untouched = as_command_timeout_if(false, silent(), limit, &quiet);
+        assert!(command_timed_out(&untouched), "{untouched:#}");
+        assert_eq!(timed_out_without_taking_it(&untouched), Some(true));
+
+        // Anything that is not a command timeout has no such fact to give.
+        assert_eq!(timed_out_without_taking_it(&anyhow!("qemu exited")), None);
 
         let _ = std::fs::remove_file(&quiet);
     }

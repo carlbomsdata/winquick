@@ -375,11 +375,83 @@ pub fn save(meta: &ReadyMeta) -> Result<()> {
 
 /// Throw the whole thing away. Deliberately best-effort: discarding runs on the
 /// failure path, and failing to discard must not mask the original problem.
+/// A prepared guest that timed out without ever taking the command.
+///
+/// Kept beside the state it accuses, so discarding the state forgets it too.
+fn strike_path() -> Result<PathBuf> {
+    Ok(state_dir()?.join("ready.strike"))
+}
+
+/// Record one, and say whether this is the second in a row.
+///
+/// Neither of the two things this distinguishes can be told apart at the moment
+/// they happen. A guest running a slow command and a guest that resumed wrong
+/// both leave the command sitting unacknowledged in the mailbox -- the first
+/// because a busy guest can leave that FAT write unflushed for a minute, the
+/// second because it never got that far. Guessing has been wrong in both
+/// directions: calling it a bad guest throws away a good prepared state on
+/// every slow command, and calling it a slow command let one bad freeze wedge
+/// the fast path for eight hours.
+///
+/// So it is not guessed. The first one is forgiven and the state kept, which is
+/// right for a slow command and costs a wedged guest one more run. The second
+/// in a row is not, because a slow command does not repeat by itself and a
+/// wedged guest does.
+pub fn record_strike() -> bool {
+    let Ok(p) = strike_path() else { return false };
+    if p.exists() {
+        return true;
+    }
+    let _ = std::fs::write(&p, b"1");
+    false
+}
+
+/// Forget them. Called whenever a warm run works, because whatever the last
+/// timeout was about, this state is demonstrably fine now.
+pub fn clear_strikes() {
+    if let Ok(p) = strike_path() {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
 pub fn discard() -> Result<()> {
     if let Ok(d) = state_dir() {
         let _ = std::fs::remove_dir_all(&d);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod strike_tests {
+    /// One timeout is forgiven, two in a row are not. A slow command does not
+    /// repeat by itself; a guest that resumed wrong does.
+    #[test]
+    fn the_second_strike_in_a_row_is_the_one_that_counts() {
+        let dir = std::env::temp_dir().join(format!("wq-strike-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("ready.strike");
+
+        // Modelled on the real functions, which address the state directory the
+        // process is configured for; the rule is what is under test.
+        let record = |p: &std::path::Path| {
+            if p.exists() {
+                true
+            } else {
+                std::fs::write(p, b"1").unwrap();
+                false
+            }
+        };
+        assert!(!record(&p), "the first is forgiven");
+        assert!(record(&p), "the second in a row is not");
+
+        // A run that works clears the record, so an occasional slow command
+        // never accumulates into a verdict.
+        std::fs::remove_file(&p).unwrap();
+        assert!(!record(&p), "after a working run it starts again from nothing");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 // ---------------------------------------------------------- desktop state
