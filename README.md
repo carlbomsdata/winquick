@@ -105,13 +105,13 @@ winquick setup
 
 ### Linux
 
-There is an archive for each architecture, `linux-x86_64` and `linux-aarch64`;
-take the one matching `uname -m`.
+Both architectures are supported. v0.4.0 publishes the `aarch64` archive; on
+x86_64, build one with `./scripts/release-linux.sh 0.4.0`.
 
 ```console
 sudo apt install qemu-system-x86 qemu-utils ovmf libhivex-bin
-tar -xzf winquick-0.4.0-linux-x86_64.tar.gz
-sudo cp -R winquick-0.4.0-linux-x86_64/* /usr/local/
+tar -xzf winquick-0.4.0-linux-aarch64.tar.gz
+sudo cp -R winquick-0.4.0-linux-aarch64/* /usr/local/
 winquick setup
 ```
 
