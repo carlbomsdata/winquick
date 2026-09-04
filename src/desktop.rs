@@ -7,7 +7,7 @@
 //! boot costs. That is what makes iterating on a UI bearable.
 //!
 //! The session is still disposable: the guest runs on a copy-on-write overlay
-//! over the desktop base image, and `winquick desktop stop` deletes it.
+//! over the desktop base image, and `winquick stop` deletes it.
 //!
 //! # What the guest needs
 //!
@@ -165,7 +165,7 @@ pub fn start(opts: &StartOptions) -> Result<()> {
     if let Some(s) = running() {
         bail!(
             "a desktop session is already running (pid {}).\n\n\
-             Use it, or replace it with:\n    winquick desktop stop",
+             Use it, or replace it with:\n    winquick stop",
             s.pid
         );
     }
@@ -187,7 +187,7 @@ pub fn start(opts: &StartOptions) -> Result<()> {
     if !missing.is_empty() {
         bail!(
             "a desktop session needs a little more set up first:\n\n{}\n\n\
-             Then run `winquick desktop start` again.",
+             Then run `winquick start` again.",
             missing.join("\n")
         );
     }
@@ -304,7 +304,7 @@ pub fn start(opts: &StartOptions) -> Result<()> {
     if crate::interrupt::interrupted() {
         eprintln!(
             "winquick: interrupted during startup; the desktop session is running.\n\
-             Stop it with:  winquick desktop stop"
+             Stop it with:  winquick stop"
         );
         std::process::exit(130);
     }
@@ -718,7 +718,7 @@ pub fn verb_help(verb: &str) -> Option<String> {
         s.push_str("\n\n");
         s.push_str(SELECTOR_HELP);
     }
-    s.push_str("\n\nRuns against the session started by `winquick desktop start`.");
+    s.push_str("\n\nRuns against the session started by `winquick start`.");
     Some(s)
 }
 

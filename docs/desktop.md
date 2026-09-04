@@ -261,7 +261,7 @@ $ winquick desktop get --hwnd 131146 --automation-id StatusText
 
 ```
 winquick desktop start --app ./publish
-winquick desktop launch app\MyApp.exe
+winquick desktop launch 'app\MyApp.exe'
 winquick desktop click --automation-id SaveButton
 winquick desktop stop
 ```

@@ -49,8 +49,8 @@ Getting started:
 
 Windows GUI applications:
   winquick ui-test MyApp.csproj --script my.uitest
-  winquick desktop start --app ./publish
-  winquick desktop launch app\\MyApp.exe
+  winquick start --app ./publish
+  winquick desktop launch 'app\\MyApp.exe'
   winquick desktop screenshot app.png
   winquick desktop click --automation-id SaveButton
 
@@ -201,7 +201,7 @@ This is about the session. `winquick info` is about the installation, and
 A desktop session boots Windows once and stays up, so each verb is a round
 trip rather than a boot.
 
-  winquick desktop start --app ./publish
+  winquick start --app ./publish
   winquick desktop launch app/MyApp.exe
   winquick desktop wait-window --title \"My App\"
   winquick desktop screenshot before.png
@@ -212,7 +212,7 @@ trip rather than a boot.
   winquick desktop click --automation-id SaveButton
   winquick desktop get --automation-id StatusText
   winquick desktop screenshot after.png
-  winquick desktop stop
+  winquick stop
 
 Elements are addressed by AutomationId first, then Name, ClassName or
 ControlType. A selector matching more than one element is an error rather
@@ -558,7 +558,7 @@ fn ui_test(
             "a desktop session is already running.\n\n\
              `ui-test` needs its own, because the application is baked into the\n\
              session's volume when it starts. Stop the current one with:\n    \
-             winquick desktop stop"
+             winquick stop"
         );
     }
 
@@ -698,7 +698,7 @@ fn desktop_cmd(action: DesktopCmd, verbose: bool) -> Result<i32> {
             if app.is_some() {
                 println!("Your publish directory is available inside Windows as `app`.");
             }
-            println!("Launch something with:  winquick desktop launch app\\<YourApp>.exe");
+            println!("Launch something with:  winquick desktop launch 'app\\<YourApp>.exe'");
             Ok(0)
         }
 
