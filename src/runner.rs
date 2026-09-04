@@ -301,8 +301,6 @@ fn execute(command: &str, opts: &Options) -> Result<Outcome> {
                 match warm_execute(&ctx, &ready, command) {
                     Ok(o) => {
                         let _ = state::mark_restore_works(&backend);
-                        // Whatever the last timeout was about, this state works.
-                        state::clear_strikes();
                         return Ok(o);
                     }
                     Err(e) if crate::interrupt::interrupted() => return Err(e),
@@ -312,17 +310,21 @@ fn execute(command: &str, opts: &Options) -> Result<Outcome> {
                     // timeout a second time -- so it is kept and not retried.
                     //
                     // Unless the command was still sitting in the mailbox
-                    // untouched, and was the last time too. A slow command does
-                    // not repeat by itself; a guest that resumed wrong does.
+                    // untouched. That is not a slow command; that is a guest
+                    // that resumed wrong and never ran anything. Keeping the
+                    // state would fail the next run the same way, and returning
+                    // the error would fail this one for a reason the user
+                    // cannot act on -- so the state goes and the command falls
+                    // through to a cold boot, which still answers it.
                     Err(e) if command_timed_out(&e) => {
-                        if timed_out_without_taking_it(&e) == Some(true) && state::record_strike() {
-                            ctx.vlog(
-                                "this prepared guest has now timed out twice without ever \
-                                 taking a command; discarding it so the next run rebuilds",
-                            );
-                            let _ = state::discard();
+                        if !a_cold_boot_would_help(&e) {
+                            return Err(e);
                         }
-                        return Err(e);
+                        ctx.vlog(
+                            "the prepared guest timed out without ever taking the command; \
+                             discarding it and booting cold for this run",
+                        );
+                        let _ = state::discard();
                     }
                     Err(e) => {
                         ctx.vlog(format!("warm path failed: {e:#}"));
@@ -362,7 +364,9 @@ fn execute(command: &str, opts: &Options) -> Result<Outcome> {
                             return Ok(o);
                         }
                         Err(e) if crate::interrupt::interrupted() => return Err(e),
-                        Err(e) if command_timed_out(&e) => return Err(e),
+                        Err(e) if command_timed_out(&e) && !a_cold_boot_would_help(&e) => {
+                            return Err(e)
+                        }
                         Err(e) => ctx.vlog(format!("that prepared guest did not work: {e:#}")),
                     }
                 }
@@ -382,7 +386,15 @@ fn execute(command: &str, opts: &Options) -> Result<Outcome> {
                                     return Ok(o);
                                 }
                                 Err(e) if crate::interrupt::interrupted() => return Err(e),
-                                Err(e) if command_timed_out(&e) => return Err(e),
+                                // A guest that took the command and then ran
+                                // out of time is the command's problem, and
+                                // rebuilding the state would not change it.
+                                // One that never took the command is this
+                                // freeze's problem, and is exactly what the
+                                // attempts below are for.
+                                Err(e) if command_timed_out(&e) && !a_cold_boot_would_help(&e) => {
+                                    return Err(e)
+                                }
                                 Err(e) => {
                                     ctx.vlog(format!(
                                         "newly built ready state did not work \
@@ -394,7 +406,13 @@ fn execute(command: &str, opts: &Options) -> Result<Outcome> {
                                     // dying, a disk error, a killed process --
                                     // is an accident of this run, and neither
                                     // rebuilding nor remembering it is right.
-                                    if !guest_was_silent(&e) {
+                                    //
+                                    // A guest that never took the command is a
+                                    // silent one wearing the timeout's name:
+                                    // `as_command_timeout_if` relabels the
+                                    // error, which loses the marker but not the
+                                    // fact.
+                                    if !guest_was_silent(&e) && !a_cold_boot_would_help(&e) {
                                         break;
                                     }
                                     if attempt == PREPARE_ATTEMPTS {
@@ -952,6 +970,42 @@ fn as_command_timeout(e: anyhow::Error, limit: Duration, serial: &Path) -> anyho
 
 /// Did the guest still have the command sitting in its mailbox when time ran
 /// out? `None` when this was not a command timeout at all.
+/// How long a healthy guest is allowed to take before "the command is still in
+/// the mailbox" means anything.
+///
+/// The acknowledgement is a FAT directory entry the guest writes and the host
+/// reads out of the image. A guest that has taken the command can still look
+/// untaken for a second or two while Windows holds that write, so below this
+/// the probe reports the flush, not the guest. Well above the roughly 100 ms a
+/// warm guest actually needs, and well below the 300 s default timeout.
+const ACKNOWLEDGEMENT_IS_CERTAIN: Duration = Duration::from_secs(60);
+
+/// Whether a warm run's timeout is worth answering with a cold boot.
+///
+/// A command the guest picked up and then ran out of time on is the command's
+/// problem. Booting cold to run it again would spend the same timeout for the
+/// same answer, so the error stands and the prepared guest is kept.
+///
+/// A command still sitting untaken in the mailbox when the timeout fired is the
+/// guest's problem: it resumed wrong and ran nothing. Keeping that state fails
+/// the next run the same way, and returning the error fails this one for a
+/// reason the user cannot act on. A cold boot still answers the command.
+///
+/// Only once the clock has run long enough to tell those apart. `--timeout 2`
+/// on a slow command expires before a perfectly healthy guest has flushed its
+/// acknowledgement, and reading that as a wedged guest threw away a good
+/// prepared state and re-ran the command cold, once per prepare attempt -- 136 s
+/// spent on a two-second timeout.
+fn a_cold_boot_would_help(e: &anyhow::Error) -> bool {
+    timed_out_without_taking_it(e) == Some(true)
+        && timed_out_after(e).is_some_and(|limit| limit >= ACKNOWLEDGEMENT_IS_CERTAIN)
+}
+
+/// The limit that expired, if this was a command timeout at all.
+fn timed_out_after(e: &anyhow::Error) -> Option<Duration> {
+    e.chain().find_map(|c| c.downcast_ref::<CommandTimedOut>()).map(|c| c.limit)
+}
+
 fn timed_out_without_taking_it(e: &anyhow::Error) -> Option<bool> {
     e.chain().find_map(|c| c.downcast_ref::<CommandTimedOut>()).map(|c| !c.took_it)
 }
@@ -1524,6 +1578,23 @@ mod tests {
 
         // Anything that is not a command timeout has no such fact to give.
         assert_eq!(timed_out_without_taking_it(&anyhow!("qemu exited")), None);
+
+        // And that distinction is the whole basis for what the warm path does
+        // next: fall back for the guest's fault, not for the command's.
+        assert!(!a_cold_boot_would_help(&slow), "a slow command times out cold too");
+        assert!(a_cold_boot_would_help(&untouched), "a guest that ran nothing must not stand");
+
+        // But only once the clock ran long enough to mean anything. A healthy
+        // guest can still look untaken for a second or two while Windows holds
+        // the acknowledgement write, so a short timeout is evidence of nothing
+        // -- and acting on it re-ran the command cold, once per prepare
+        // attempt, for a timeout the user asked to be short.
+        let impatient = as_command_timeout_if(false, silent(), Duration::from_secs(2), &quiet);
+        assert_eq!(timed_out_without_taking_it(&impatient), Some(true));
+        assert!(
+            !a_cold_boot_would_help(&impatient),
+            "a two-second timeout cannot convict the guest"
+        );
 
         let _ = std::fs::remove_file(&quiet);
     }
