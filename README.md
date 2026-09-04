@@ -33,7 +33,62 @@ image and leaves nothing behind.
 Medians on the reference host (Apple Silicon M4 Pro, macOS 26, QEMU 11.1), not
 guaranteed latencies. Per-run cost differs by host; see [Hosts](#hosts).
 
-## What you would use it for
+## Run any Windows program
+
+Anything that runs on Windows runs here — a system tool, a vendor's CLI you only
+have as a Windows binary, or an executable you just built. No wrapper, no shell
+required, and the exit code is the program's own.
+
+```console
+$ winquick run -- ipconfig /all
+
+Windows IP Configuration
+   Host Name . . . . . . . . . . . . : minwinpc
+```
+
+**Your own binaries too.** Build it inside Windows, bring it back, run it in a
+clean environment:
+
+```console
+winquick run -w . -a "publish/**" -- dotnet publish -c Release -o publish
+winquick run -w ./winquick-artifacts -- 'publish\MyTool.exe' alpha beta
+```
+
+```console
+MyTool running on Microsoft Windows NT 10.0.26100.0
+machine=MINWINPC args=alpha,beta
+```
+
+Exit codes come back untouched, so `&&`, `||` and CI logic behave exactly as
+they would on a Windows box.
+
+**Programs with a window, too.** A desktop session runs GUI executables you did
+not write and drives them through Microsoft UI Automation. Nothing appears on
+your screen — this is Notepad, in a headless Windows, typed into from a Mac:
+
+```console
+winquick start
+winquick desktop launch 'C:\Windows\System32\notepad.exe'
+winquick desktop type --class Edit --text "Hello from a Mac."
+winquick desktop screenshot notepad.png
+```
+
+![Windows Notepad running inside WinQuick with a line of text typed into it by UI automation](assets/screenshots/notepad.png)
+
+Task Manager, Notepad and a WPF application you just built are all the same
+thing to WinQuick: a program with a window, addressed through the accessibility
+tree rather than by pixel.
+
+**What will not run.** The guest is Microsoft's Validation OS — a deliberately
+minimal Windows. It has the kernel, the registry, the shell and the GUI stack,
+but not every service a desktop installation carries, so a tool that depends on
+one will not work. Sysinternals' `disk2vhd` is the clean example: it needs the
+Volume Shadow Copy service, which the image does not include, so it starts and
+exits without a window. Its console sibling `autorunsc`, which only reads the
+registry, runs and prints the guest's autostart entries. If a tool needs a
+service, `winquick run -- sc query <name>` answers the question in a second.
+
+## What else you would use it for
 
 The usual alternative is keeping a Windows VM alive — tens of gigabytes,
 minutes of boot, snapshots that rot — or pushing to CI and waiting. Both are
@@ -50,8 +105,6 @@ winquick cache sync                     # restore packages on the host, once
 winquick run -w . -- dotnet test
 ```
 
-![dotnet building and testing a project inside WinQuick](assets/screenshots/dotnet.png)
-
 WinQuick builds .NET Framework 2.0 through 4.8.1, netstandard, and net6.0
 through net10.0, including classic non-SDK projects, with no Visual Studio
 anywhere. Running a .NET Framework binary additionally needs
@@ -60,25 +113,20 @@ anywhere. Running a .NET Framework binary additionally needs
 
 **Check a Windows-only fix before you push it.** A failing path that only
 reproduces on Windows normally means a VM or a CI round trip. Here it is one
-command, and the exit code is the real one, so `&&` and shell logic behave.
+command.
 
 ```console
 winquick run -w . -- dotnet test --filter Category=WindowsOnly
 ```
 
-**Build a Windows binary and bring it back.** Artifacts are collected even when
-the command fails, because a failed build's logs are usually the point.
+**Retrieve build output.** Artifacts are collected even when the command fails,
+because a failed build's logs are usually the point. Patterns are relative to
+the workspace: `**` recurses, a single `*` does not. A pattern that would
+escape the workspace is refused before the run starts.
 
 ```console
 winquick run -w . -a "bin/Release/**" -- dotnet publish -c Release
 ```
-
-![Artifacts retrieved from the guest onto the host](assets/screenshots/artifacts.png)
-
-Patterns are relative to the workspace and matched inside Windows: `**`
-recurses, a single `*` does not, and `?` matches one character. Files land in
-`./winquick-artifacts/`, and a pattern that would escape the workspace is
-refused before the run starts.
 
 **Run PowerShell** without installing it on your machine.
 
@@ -86,8 +134,6 @@ refused before the run starts.
 winquick capability install powershell
 winquick run -- pwsh -NoProfile -Command '$PSVersionTable'
 ```
-
-![PowerShell 7 running inside WinQuick](assets/screenshots/powershell.png)
 
 **Give a coding agent a way to check its own Windows work.** WinQuick is an
 ordinary CLI, so agents, scripts and self-hosted CI use it identically. One
