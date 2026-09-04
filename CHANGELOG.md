@@ -1,5 +1,60 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A prepared guest that never ran the command no longer fails the run.** A
+  guest that resumed wrong leaves the command sitting untaken in the mailbox
+  and then times out. That was treated as possibly-slow-command: the first
+  occurrence returned the error and kept the state, and only the second in a
+  row discarded it — so a wedged guest cost two full timeouts before anything
+  recovered. A command still untaken when the timeout fires is the guest's
+  fault and not the command's, so the state is now discarded at once and the
+  run falls through to a cold boot, which still answers it.
+- **A freshly prepared guest that never ran the command no longer fails the
+  run either.** The prepare path returned on any command timeout, so a bad
+  freeze built moments earlier was neither retried nor fallen back from — it
+  just failed, reproducibly, whenever a rebuild happened to produce a wedged
+  guest. A timeout with the command still untaken now counts as the silent
+  guest it is: the attempts the loop already had are used, and a cold boot
+  answers the command if they are all unlucky. "Never took the command" only
+  counts once the clock has run long enough to mean it — a guest that has taken
+  the command can look untaken for a second or two while Windows flushes the
+  acknowledgement, so a deliberately short `--timeout` still fails fast and
+  still keeps the prepared guest.
+- **A GUI program now says where it can actually run.** Running a program with
+  a window under `winquick run` gave `STATUS_DLL_NOT_FOUND` with no output, or
+  a `DllNotFoundException` from inside WPF. It now says the environment is
+  wrong rather than the program, and names the commands that fix it. The hint
+  requires positive evidence — a PE subsystem of 2, or a managed stack trace
+  through WPF — so a console program missing an unrelated DLL is no longer told
+  to install a desktop.
+- **`LICENSE` is the full Apache-2.0 text.** It carried a short notice, which
+  GitHub reported as `NOASSERTION` rather than as a licence.
+- Release archives now fail to build if the licence files are missing from the
+  staged tree, on all three hosts. The scripts already copied them and already
+  said a release without them may not be distributed; nothing checked.
+
+### Changed
+
+- The documentation stops claiming more than the product does. "Any Windows
+  program", "test Windows software without a Windows machine" and the desktop
+  step timings were all wrong; what runs is now measured and tabulated, and
+  Linux is described as host-side verified rather than supported. The README
+  opens with a heavy-development notice.
+- Desktop step costs are measured and recorded in `docs/research.md`: a UI
+  Automation read is ~40 ms, `click` and `type` ~300 ms because they wait for
+  the UI to settle, and a window screenshot ~120 ms. The published figures had
+  said ~20 ms and ~59 ms.
+- `docs/research.md` no longer documents `winquick setup --with-powershell`,
+  which is spelled `--with powershell`.
+- Package metadata points at https://winquick.io.
+
+### Added
+
+- `SECURITY.md` and `CONTRIBUTING.md`.
+
 ## v0.4.0 — every host, and the defects that only show up on them
 
 Windows and Linux stop being places WinQuick happens to compile and become

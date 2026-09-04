@@ -14,6 +14,27 @@ tests, and for giving an automated agent somewhere safe to be wrong. It is not
 designed for detonating hostile samples. If you need that, use something built
 and audited for it.
 
+## When WinQuick uses the network
+
+The *guest* never does: no NIC is attached to it, ever. The host side reaches
+the network only when you ask it to, and only to fetch software:
+
+| Command | What it downloads |
+|---|---|
+| `winquick setup --accept-microsoft-terms` | the Validation OS image, from Microsoft |
+| `winquick capability install` | PowerShell or .NET from Microsoft and GitHub, and the virtio-win ISO for the desktop display driver |
+| `winquick cache sync` | your project's NuGet packages, using the host's own `dotnet` |
+
+Nothing else goes out. WinQuick has no analytics, no update check, no crash
+reporting and no account: there is no endpoint in the source that is not one of
+the downloads above.
+
+The PowerShell and .NET archives are checked against a SHA-256 pinned in the
+source before they are unpacked. The Validation OS image is not: Microsoft
+revises it in place behind `aka.ms`, so there is no stable hash to pin, and
+HTTPS to Microsoft is the only integrity guarantee there is. If that matters to
+you, download the image yourself and point `winquick setup --from` at it.
+
 ## The boundary
 
 | Direction | What can cross |

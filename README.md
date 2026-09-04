@@ -7,12 +7,12 @@
 > [Hosts](#hosts) for what has actually been verified on which machine. Try it,
 > report what breaks, but do not build a production pipeline on it yet.
 
-**A real Windows, for one command at a time.**
+**Real Windows, on demand.**
 
-WinQuick runs your command inside a genuine Windows that starts in about a
-quarter of a second and is destroyed when the command finishes. There is a
-Windows machine involved — there has to be — but you never install, boot,
-patch, snapshot or clean it up. From macOS, Linux or Windows.
+WinQuick runs commands and desktop applications inside a real, disposable
+Windows virtual machine, and manages its whole lifecycle for you. On the Apple
+Silicon reference host a warm run completes in about 310 ms; other hosts differ,
+and [Hosts](#hosts) says exactly how.
 
 ```console
 $ winquick run -- cmd /c ver
@@ -33,10 +33,10 @@ image and leaves nothing behind.
 
 | | |
 |---|---|
-| Windows command | **~280 ms** |
-| PowerShell command | ~650 ms |
-| `dotnet --version` | ~450 ms |
-| Desktop session start | ~350 ms, then ~20 ms per UI step |
+| Windows command | **~310 ms** |
+| PowerShell command | ~690 ms |
+| `dotnet --version` | ~520 ms |
+| Desktop session start | ~340 ms, then ~50 ms per UI read |
 
 Medians on the reference host (Apple Silicon M4 Pro, macOS 26, QEMU 11.1), not
 guaranteed latencies. Per-run cost differs by host; see [Hosts](#hosts).
@@ -91,7 +91,7 @@ Tested rather than assumed, on the ARM64 guest:
 | Console programs via `winquick run` | 21 of 26 Sysinternals command-line tools ran clean; the rest returned their own status codes, not errors |
 | GUI programs in a desktop session | Notepad, Task Manager, Process Monitor, TCPView, VMMap, RamMap, DiskView all open and can be driven |
 | x64 binaries on the ARM64 guest | Run under Windows' own emulation — including a self-contained x64 WPF application |
-| Kernel-driver tools | Process Monitor loaded its driver and captured 43,199 live events |
+| Kernel-driver tools | Process Monitor loaded its driver and captured live kernel events |
 | GUI programs via `winquick run` | **Fail.** The base runtime has no graphics stack; use a desktop session |
 | Tools needing an absent Windows service | **Fail.** See below |
 
@@ -127,19 +127,11 @@ winquick cache sync                     # restore packages on the host, once
 winquick run -w . -- dotnet test
 ```
 
-WinQuick builds .NET Framework 2.0 through 4.8.1, netstandard, and net6.0
-through net10.0, including classic non-SDK projects, with no Visual Studio
-anywhere. Running a .NET Framework binary additionally needs
-`winquick capability install dotnet-framework`;
+WinQuick can build projects targeting .NET Framework 2.0 through 4.8.1,
+netstandard, and net6.0 through net10.0, including classic non-SDK projects,
+with no Visual Studio anywhere. Running a .NET Framework binary additionally
+needs `winquick capability install dotnet-framework`;
 [docs/dotnet.md](docs/dotnet.md) records what has and has not been measured.
-
-**Check a Windows-only fix before you push it.** A failing path that only
-reproduces on Windows normally means a VM or a CI round trip. Here it is one
-command.
-
-```console
-winquick run -w . -- dotnet test --filter Category=WindowsOnly
-```
 
 **Retrieve build output.** Artifacts are collected even when the command fails,
 because a failed build's logs are usually the point. Patterns are relative to
@@ -148,13 +140,6 @@ escape the workspace is refused before the run starts.
 
 ```console
 winquick run -w . -a "bin/Release/**" -- dotnet publish -c Release
-```
-
-**Run PowerShell** without installing it on your machine.
-
-```console
-winquick capability install powershell
-winquick run -- pwsh -NoProfile -Command '$PSVersionTable'
 ```
 
 **Give a coding agent a way to check its own Windows work.** WinQuick is an
@@ -174,8 +159,8 @@ claude mcp add winquick -- winquick mcp
 
 ## Windows GUI testing
 
-This is the part that is hard to get any other way. WinQuick builds a WPF or
-WinForms application, runs it in a real Windows desktop, and drives it through
+This is the part that is hard to get any other way. WinQuick can build a WPF or
+WinForms application, run it in a real Windows desktop, and drive it through
 Microsoft UI Automation — the same interface Windows' own accessibility tools
 use. Nothing appears on your screen: no QEMU window, no RDP, no VNC.
 
@@ -206,7 +191,9 @@ winquick stop
 Controls are addressed by `AutomationId`, so tests do not depend on pixel
 positions or window layout. A selector matching more than one element is an
 error that lists the candidates rather than a guess. A session starts in about
-350 ms and stays up, so each step after that costs tens of milliseconds.
+340 ms and stays up, so a step after that is a round trip rather than a boot:
+reading an element takes about 50 ms, while `click` and `type` add a settle
+wait and take about 300 ms.
 
 The same sequence runs unattended as a script, which is the form worth putting
 in CI:
@@ -237,7 +224,10 @@ covers every verb.
 ## Proof
 
 Every image here comes from a real run, reproduced by
-[`scripts/capture-screenshots.sh`](scripts/capture-screenshots.sh).
+[`scripts/capture-screenshots.sh`](scripts/capture-screenshots.sh). The
+terminal images are typeset from output WinQuick actually printed during the
+capture; the Windows images are the guest's own framebuffer. Nothing is a
+mock-up.
 
 | Your project goes in, and stays untouched | The guest has no network adapter |
 |---|---|
@@ -245,9 +235,12 @@ Every image here comes from a real run, reproduced by
 
 ## Requirements
 
-Hardware virtualisation, 8 GB of free disk (what `winquick doctor` checks; the
-base runtime is 1.4 GB and capabilities add more), and Microsoft's Validation
-OS image, which you obtain from Microsoft under their licence.
+Hardware virtualisation, 8 GiB of free disk, and Microsoft's Validation OS
+image, which you obtain from Microsoft under their licence.
+
+The disk figure is what `winquick doctor` checks for. A working installation is
+roughly 1.4 GiB before any capabilities, and each capability adds its own;
+[What you get](#what-you-get) breaks both down.
 
 | | macOS | Linux | Windows |
 |---|---|---|---|
@@ -257,17 +250,12 @@ OS image, which you obtain from Microsoft under their licence.
 | QEMU | 11 or newer | 11 or newer | 11 or newer |
 | Also needs | hivex | `libhivex-bin`, `ovmf` | nothing further |
 
-Three things commonly cause trouble, and `winquick doctor` reports all of
-them. The first is an old QEMU: anything before version 11 cannot migrate the
-NVMe device the guest boots from, so every run falls back to a cold boot, and
-Ubuntu 24.04 still ships 8.2.2. The second is permissions on `/dev/kvm`; if it
-is not writable by you, add yourself to the `kvm` group with
-`sudo usermod -aG kvm $USER` and log in again.
-
-The third is running WinQuick inside a virtual machine. Windows needs genuine
-hardware virtualisation, and a nested hypervisor does not reliably provide it —
-under Apple's Virtualization.framework the guest firmware faults before Windows
-has started at all. Install WinQuick on the machine itself.
+Three things commonly cause trouble, and `winquick doctor` reports all of them:
+a QEMU older than 11, which cannot migrate the guest's boot device and so makes
+every run cold; `/dev/kvm` not being writable by you; and running WinQuick
+inside a virtual machine, which cannot give Windows the hardware virtualisation
+it needs. [docs/troubleshooting.md](docs/troubleshooting.md) has the fix for
+each.
 
 It does not use libvirt, and runs no daemon on any host.
 
@@ -321,13 +309,14 @@ success only when the runtime works. It takes about a minute.
 
 | Host | Accelerator | Guest | Per-run cost | Verified |
 |---|---|---|---|---|
-| Apple Silicon macOS 13+ | HVF | Windows ARM64 | **~280 ms** | fully; the reference host |
+| Apple Silicon macOS 13+ | HVF | Windows ARM64 | **~310 ms** | fully; the reference host |
 | Windows x86_64 | WHPX | Windows x64 | ~17 s | fully, on Windows 11 26200 |
 | Linux x86_64 / arm64 | KVM | matches the host | not measured | build, tests and diagnostics |
 | Windows ARM64, Intel Mac | — | — | — | not planned |
 
 macOS is the reference host and the source of the figures above: 100
-consecutive runs of `cmd /c ver` measured p50 287 ms, p99 304 ms, no failures.
+consecutive runs of `cmd /c ver` measured p50 310 ms, p95 317 ms, p99 319 ms,
+no failures.
 
 **Windows boots the guest from scratch on every run, by design.** A resumed
 WHPX guest runs correctly until something waits on a timer, and then waits far
@@ -339,7 +328,7 @@ cause is a Hyper-V synthetic-timer property of the platform, not a defect;
 [docs/whpx-resume.md](docs/whpx-resume.md) has the evidence and
 [docs/windows-host.md](docs/windows-host.md) the Windows detail.
 
-**On Linux the host side is verified and the guest is not.** WinQuick builds,
+**On Linux the host side is verified and the guest is not.** The binary compiles,
 the test suite passes and `winquick doctor` reports the host correctly. A guest
 has not been booted on real Linux hardware, because the only Linux machine
 available was itself a virtual machine. Nothing measured argues against it; see
@@ -350,7 +339,8 @@ available was itself a virtual machine. Nothing measured argues against it; see
 | | |
 |---|---|
 | Windows | Microsoft Validation OS 10.0.26100 — ARM64 on Apple Silicon, x64 elsewhere |
-| Runtime size | 763 MiB |
+| Windows guest image | 763 MiB |
+| Prepared state, added by the first run | ~600 MiB |
 | `dotnet test` on a small project | ~10 s |
 
 Optional capabilities, installed only on request:
@@ -371,12 +361,18 @@ runtime is never written to either way.
 
 Every run is clean. Files, registry keys and environment variables written by
 one run are gone in the next, and the Windows image itself is never modified.
-That is what makes it safe to hand to an automated agent.
+That is what makes it reasonable to hand to an automated agent: the worst a bad
+run can do is waste itself.
 
 The guest has no network adapter, which removes a large source of run-to-run
 variability. Being offline is not by itself a security boundary, and
 [docs/security.md](docs/security.md) is precise about what is; `winquick cache
 sync` restores NuGet packages on the host so that builds still work.
+
+The isolation is a real hardware hypervisor boundary — the guest is a separate
+operating system on separate virtual hardware — but WinQuick is not a hardened
+malware sandbox and has not been audited as one. It is built for running your
+own builds and tests, not for detonating hostile samples.
 
 Each run executes one command, though that command may do as much as you like:
 `cmd /c` with operators, a script, or `dotnet test` across a solution. What
@@ -384,11 +380,6 @@ does not exist is an interactive shell, and a desktop session is the
 long-lived alternative. Output comes back byte-exact when the command
 finishes rather than streaming as it is produced, for the reasons set out in
 [docs/architecture.md](docs/architecture.md).
-
-Workspace filenames may use any character in the basic multilingual plane.
-Characters above U+FFFF cannot be represented on the FAT volume that carries
-the workspace, so WinQuick checks the whole tree first and names every
-offending path rather than failing partway through.
 
 ## Commands
 

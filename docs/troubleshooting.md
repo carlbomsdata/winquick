@@ -253,6 +253,16 @@ two cannot be told apart by asking, so only the bundled copy is trusted and
 these variables are the way to override that. `hivexsh` is different: upstream's
 is exactly what WinQuick wants, so `PATH` is fine there.
 
+## A filename the workspace cannot carry
+
+Workspace filenames may use any character in the basic multilingual plane.
+Characters above U+FFFF -- emoji, and the rarer CJK extensions -- cannot be
+represented on the FAT volume that carries the workspace into the guest.
+
+WinQuick checks the whole tree before the run starts and names every offending
+path, rather than copying half of it and failing partway through. Rename or
+exclude those files.
+
 ## Still stuck
 
 `winquick --verbose run -- ...` shows what WinQuick is doing: which path it took,

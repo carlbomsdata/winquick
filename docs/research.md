@@ -802,7 +802,7 @@ it exists:
     pwsh.img     401 MiB apparent / 272 MiB allocated
 ```
 
-Built by `winquick setup --with-powershell`, which downloads the ZIP from
+Built by `winquick setup --with powershell`, which downloads the ZIP from
 Microsoft, verifies the SHA-256, unpacks it and writes the volume. About 7 seconds.
 
 Baking PowerShell into the base image was rejected for two reasons. It would grow
@@ -916,7 +916,7 @@ The integration suite is now 33 checks, all passing.
 **Keep PowerShell optional, as it is now.**
 
 The base runtime stays at 763 MiB and the `cmd`-only path stays at 234 ms. Users
-who want PowerShell run `winquick setup --with-powershell` once and then use
+who want PowerShell run `winquick setup --with powershell` once and then use
 `pwsh` by name, with no profile management, no drive letters and no flags at the
 call site — the UX goal is already met without a profile system.
 
@@ -2119,3 +2119,176 @@ be the default. It is now named explicitly, both there and in CI, so the
 archive is the same binary wherever it is built. The staged-tree check already
 enforces what matters about it: the executables link against nothing but system
 DLLs.
+
+## Desktop session step costs, measured 2026-09-04
+
+The published desktop figures had never been recorded here, and two of them
+were wrong. Re-measured end to end through the CLI, so each number includes
+host process start and one round trip to the guest bridge.
+
+Reference host: Apple Silicon M4 Pro, macOS 26, QEMU 11.1, prepared desktop
+state present. Application: `examples/WpfDemo`, published inside WinQuick.
+n = 7 full cycles (`stop` → `start` → `launch` → `wait-window` → `get` →
+`click` → `screenshot` → `stop`).
+
+| Step | p50 | min | max |
+|---|---|---|---|
+| `start --app` | **368 ms** | 367 ms | 419 ms |
+| `desktop launch` | **25 ms** | 21 ms | 40 ms |
+| `desktop wait-window` (first window drawn) | **644 ms** | 641 ms | 657 ms |
+| `desktop get` | **92 ms** | 85 ms | 111 ms |
+| `desktop click` | **309 ms** | 299 ms | 323 ms |
+| `desktop screenshot --title` | **120 ms** | 114 ms | 130 ms |
+| `stop` | **115 ms** | 106 ms | 116 ms |
+
+`click` looked anomalous, so it was decomposed separately (n = 5, warm
+session):
+
+| | p50 |
+|---|---|
+| `click` with the default settle | 299 ms |
+| `click --settle 0` | **49 ms** |
+| `get` (warm) | **42 ms** |
+| `type` (default settle) | 257 ms |
+
+So a UI Automation round trip is ~40–50 ms; the rest is the deliberate
+post-action settle wait that `click` and `type` apply so the next read sees a
+finished UI. The first `get` after a window appears costs about twice a warm
+one.
+
+This corrected two published claims: "~20 ms per UI step" (a click is ~300 ms
+with settle, ~50 ms without) and "a window screenshot ~59 ms" (it is ~120 ms).
+
+## A wedged prepared guest could fail a run outright, 2026-09-04
+
+`tests/integration.sh` failed one check, reproducibly, in the sequence that
+corrupts `ready.state` and then removes the state directory entirely:
+
+```
+FAIL  missing ready state rebuilds automatically -- got [1] want [0]
+```
+
+With `--verbose` the run explains itself:
+
+```
+no ready state yet
+preparing a reusable Windows image (one-off, takes a few seconds)
+guest ready after 9.1s
+ready state built in 10.8s (599 MiB)
+... -incoming file:.../ready.state
+the guest has not acknowledged the command yet but has moved 296 MiB
+  -- it is working, not halted; waiting for the command instead
+the command did not finish within 90 s
+```
+
+So the state was built and immediately used, the guest resumed from it never
+took the command out of the mailbox, and the run failed. This is the freeze
+lottery already documented above: the agent's poll loop mounts the mailbox,
+looks and dismounts, and a guest frozen in the wrong part of that comes back
+unable to poll.
+
+What made it fatal rather than merely unlucky is that both `warm_execute` call
+sites reduced to `Err(e) if command_timed_out(&e) => return Err(e)`. That is
+right for a command the guest picked up and then ran too long on — booting cold
+to run it again would spend the same timeout for the same answer. It is wrong
+for a command still sitting untaken when the timeout fired, which says the
+guest ran nothing at all. The distinction already existed
+(`timed_out_without_taking_it`, added when one bad freeze wedged the fast path
+for eight hours) but only fed a two-strike counter on the *restore* path, and
+nothing at all on the *prepare* path.
+
+Two further details hid it:
+
+- `as_command_timeout_if` replaces the error rather than wrapping it, so the
+  `GuestSilent` marker is gone by the time the retry loop tests for it. A guest
+  that was silent therefore failed `guest_was_silent` and broke out of the loop
+  after one attempt, never using the retries that exist for exactly this.
+- Under the two-strike rule the restore path cost the user *two* full timeouts
+  before anything was discarded. Both were observed: a suite run whose first
+  two commands failed and everything after them passed.
+
+Fixed by naming the decision once, as `a_cold_boot_would_help`, and using it in
+all three places: keep the error when the guest took the command, and otherwise
+discard the state, use the prepare attempts, and fall through to a cold boot,
+which still answers the command.
+
+Verified on the sequence that reproduced it — seed a state, corrupt it, run,
+remove the state directory, run — three times in a row:
+
+| | before | after |
+|---|---|---|
+| `winquick run -- cmd /c ver` | exit 1, timed out | **exit 0**, correct output, 3 of 3 |
+
+The pre-change binary was rebuilt from `git stash` and failed the same way, so
+this was a defect in v0.4.0 and not a regression introduced alongside it.
+
+### The correction that fix needed, same day
+
+The first version of the fix read "the command was never taken" as proof on its
+own. It is not. The acknowledgement is a FAT directory entry the guest writes
+and the host reads back out of the image, and a guest that has taken the
+command can still look untaken for a second or two while Windows holds that
+write. `tests/integration.sh` caught it immediately:
+
+```
+FAIL  timeout retried -- took 136s for a 2 s timeout
+FAIL  prepared guest discarded by a timeout -- no ready.json
+```
+
+`winquick run --timeout 2 -- cmd /c "ping -n 30 127.0.0.1"` expired before the
+acknowledgement was visible, was read as a wedged guest, and re-ran the whole
+command cold once per prepare attempt — the exact regression the two tests were
+written for, reproduced in full.
+
+The evidence is therefore not "untaken" but "untaken *after long enough to
+know*". `ACKNOWLEDGEMENT_IS_CERTAIN` is 60 s: far above the ~100 ms a warm
+guest needs, far below the 300 s default timeout, so an ordinary run gets the
+fallback and a deliberately short timeout keeps its old, fast answer.
+
+| `--timeout 2` on `ping -n 30` | v0.4.0 | first fix | corrected |
+|---|---|---|---|
+| elapsed | 14 s | **136 s** | 14 s |
+| prepared guest | kept | **discarded** | kept |
+
+Both behaviours were then checked directly rather than only through the suite:
+the short timeout fails in 14 s with the guest kept, and the wedged-guest
+sequence recovers with exit 0 twice in a row.
+
+## Reference figures, re-measured after the recovery fix, 2026-09-04
+
+Every number published on the readme and the website comes from this run.
+Reference host: Apple Silicon M4 Pro, macOS 26, QEMU 11.1, prepared guest
+present, `dotnet-framework` and `desktop` installed, no other virtual machine
+running. Timed from a single persistent harness, so each figure is wall time
+for the whole `winquick` process, not just the guest.
+
+| | n | fail | p50 | p95 | p99 | max |
+|---|---|---|---|---|---|---|
+| `cmd /c ver` | 100 | **0** | **310 ms** | 317 ms | 319 ms | 319 ms |
+| `pwsh -Command $PSVersionTable.PSVersion.Major` | 20 | 0 | **690 ms** | 701 ms | 701 ms | 701 ms |
+| `cmd /c dotnet --version` | 20 | 0 | **520 ms** | 531 ms | 545 ms | 545 ms |
+
+Repeated once more on an otherwise idle machine to be sure the numbers were
+not a warm-cache artefact: p50 309 / 692 / 522, within 2 ms of the above.
+
+Desktop session, n = 7 full cycles against `examples/WpfDemo`:
+
+| Step | p50 | min | max |
+|---|---|---|---|
+| `start --app` | **338 ms** | 326 ms | 340 ms |
+| `desktop launch` | 20 ms | 18 ms | 27 ms |
+| `desktop wait-window` | 659 ms | 639 ms | 666 ms |
+| `desktop get` (first, after the window appears) | 93 ms | 86 ms | 101 ms |
+| `desktop click` (default settle) | 305 ms | 293 ms | 319 ms |
+| `desktop screenshot --title` | 124 ms | 111 ms | 137 ms |
+
+Warm, against a session already up (n = 6): `get` 52 ms, `click --settle 0`
+54 ms. So a UI Automation round trip is ~50 ms and the rest of a default
+`click` is the settle wait.
+
+These supersede the earlier figures of 292 / 684 / 491 ms and a 370 ms desktop
+start. Runs measure about 6% slower than that and the desktop start about 8%
+faster. The cause was not chased down: both measurements are on the same
+machine with the same capabilities installed, so it is host state rather than
+anything in the product, and nothing in the recovery fix touches the path a
+successful run takes. What is published is what was measured last.
