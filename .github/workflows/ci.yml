@@ -83,20 +83,22 @@ jobs:
       - name: the binary runs and reports itself
         run: cargo run --release --locked --target ${{ matrix.target }} -- --version
 
-  # Linux on arm64 is a supported host, but the hosted arm64 runners are not
-  # free for private repositories. `cargo check` needs no linker and no
-  # emulation, so the target at least cannot rot silently; it is verified for
-  # real on an arm64 Linux machine before a release.
+  # Linux on arm64 builds and runs its tests natively. It used to be a bare
+  # `cargo check` on an x86_64 runner, because hosted arm64 runners were not
+  # free; they are, for public repositories, so the target is now exercised
+  # rather than merely compiled. This says nothing about the Linux *guest*,
+  # which still has no bare-metal proof -- see the host table in the readme.
   cross:
-    name: Linux arm64 (check only)
-    runs-on: ubuntu-latest
+    name: Linux arm64
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-unknown-linux-gnu
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check --all-targets --locked --target aarch64-unknown-linux-gnu
+      - run: cargo build --release --locked
+      - run: cargo test --release --locked
+      - name: the binary runs and reports itself
+        run: cargo run --release --locked -- --version
 
   # A release that cannot be packaged is not a release. These run the real
   # release scripts, which also build the patched ntfsprogs and hivex helpers
@@ -114,6 +116,10 @@ jobs:
             os: macos-latest
           - name: linux-x86_64
             os: ubuntu-latest
+          # Named for what the archive is called, which release-linux.sh takes
+          # from `uname -m`.
+          - name: linux-aarch64
+            os: ubuntu-24.04-arm
           - name: windows-x86_64
             os: windows-2022
     steps:

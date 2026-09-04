@@ -85,6 +85,7 @@ find "$STAGE" -name '.DS_Store' -delete
 
 echo "==> checking the staged tree"
 for required in bin/winquick libexec/winquick/ntfscp libexec/winquick/ntfscat \
+                share/doc/winquick/LICENSE share/doc/winquick/THIRD_PARTY_NOTICES.md \
                 libexec/winquick/LICENSE.ntfsprogs \
                 share/winquick/wqui/wqui.csproj; do
   [ -e "$STAGE/$required" ] || { echo "missing from the archive: $required" >&2; exit 1; }
