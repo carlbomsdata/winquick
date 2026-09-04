@@ -65,9 +65,14 @@ remote mode, no authentication and no listening socket.
 |---|---|
 | `windows_run` | Run one command in a disposable Windows and get stdout, stderr and the exit code back |
 
-`windows_run` is the tool for almost everything: builds, tests, PowerShell,
-any Windows executable. Arguments are an **array**, never a shell string —
+`windows_run` is the tool for almost everything: builds, tests, PowerShell and
+console executables. Arguments are an **array**, never a shell string —
 WinQuick applies the correct quoting for `cmd` and for native programs itself.
+
+A program with a **window** is the exception. The runtime `windows_run` uses
+carries no graphics stack, so launching a GUI executable through it fails with
+a missing-DLL error rather than opening anything. Those need a desktop session
+and the `desktop_*` tools.
 
 ```json
 {

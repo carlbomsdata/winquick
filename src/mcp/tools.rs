@@ -42,7 +42,10 @@ pub const TOOLS: &[Tool] = &[
             "Run one command inside a real, disposable Windows environment and return its \
              stdout, stderr and exit code. This is the tool to reach for whenever something \
              must be built, tested or checked on Windows rather than reasoned about: \
-             `dotnet build`, `dotnet test`, a PowerShell script, or any Windows executable. \
+             `dotnet build`, `dotnet test`, a PowerShell script, or any console executable. A \
+             program with a window needs a desktop session and the `desktop_*` tools \
+             instead: the runtime this uses has no graphics stack, so launching one here \
+             fails with a missing-DLL error. \
              Each call starts from a pristine Windows and throws it away afterwards, so runs \
              never contaminate each other. Pass the program and its arguments separately — \
              never a single shell string. The guest has no network. To build a project, set \

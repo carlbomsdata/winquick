@@ -1,5 +1,12 @@
 # WinQuick
 
+> ### ⚠️ Under heavy development
+>
+> WinQuick is young and moving quickly. Commands, capabilities and measured
+> numbers change between releases, and the hosts are not equally proven — see
+> [Hosts](#hosts) for what has actually been verified on which machine. Try it,
+> report what breaks, but do not build a production pipeline on it yet.
+
 **Test Windows software without a Windows machine.**
 
 WinQuick runs a command inside a real, disposable Windows environment and gives
@@ -33,11 +40,11 @@ image and leaves nothing behind.
 Medians on the reference host (Apple Silicon M4 Pro, macOS 26, QEMU 11.1), not
 guaranteed latencies. Per-run cost differs by host; see [Hosts](#hosts).
 
-## Run any Windows program
+## Running Windows programs
 
-Anything that runs on Windows runs here — a system tool, a vendor's CLI you only
-have as a Windows binary, or an executable you just built. No wrapper, no shell
-required, and the exit code is the program's own.
+Console programs run directly. Anything that does not need a graphics stack —
+a system tool, a vendor CLI you only have as a Windows binary, or an executable
+you just built — runs with no wrapper and returns its own exit code.
 
 ```console
 $ winquick run -- ipconfig /all
@@ -46,47 +53,61 @@ Windows IP Configuration
    Host Name . . . . . . . . . . . . : minwinpc
 ```
 
-**Your own binaries too.** Build it inside Windows, bring it back, run it in a
-clean environment:
-
 ```console
 winquick run -w . -a "publish/**" -- dotnet publish -c Release -o publish
 winquick run -w ./winquick-artifacts -- 'publish\MyTool.exe' alpha beta
 ```
 
-```console
-MyTool running on Microsoft Windows NT 10.0.26100.0
-machine=MINWINPC args=alpha,beta
-```
+Exit codes come back untouched, so `&&`, `||` and CI logic behave as they would
+on a Windows box: a program returning 2 makes `winquick run` exit 2.
 
-Exit codes come back untouched, so `&&`, `||` and CI logic behave exactly as
-they would on a Windows box.
-
-**Programs with a window, too.** A desktop session runs GUI executables you did
-not write and drives them through Microsoft UI Automation. Nothing appears on
-your screen — this is Notepad, in a headless Windows, typed into from a Mac:
+**Programs with a window need the desktop capability.** The base runtime has no
+graphics stack at all, so launching a GUI executable through `winquick run`
+fails with a missing-DLL error rather than doing nothing useful. Install the
+capability once, start a session, and GUI programs run and can be driven:
 
 ```console
-winquick start
-winquick desktop launch 'C:\Windows\System32\notepad.exe'
-winquick desktop type --class Edit --text "Hello from a Mac."
-winquick desktop screenshot notepad.png
+winquick capability install desktop      # once, about a minute
+
+winquick start --app ./tools
+winquick desktop launch 'app\vhdx2vmdk.exe'
+winquick desktop wait-window --title "VHDX"
+winquick desktop screenshot tool.png
 ```
 
-![Windows Notepad running inside WinQuick with a line of text typed into it by UI automation](assets/screenshots/notepad.png)
+![A third-party x64 WPF application running inside WinQuick's headless Windows desktop](assets/screenshots/thirdparty-gui.png)
 
-Task Manager, Notepad and a WPF application you just built are all the same
-thing to WinQuick: a program with a window, addressed through the accessibility
-tree rather than by pixel.
+That is a self-contained **x64** WPF application, downloaded as a release
+binary, running on the **ARM64** guest under Windows' own emulation. Windows
+Notepad and Task Manager launch and drive the same way.
 
-**What will not run.** The guest is Microsoft's Validation OS — a deliberately
-minimal Windows. It has the kernel, the registry, the shell and the GUI stack,
-but not every service a desktop installation carries, so a tool that depends on
-one will not work. Sysinternals' `disk2vhd` is the clean example: it needs the
-Volume Shadow Copy service, which the image does not include, so it starts and
-exits without a window. Its console sibling `autorunsc`, which only reads the
-registry, runs and prints the guest's autostart entries. If a tool needs a
-service, `winquick run -- sc query <name>` answers the question in a second.
+### What runs, and what does not
+
+Tested rather than assumed, on the ARM64 guest:
+
+| | Result |
+|---|---|
+| Console programs via `winquick run` | 21 of 26 Sysinternals command-line tools ran clean; the rest returned their own status codes, not errors |
+| GUI programs in a desktop session | Notepad, Task Manager, Process Monitor, TCPView, VMMap, RamMap, DiskView all open and can be driven |
+| x64 binaries on the ARM64 guest | Run under Windows' own emulation — including a self-contained x64 WPF application |
+| Kernel-driver tools | Process Monitor loaded its driver and captured 43,199 live events |
+| GUI programs via `winquick run` | **Fail.** The base runtime has no graphics stack; use a desktop session |
+| Tools needing an absent Windows service | **Fail.** See below |
+
+![Process Monitor, TCPView and other real Windows applications running at once inside WinQuick](assets/screenshots/real-apps.png)
+
+The guest is Microsoft's Validation OS — a deliberately minimal Windows. It has
+the kernel, registry, shell and, with the desktop capability, the GUI stack. It
+does not carry every service a desktop installation has, and a tool that needs
+a missing one will not work.
+
+Sysinternals' `disk2vhd` is the clear example: it needs the Volume Shadow Copy
+service to snapshot a live volume, and `vssvc.exe` is not on Microsoft's media
+at all, so there is no package to add. It starts and exits without a window.
+
+`winquick run -- sc query <name>` answers the question for any tool in a
+second, and running it under `winquick run` will show you the loader error if a
+DLL is missing.
 
 ## What else you would use it for
 
