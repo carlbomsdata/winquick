@@ -1,9 +1,10 @@
 # WinQuick
 
-**Disposable Windows environments, on demand.**
+**Test Windows software without a Windows machine.**
 
-Run a real Windows command from macOS, Linux or Windows in a clean environment
-that is discarded afterwards.
+WinQuick runs a command inside a real, disposable Windows environment and gives
+you back its output and exit code. It starts in about a quarter of a second,
+and nothing it does survives the run.
 
 ```console
 $ winquick run -- cmd /c ver
@@ -11,9 +12,16 @@ $ winquick run -- cmd /c ver
 Microsoft Windows [Version 10.0.26100.8972]
 ```
 
+```console
+brew install carlbomsdata/tap/winquick
+winquick setup
+```
+
 A real Windows kernel under QEMU, on Apple's Hypervisor Framework, KVM or WHPX.
 Not Wine, not an emulator, not a container. Every run starts from a pristine
 image and leaves nothing behind.
+
+![Five consecutive WinQuick runs, each completing in about a third of a second](assets/screenshots/speed.png)
 
 | | |
 |---|---|
@@ -25,21 +33,147 @@ image and leaves nothing behind.
 Medians on the reference host (Apple Silicon M4 Pro, macOS 26, QEMU 11.1), not
 guaranteed latencies. Per-run cost differs by host; see [Hosts](#hosts).
 
-```console
-brew install carlbomsdata/tap/winquick
-winquick setup
-```
+## What you would use it for
 
-## Why
-
-Testing Windows software without a Windows machine usually means keeping a VM
-alive: tens of gigabytes, minutes of boot, snapshots that rot. That is too
-heavy for a single test run, and far too heavy for an agent doing it fifty
+The usual alternative is keeping a Windows VM alive — tens of gigabytes,
+minutes of boot, snapshots that rot — or pushing to CI and waiting. Both are
+too heavy for a single test run, and far too heavy for an agent doing it fifty
 times an hour.
 
-WinQuick does one thing: run a command inside a genuine Windows environment,
-return its stdout, stderr and exit code exactly, and discard the environment.
-The mental model is `docker run --rm` with a real Windows kernel.
+**Run your test suite on Windows, from a Mac.** The current directory appears
+inside Windows as `C:\workspace` and becomes the working directory. It is
+copied in and never copied back, so a build cannot touch your source.
+
+```console
+winquick capability install dotnet-sdk
+winquick cache sync                     # restore packages on the host, once
+winquick run -w . -- dotnet test
+```
+
+![dotnet building and testing a project inside WinQuick](assets/screenshots/dotnet.png)
+
+WinQuick builds .NET Framework 2.0 through 4.8.1, netstandard, and net6.0
+through net10.0, including classic non-SDK projects, with no Visual Studio
+anywhere. Running a .NET Framework binary additionally needs
+`winquick capability install dotnet-framework`;
+[docs/dotnet.md](docs/dotnet.md) records what has and has not been measured.
+
+**Check a Windows-only fix before you push it.** A failing path that only
+reproduces on Windows normally means a VM or a CI round trip. Here it is one
+command, and the exit code is the real one, so `&&` and shell logic behave.
+
+```console
+winquick run -w . -- dotnet test --filter Category=WindowsOnly
+```
+
+**Build a Windows binary and bring it back.** Artifacts are collected even when
+the command fails, because a failed build's logs are usually the point.
+
+```console
+winquick run -w . -a "bin/Release/**" -- dotnet publish -c Release
+```
+
+![Artifacts retrieved from the guest onto the host](assets/screenshots/artifacts.png)
+
+Patterns are relative to the workspace and matched inside Windows: `**`
+recurses, a single `*` does not, and `?` matches one character. Files land in
+`./winquick-artifacts/`, and a pattern that would escape the workspace is
+refused before the run starts.
+
+**Run PowerShell** without installing it on your machine.
+
+```console
+winquick capability install powershell
+winquick run -- pwsh -NoProfile -Command '$PSVersionTable'
+```
+
+![PowerShell 7 running inside WinQuick](assets/screenshots/powershell.png)
+
+**Give a coding agent a way to check its own Windows work.** WinQuick is an
+ordinary CLI, so agents, scripts and self-hosted CI use it identically. One
+line in a project's README is enough:
+
+```
+Windows commands can be run locally with:  winquick run -- <command>
+```
+
+It is also a native [MCP](https://modelcontextprotocol.io) server, which gives
+an agent structured tools instead of shell syntax:
+
+```console
+claude mcp add winquick -- winquick mcp
+```
+
+## Windows GUI testing
+
+This is the part that is hard to get any other way. WinQuick builds a WPF or
+WinForms application, runs it in a real Windows desktop, and drives it through
+Microsoft UI Automation — the same interface Windows' own accessibility tools
+use. Nothing appears on your screen: no QEMU window, no RDP, no VNC.
+
+![A WPF application running in WinQuick with its text box, combo box and checkbox filled in by UI automation](assets/screenshots/ui-automation.png)
+
+That screenshot is the guest's own framebuffer, captured after a script typed
+into the text box, chose from the combo box, ticked the checkbox and pressed
+Save. The application never ran on the host.
+
+```console
+winquick capability install desktop      # once, about a minute
+
+winquick start --app ./publish
+winquick desktop launch 'app\MyApp.exe'
+winquick desktop wait-window --title "Device Configuration"
+winquick desktop screenshot before.png
+
+winquick desktop type   --automation-id DeviceNameBox --text "PLC-01"
+winquick desktop select --automation-id ModeCombo --item Diagnostic
+winquick desktop toggle --automation-id LoggingCheck --state on
+winquick desktop click  --automation-id SaveButton
+winquick desktop get    --automation-id StatusText
+
+winquick desktop screenshot after.png
+winquick stop
+```
+
+Controls are addressed by `AutomationId`, so tests do not depend on pixel
+positions or window layout. A selector matching more than one element is an
+error that lists the candidates rather than a guess. A session starts in about
+350 ms and stays up, so each step after that costs tens of milliseconds.
+
+The same sequence runs unattended as a script, which is the form worth putting
+in CI:
+
+```console
+winquick ui-test MyApp.csproj --script smoke.uitest --out ./shots
+```
+
+```
+launch app\MyApp.exe
+wait-window --title "Device Configuration"
+expect --automation-id SaveButton --expect-enabled false
+type   --automation-id DeviceNameBox --text "PLC-01"
+click  --automation-id SaveButton
+expect --automation-id StatusText --expect-name "Saved: PLC-01"
+screenshot after.png
+```
+
+`ui-test` builds the project inside Windows first, so no .NET SDK is needed on
+the host, and it exits non-zero if any `expect` fails. The screenshots it
+writes are ordinary PNGs you can attach to a build.
+
+There is a complete worked example in
+[examples/WpfDemo](examples/WpfDemo/) — a real application, a fourteen-step
+script and the screenshots it produces. [docs/desktop.md](docs/desktop.md)
+covers every verb.
+
+## Proof
+
+Every image here comes from a real run, reproduced by
+[`scripts/capture-screenshots.sh`](scripts/capture-screenshots.sh).
+
+| Your project goes in, and stays untouched | The guest has no network adapter |
+|---|---|
+| ![A project copied into Windows, with the host file SHA-256 unchanged afterwards](assets/screenshots/workspace.png) | ![The Windows guest reporting zero IPv4 adapters and a failed ping](assets/screenshots/offline.png) |
 
 ## Requirements
 
@@ -142,127 +276,6 @@ the test suite passes and `winquick doctor` reports the host correctly. A guest
 has not been booted on real Linux hardware, because the only Linux machine
 available was itself a virtual machine. Nothing measured argues against it; see
 [docs/research.md](docs/research.md).
-
-## Usage
-
-**Commands**
-
-```console
-winquick run -- cmd /c ver
-winquick run -- cmd /c "echo A & echo B"
-```
-
-Arguments work as in `docker run`: the program and its arguments are separate
-words. stdout, stderr and the exit code are returned exactly as Windows
-produced them.
-
-**PowerShell and .NET**
-
-```console
-winquick capability install powershell
-winquick run -- pwsh -NoProfile -Command '$PSVersionTable'
-
-winquick capability install dotnet-sdk
-winquick cache sync                      # restore packages on the host, once
-winquick run -w . -- dotnet test
-```
-
-`-w .` presents the current directory inside Windows as `C:\workspace` and
-makes it the working directory. It is copied in and never copied back, so a
-build cannot modify your source.
-
-WinQuick builds .NET Framework 2.0 through 4.8.1, netstandard, and net6.0
-through net10.0, including classic non-SDK projects, with no Visual Studio
-required. Running a .NET Framework binary additionally needs
-`winquick capability install dotnet-framework`.
-[docs/dotnet.md](docs/dotnet.md) records what has and has not been measured.
-
-**Retrieving files**
-
-```console
-winquick run -w . -a "bin/Release/**" -- dotnet publish -c Release
-```
-
-Files are written to `./winquick-artifacts/`, and are collected even when the
-command fails. Patterns are relative to the workspace and matched inside
-Windows; `**` recurses, a single `*` does not, and `?` matches one character. A
-pattern that would leave the workspace is refused before the run starts.
-
-**Desktop applications**
-
-WinQuick can build a WPF or WinForms application, run it in a real Windows
-desktop and drive it through UI Automation. Nothing appears on your screen: no
-QEMU window, no RDP, no VNC.
-
-```console
-winquick capability install desktop      # once, about a minute
-
-winquick start --app ./winquick-artifacts/publish
-winquick desktop launch 'app\MyApp.exe'
-winquick desktop wait-window --title "Device Configuration"
-winquick desktop screenshot before.png
-winquick desktop type  --automation-id DeviceNameBox --text "PLC-01"
-winquick desktop click --automation-id SaveButton
-winquick desktop get   --automation-id StatusText
-winquick stop
-```
-
-A session starts in about 350 ms and stays up; each step then takes tens of
-milliseconds. Controls are addressed by `AutomationId`, and a selector matching
-more than one element is an error listing the candidates rather than a guess.
-
-The same sequence can be run as a script:
-
-```console
-winquick ui-test MyApp.csproj --script my.uitest --out ./shots
-```
-
-```
-launch app\MyApp.exe
-wait-window --title "Device Configuration"
-type --automation-id DeviceNameBox --text "PLC-01"
-click --automation-id SaveButton
-expect --automation-id StatusText --expect-name "Saved: PLC-01"
-screenshot after.png
-```
-
-`ui-test` builds the project inside Windows first, so no .NET SDK is needed on
-the host. See [docs/desktop.md](docs/desktop.md).
-
-**Coding agents**
-
-WinQuick is an ordinary CLI, so agents, shell scripts and CI use it
-identically. One line in a project's README is enough:
-
-```
-Windows commands can be run locally with:  winquick run -- <command>
-```
-
-It is also a native [MCP](https://modelcontextprotocol.io) server:
-
-```console
-claude mcp add winquick -- winquick mcp
-```
-
-That provides thirteen tools: `windows_run` for commands, builds and tests;
-`desktop_*` to start a session and launch an application; `ui_tree`, `ui_get`,
-`ui_click` and `ui_type` to drive it; and `ui_screenshot`, which returns a PNG
-in the response. `mcp` is a mode of the same binary — no Node, no Python, no
-separate server. See [docs/mcp.md](docs/mcp.md).
-
-## Examples
-
-Every image is from a real run, reproduced by
-[`scripts/capture-screenshots.sh`](scripts/capture-screenshots.sh).
-
-![A WPF application running in WinQuick with its text box, combo box and checkbox filled in by UI automation](assets/screenshots/ui-automation.png)
-
-*A WPF application driven through Windows UI Automation: typed into, selected,
-toggled, clicked and verified.*
-
-| Your project goes in, and stays untouched | The guest has no network adapter |
-|---|---|
-| ![A project copied into Windows, with the host file SHA-256 unchanged afterwards](assets/screenshots/workspace.png) | ![The Windows guest reporting zero IPv4 adapters and a failed ping](assets/screenshots/offline.png) |
 
 ## What you get
 
