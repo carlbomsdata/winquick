@@ -45,14 +45,13 @@ jobs:
           - name: Linux x86_64
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-          # Pinned, not `windows-latest`. That label moved to a
-          # windows-2025-vs2026 image whose SDK cannot link
-          # `bcryptprimitives.lib`, which Rust's own std references -- so every
-          # Rust program on it fails the same way, and WinQuick has nothing to
-          # fix. A release should not track a label that changes underneath it.
+          # The GNU target, because that is what the Windows archive is built
+          # from -- see scripts/release-windows.sh for why the MSVC one cannot
+          # currently be linked. Testing a target nobody ships would prove
+          # nothing about the product.
           - name: Windows x86_64
             os: windows-2022
-            target: x86_64-pc-windows-msvc
+            target: x86_64-pc-windows-gnu
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

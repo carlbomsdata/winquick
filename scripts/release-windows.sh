@@ -57,8 +57,19 @@ command -v zip >/dev/null || { echo "zip is missing. Install it with:  pacman -S
 
 echo "==> building winquick $VERSION"
 cd "$ROOT"
-cargo build --release --locked
-BIN="$ROOT/target/release/winquick.exe"
+# Named explicitly rather than left to whichever toolchain happens to be the
+# default, so the archive is the same binary wherever it is built.
+#
+# GNU rather than MSVC: linking the MSVC target currently fails with
+#   LINK : fatal error LNK1181: cannot open input file 'bcryptprimitives.lib'
+# on both windows-2022 and windows-2025 images, with VS 2022 and VS 2026. That
+# library has no import stub in the Windows SDK -- it is meant to be linked
+# through `raw-dylib` -- and the reference comes from Rust's own standard
+# library, so every Rust program with these dependencies fails identically and
+# there is nothing in WinQuick to fix. The MinGW build links against nothing
+# but system DLLs, which the staged-tree check below enforces.
+cargo build --release --locked --target x86_64-pc-windows-gnu
+BIN="$ROOT/target/x86_64-pc-windows-gnu/release/winquick.exe"
 [ -f "$BIN" ] || { echo "cargo did not produce $BIN" >&2; exit 1; }
 file "$BIN" | grep -q 'PE32+' || { echo "not a 64-bit Windows binary" >&2; exit 1; }
 

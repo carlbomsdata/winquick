@@ -2090,3 +2090,32 @@ result says anything against one — the failure is in the layer underneath — 
 no bare-metal Linux machine was available, and an x86_64 Linux VM on Apple
 Silicon would have no KVM at all. Linux is therefore verified as far as build,
 tests, tooling and diagnostics, and unverified for guest bring-up.
+
+## The MSVC target cannot be linked, so the Windows archive is a MinGW build
+
+CI's first run failed on Windows, in the linker rather than the compiler:
+
+    LINK : fatal error LNK1181: cannot open input file 'bcryptprimitives.lib'
+
+Reproduced on `windows-2022` with Visual Studio 2022 (MSVC 14.44) and on
+`windows-latest`, which had just moved to a `windows-2025-vs2026` image with
+Visual Studio 2026 (MSVC 14.51). Same error, both images, both toolsets — so it
+is not one bad runner image.
+
+`bcryptprimitives.dll` has no import library in the Windows SDK. It is meant to
+be linked through `raw-dylib`, and the reference comes from Rust's own standard
+library by way of `ProcessPrng`. Every Rust program with this dependency set
+fails the same way on those images; there is nothing in WinQuick to fix, and
+nothing WinQuick can fix.
+
+This went unnoticed here for a while because `cargo check --target
+x86_64-pc-windows-msvc` passes: it type-checks and never links. Checking a
+target is not building it, and the difference is exactly one linker invocation.
+
+The Windows archive has in fact always been a MinGW build — that is what was
+built on the lab machine, published, unpacked and run. It was accidental rather
+than chosen, because `release-windows.sh` used whichever toolchain happened to
+be the default. It is now named explicitly, both there and in CI, so the
+archive is the same binary wherever it is built. The staged-tree check already
+enforces what matters about it: the executables link against nothing but system
+DLLs.
