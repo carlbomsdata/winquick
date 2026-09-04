@@ -1,55 +1,47 @@
 # Changelog
 
-## Unreleased
+## v0.4.1 — corrections, 2026-09-05
+
+A corrective patch release. No new features.
 
 ### Fixed
 
-- **A prepared guest that never ran the command no longer fails the run.** A
-  guest that resumed wrong leaves the command sitting untaken in the mailbox
-  and then times out. That was treated as possibly-slow-command: the first
-  occurrence returned the error and kept the state, and only the second in a
-  row discarded it — so a wedged guest cost two full timeouts before anything
-  recovered. A command still untaken when the timeout fires is the guest's
-  fault and not the command's, so the state is now discarded at once and the
-  run falls through to a cold boot, which still answers it.
-- **A freshly prepared guest that never ran the command no longer fails the
-  run either.** The prepare path returned on any command timeout, so a bad
-  freeze built moments earlier was neither retried nor fallen back from — it
-  just failed, reproducibly, whenever a rebuild happened to produce a wedged
-  guest. A timeout with the command still untaken now counts as the silent
-  guest it is: the attempts the loop already had are used, and a cold boot
-  answers the command if they are all unlucky. "Never took the command" only
-  counts once the clock has run long enough to mean it — a guest that has taken
-  the command can look untaken for a second or two while Windows flushes the
-  acknowledgement, so a deliberately short `--timeout` still fails fast and
-  still keeps the prepared guest.
-- **A GUI program now says where it can actually run.** Running a program with
-  a window under `winquick run` gave `STATUS_DLL_NOT_FOUND` with no output, or
-  a `DllNotFoundException` from inside WPF. It now says the environment is
-  wrong rather than the program, and names the commands that fix it. The hint
-  requires positive evidence — a PE subsystem of 2, or a managed stack trace
-  through WPF — so a console program missing an unrelated DLL is no longer told
-  to install a desktop.
-- **`LICENSE` is the full Apache-2.0 text.** It carried a short notice, which
-  GitHub reported as `NOASSERTION` rather than as a licence.
-- Release archives now fail to build if the licence files are missing from the
-  staged tree, on all three hosts. The scripts already copied them and already
-  said a release without them may not be distributed; nothing checked.
+- **A prepared guest that resumes without ever taking the command no longer
+  fails the run.** A guest can come back from a freeze unable to poll its
+  mailbox, and both the restore and the prepare path reported that as a command
+  timeout. The run either failed outright or wasted several full timeouts
+  before recovering. A command still untaken when the clock runs out is now
+  read as the guest's fault: the state is discarded, the existing retries are
+  used, and a cold boot answers the command.
+- **A short `--timeout` no longer destroys a healthy prepared guest.** A busy
+  guest can look as though it has not taken the command for a second or two
+  while Windows flushes the acknowledgement, so "never took it" only counts
+  once at least 60 seconds have passed. `winquick run --timeout 2` fails fast
+  and keeps the prepared guest, as before.
+- **A missing DLL is no longer taken as proof that a program is graphical.** A
+  console program failing on an unrelated dependency was told to install the
+  desktop capability. The hint now needs positive evidence, a PE subsystem of 2
+  or a managed failure through WPF.
+- **`LICENSE` holds the complete Apache-2.0 text.** It carried a short notice
+  naming the licence, which GitHub read as `NOASSERTION`.
 
 ### Changed
 
-- The documentation stops claiming more than the product does. "Any Windows
-  program", "test Windows software without a Windows machine" and the desktop
-  step timings were all wrong; what runs is now measured and tabulated, and
-  Linux is described as host-side verified rather than supported. The README
-  opens with a heavy-development notice.
-- Desktop step costs are measured and recorded in `docs/research.md`: a UI
-  Automation read is ~40 ms, `click` and `type` ~300 ms because they wait for
-  the UI to settle, and a window screenshot ~120 ms. The published figures had
-  said ~20 ms and ~59 ms.
-- `docs/research.md` no longer documents `winquick setup --with-powershell`,
-  which is spelled `--with powershell`.
-- Package metadata points at https://winquick.io.
+- Host support is stated as it is measured: macOS on Apple Silicon is the
+  reference host, Windows cold-boots each run by design, and Linux is
+  experimental with the host side verified and no guest booted on real
+  hardware yet.
+- The published figures are re-measured on the reference host: about 310 ms for
+  a warm command, 690 ms for PowerShell, 520 ms for `dotnet --version`, and
+  340 ms to start a desktop session, then about 50 ms for a UI read. The
+  desktop step costs had never been recorded and two of them were wrong.
+- Claims that the readme and the website could not support are gone, and both
+  now say how each screenshot was produced.
+- `docs/security.md` states exactly when WinQuick uses the network, and which
+  downloads are checked against a pinned hash.
+- Linux arm64 is built, tested and packaged natively in CI rather than being
+  cross-checked. This does not change what is claimed about the Linux guest.
+- Release archives refuse to build without their licence files.
 
 ### Added
 

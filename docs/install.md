@@ -61,11 +61,11 @@ Homebrew downloads and unpacks the archive itself, so nothing is marked with
 If you would rather not use Homebrew:
 
 ```console
-curl -LO https://github.com/carlbomsdata/winquick/releases/download/v0.4.0/winquick-0.4.0-darwin-arm64.tar.gz
-curl -LO https://github.com/carlbomsdata/winquick/releases/download/v0.4.0/winquick-0.4.0-darwin-arm64.tar.gz.sha256
-shasum -a 256 -c winquick-0.4.0-darwin-arm64.tar.gz.sha256
-tar xzf winquick-0.4.0-darwin-arm64.tar.gz
-sudo cp -R winquick-0.4.0-darwin-arm64/* /usr/local/
+curl -LO https://github.com/carlbomsdata/winquick/releases/download/v0.4.1/winquick-0.4.1-darwin-arm64.tar.gz
+curl -LO https://github.com/carlbomsdata/winquick/releases/download/v0.4.1/winquick-0.4.1-darwin-arm64.tar.gz.sha256
+shasum -a 256 -c winquick-0.4.1-darwin-arm64.tar.gz.sha256
+tar xzf winquick-0.4.1-darwin-arm64.tar.gz
+sudo cp -R winquick-0.4.1-darwin-arm64/* /usr/local/
 brew install qemu hivex
 ```
 
@@ -73,9 +73,9 @@ On Linux, take the archive matching `uname -m`:
 
 ```console
 sudo apt install qemu-system qemu-utils ovmf libhivex-bin
-curl -LO https://github.com/carlbomsdata/winquick/releases/download/v0.4.0/winquick-0.4.0-linux-x86_64.tar.gz
-tar xzf winquick-0.4.0-linux-x86_64.tar.gz
-sudo cp -R winquick-0.4.0-linux-x86_64/* /usr/local/
+curl -LO https://github.com/carlbomsdata/winquick/releases/download/v0.4.1/winquick-0.4.1-linux-x86_64.tar.gz
+tar xzf winquick-0.4.1-linux-x86_64.tar.gz
+sudo cp -R winquick-0.4.1-linux-x86_64/* /usr/local/
 ```
 
 Both `linux-x86_64` and `linux-aarch64` are published.
@@ -85,8 +85,8 @@ On Windows, install QEMU 11 or newer, then unpack the zip and put the folder on
 `ntfscat.exe` and `hivexsh.exe` beside it, so there is nothing else to install.
 
 ```console
-curl.exe -LO https://github.com/carlbomsdata/winquick/releases/download/v0.4.0/winquick-0.4.0-windows-x86_64.zip
-tar -xf winquick-0.4.0-windows-x86_64.zip
+curl.exe -LO https://github.com/carlbomsdata/winquick/releases/download/v0.4.1/winquick-0.4.1-windows-x86_64.zip
+tar -xf winquick-0.4.1-windows-x86_64.zip
 ```
 
 Every archive's SHA-256 is published beside it, and `SHA256SUMS` covers the lot.
@@ -98,7 +98,7 @@ Then `winquick doctor` to check, and `winquick setup`.
 
 ## Gatekeeper
 
-The v0.4.0 release is **not signed and not notarized** — no Apple Developer ID
+The v0.4.1 release is **not signed and not notarized** — no Apple Developer ID
 was available when it was built.
 
 This only matters for a **browser download**. Safari and other browsers mark

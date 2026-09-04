@@ -279,8 +279,8 @@ bridge sources, and pulls in QEMU and hivex. Nothing is quarantined, so no
 
 ```console
 sudo apt install qemu-system-x86 qemu-utils ovmf libhivex-bin
-tar -xzf winquick-0.4.0-linux-x86_64.tar.gz
-sudo cp -R winquick-0.4.0-linux-x86_64/* /usr/local/
+tar -xzf winquick-0.4.1-linux-x86_64.tar.gz
+sudo cp -R winquick-0.4.1-linux-x86_64/* /usr/local/
 ```
 
 On arm64, `qemu-system-arm` replaces `qemu-system-x86` and `qemu-efi-aarch64`
@@ -291,7 +291,7 @@ put that folder on `PATH` as well. It is one flat directory: `winquick.exe`
 with its helpers beside it, so nothing further is required.
 
 ```console
-tar -xf winquick-0.4.0-windows-x86_64.zip
+tar -xf winquick-0.4.1-windows-x86_64.zip
 ```
 
 **Then, on any host**, install the Windows runtime. Microsoft distributes the
