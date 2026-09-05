@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.4.2 — guest networking, 2026-09-05
+
+### Fixed
+
+- **The guest is now started without a network device.** QEMU builds a default
+  NIC and a user-mode backend for the machine type unless told otherwise, and up
+  to and including v0.4.1 WinQuick passed no networking option at all, so every
+  guest was constructed with one attached. On the ARM64 guest it was never
+  usable, having no driver that binds to it; the x86_64 case was never tested.
+  Either way the offline guarantee rested on the guest image rather than on how
+  the VM was built. All three boot paths now pass `-nic none`, and a test fails
+  if any of them stops.
+
+### Changed
+
+- The readme describes WinQuick as an environment for running Windows software
+  rather than a .NET or WPF tool, and says what each host and capability
+  actually does: a desktop session needs both the `dotnet-sdk` and `desktop`
+  capabilities, and saving guest state on a Windows host needs a self-built
+  QEMU, which `winquick run` does not.
+- Desktop support is described in layers, because launching an application,
+  capturing it, driving it through UI Automation and building it are separate
+  claims. WPF and WinForms are the project types tested end to end, not the
+  boundary of what runs.
+- The Sysinternals compatibility findings move to `docs/research.md`.
+
 ## v0.4.1 — corrections, 2026-09-05
 
 A corrective patch release. No new features.
