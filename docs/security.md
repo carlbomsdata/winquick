@@ -14,9 +14,34 @@ tests, and for giving an automated agent somewhere safe to be wrong. It is not
 designed for detonating hostile samples. If you need that, use something built
 and audited for it.
 
+## Why `-nic none` is passed explicitly
+
+Left alone, QEMU builds a default network device and a user-mode backend for the
+machine type: `virtio-net-pci` on `virt`, `e1000e` on `q35`, both on SLIRP with
+`restrict=off`. Up to and including v0.4.1 WinQuick passed no networking option
+at all, so every guest was constructed with one of those attached.
+
+On the reference host that device was never usable: the ARM64 Validation OS
+guest has no driver that binds to `virtio-net-pci`, `ipconfig` reported no
+adapter, and an outbound ping failed. What was not tested is the x86_64 side,
+where `q35` supplies an `e1000e` and Windows does ship an inbox driver for that
+part. Whether a guest there would have bound it and reached the network is
+unknown; it was never measured.
+
+The defect is therefore not a demonstrated escape. It is that the isolation
+property this document states was a property of the guest image rather than of
+the way WinQuick started the VM, and a driver arriving from any direction would
+have changed it with nothing in WinQuick changing.
+
+From v0.4.2 all three boot paths pass `-nic none`, so QEMU creates neither the
+device nor the backend, and `qemu::tests::no_guest_gets_a_network_device` fails
+if any path stops passing it. It does not affect QMP, which is a host-side
+control socket.
+
 ## When WinQuick uses the network
 
-The *guest* never does: no NIC is attached to it, ever. The host side reaches
+The *guest* never does: it is started with `-nic none`, so no network device
+exists to attach to. The host side reaches
 the network only when you ask it to, and only to fetch software:
 
 | Command | What it downloads |
@@ -44,7 +69,8 @@ you, download the image yourself and point `winquick setup --from` at it.
 
 Nothing else. In particular the guest has:
 
-- **no network at all** — no NIC is attached, so no internet, no LAN, no host
+- **no network at all** — every guest is started with `-nic none`, so QEMU
+  creates neither a network device nor a backend: no internet, no LAN, no host
 - **no access to your filesystem** — only copies of what you named
 - **no way to change the Windows image** — the base is opened read-only
 - **no persistence between runs** — every run starts from the same frozen state

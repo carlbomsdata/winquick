@@ -129,10 +129,37 @@ pub fn device_signature(memory_mb: u32, cpus: u32, capability_count: usize) -> S
     )
 }
 
+/// Guest networking, switched off explicitly.
+///
+/// Without it QEMU builds a default NIC and a user-mode backend for the machine
+/// type: `virtio-net-pci` on `virt`, `e1000e` on `q35`, both on SLIRP with
+/// `restrict=off`. Up to v0.4.1 no networking option was passed at all, so every
+/// guest was built with one attached.
+///
+/// The ARM64 guest could not use it, having no driver that binds, and the
+/// x86_64 case was never tested. Either way the guarantee rested on the guest
+/// image rather than on how the VM was constructed, which is not something this
+/// code controls.
+///
+/// `-nic none` suppresses the default device and its backend. It is unrelated
+/// to QMP, which is a host-side control socket and stays as it is.
+const NO_GUEST_NETWORK: [&str; 2] = ["-nic", "none"];
+
 impl Qemu {
     /// Spawn the VM headlessly. `-display none` means no window ever appears;
     /// `ramfb` is still present because Windows expects a display device.
     pub fn boot(&self, cfg: &BootConfig) -> Result<Child> {
+        let mut c = self.boot_command(cfg)?;
+        if cfg.verbose {
+            eprintln!("winquick: {}", describe(&c));
+        }
+        c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
+        c.spawn().context("spawning QEMU")
+    }
+
+    /// The arguments `boot` will run, without running them, so a test can read
+    /// them back.
+    fn boot_command(&self, cfg: &BootConfig) -> Result<Command> {
         let mut c = Command::new(&self.system);
         c.args([
             "-M",
@@ -142,6 +169,7 @@ impl Qemu {
             "-cpu",
             crate::platform::CPU_MODEL,
         ])
+        .args(NO_GUEST_NETWORK)
         .args(["-smp", &cfg.cpus.to_string()])
         .args(["-m", &cfg.memory_mb.to_string()])
         .arg("-drive")
@@ -190,11 +218,7 @@ impl Qemu {
         if let Some(state) = cfg.incoming {
             c.arg("-incoming").arg(format!("file:{}", state.display()));
         }
-        if cfg.verbose {
-            eprintln!("winquick: {}", describe(&c));
-        }
-        c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
-        c.spawn().context("spawning QEMU")
+        Ok(c)
     }
 }
 
@@ -397,6 +421,12 @@ impl Qemu {
     /// The child is deliberately detached: `winquick desktop start` returns as
     /// soon as the guest is ready, and every later verb finds it by pid.
     pub fn boot_desktop(&self, cfg: &DesktopBoot) -> Result<Child> {
+        let mut c = self.desktop_command(cfg)?;
+        c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        c.spawn().context("spawning the desktop guest")
+    }
+
+    fn desktop_command(&self, cfg: &DesktopBoot) -> Result<Command> {
         let mut c = Command::new(&self.system);
         c.args([
             "-M",
@@ -406,6 +436,7 @@ impl Qemu {
             "-cpu",
             crate::platform::CPU_MODEL,
         ])
+        .args(NO_GUEST_NETWORK)
         .args(["-smp", &cfg.cpus.to_string()])
         .args(["-m", &cfg.memory_mb.to_string()])
         .arg("-drive")
@@ -457,8 +488,7 @@ impl Qemu {
         if let Some(state) = cfg.incoming {
             c.arg("-incoming").arg(format!("file:{}", state.display()));
         }
-        c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-        c.spawn().context("spawning the desktop guest")
+        Ok(c)
     }
 }
 
@@ -481,6 +511,12 @@ pub struct ServicingBoot<'a> {
 
 impl Qemu {
     pub fn boot_servicing(&self, cfg: &ServicingBoot) -> Result<Child> {
+        let mut c = self.servicing_command(cfg)?;
+        c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        c.spawn().context("spawning the servicing guest")
+    }
+
+    fn servicing_command(&self, cfg: &ServicingBoot) -> Result<Command> {
         let mut c = Command::new(&self.system);
         c.args([
             "-M",
@@ -490,6 +526,7 @@ impl Qemu {
             "-cpu",
             crate::platform::CPU_MODEL,
         ])
+        .args(NO_GUEST_NETWORK)
         .args(["-smp", "4", "-m", "3072"])
         .arg("-drive")
         .arg(format!("if=pflash,format=raw,readonly=on,file={}", cfg.uefi_code.display()))
@@ -519,14 +556,108 @@ impl Qemu {
         .args(["-rtc", "base=localtime", "-no-reboot"])
         .arg("-serial")
         .arg(format!("file:{}", cfg.serial_log.display()));
-        c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-        c.spawn().context("spawning the servicing guest")
+        Ok(c)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn dummy() -> PathBuf {
+        PathBuf::from("/tmp/wq-not-a-real-path")
+    }
+
+    fn qemu() -> Qemu {
+        Qemu { system: dummy(), img: dummy() }
+    }
+
+    fn args_of(c: &Command) -> Vec<String> {
+        c.get_args().map(|a| a.to_string_lossy().into_owned()).collect()
+    }
+
+    /// Every guest WinQuick starts must be off the network, and it has to be
+    /// said out loud.
+    ///
+    /// QEMU builds a default NIC and a user-mode backend for the machine type
+    /// unless told not to: `virtio-net-pci` on `virt`, `e1000e` on `q35`, both
+    /// on SLIRP with `restrict=off`. Before `-nic none` was passed, every guest
+    /// had one attached and reachable; it only looked offline because
+    /// Validation OS has no driver for those devices. An inbox driver on
+    /// another guest, or one staged into the image, would have turned the
+    /// internet back on with nothing in the product changing.
+    #[test]
+    fn no_guest_gets_a_network_device() {
+        let q = qemu();
+        let caps: Vec<PathBuf> = vec![];
+        let d = dummy();
+
+        let run = q
+            .boot_command(&BootConfig {
+                uefi_code: &d,
+                uefi_vars: &d,
+                root_disk: &d,
+                mailbox: &d,
+                capabilities: &caps,
+                workspace: &d,
+                artifacts: &d,
+                memory_mb: 1024,
+                cpus: 2,
+                serial_log: &d,
+                qmp_socket: &d,
+                verbose: false,
+                incoming: None,
+            })
+            .expect("run command");
+        let desktop = q
+            .desktop_command(&DesktopBoot {
+                uefi_code: &d,
+                uefi_vars: &d,
+                root_disk: &d,
+                mailbox: &d,
+                bridge: &d,
+                app: &d,
+                control: &d,
+                capabilities: &caps,
+                memory_mb: 2048,
+                cpus: 2,
+                serial_log: &d,
+                qmp_socket: &d,
+                incoming: None,
+            })
+            .expect("desktop command");
+        let servicing = q
+            .servicing_command(&ServicingBoot {
+                uefi_code: &d,
+                uefi_vars: &d,
+                root_disk: &d,
+                mailbox: &d,
+                servicing: &d,
+                target: &d,
+                serial_log: &d,
+            })
+            .expect("servicing command");
+
+        for (what, cmd) in [("run", &run), ("desktop", &desktop), ("servicing", &servicing)] {
+            let args = args_of(cmd);
+            let nic = args.iter().position(|a| a == "-nic");
+            assert!(nic.is_some(), "the {what} guest is not given -nic: {args:?}");
+            assert_eq!(
+                args[nic.unwrap() + 1],
+                "none",
+                "the {what} guest asks for a network device"
+            );
+            // A later change that adds a backend or a card explicitly would
+            // defeat -nic none without removing it.
+            for banned in ["-netdev", "-net"] {
+                assert!(!args.iter().any(|a| a == banned), "the {what} guest is given {banned}");
+            }
+            assert!(
+                !args.iter().any(|a| a.contains("virtio-net") || a.contains("e1000")),
+                "the {what} guest is given a network card: {args:?}"
+            );
+        }
+    }
 
     /// A clone is a copy. The whole point of the fast paths -- APFS cloning on
     /// macOS, skipping runs of zeroes everywhere else -- is that they are not

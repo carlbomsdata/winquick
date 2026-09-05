@@ -2292,3 +2292,56 @@ faster. The cause was not chased down: both measurements are on the same
 machine with the same capabilities installed, so it is host state rather than
 anything in the product, and nothing in the recovery fix touches the path a
 successful run takes. What is published is what was measured last.
+## Guests had a network device the whole time, 2026-09-05
+
+The product guarantee is that a guest has no network. The documentation said so
+and `ipconfig` agreed, reporting zero IPv4 adapters, and a ping from the guest
+failed. None of that was evidence about QEMU.
+
+QEMU builds a default NIC and a user-mode backend for the machine type unless
+told otherwise. Asked directly, with the same machine arguments WinQuick uses:
+
+```
+$ qemu-system-aarch64 -M virt ...          (no -nic flag, as WinQuick was)
+(qemu) info network
+hub 0
+ \ hub0port1: #net100: index=0,type=user,net=10.0.2.0,restrict=off
+ \ hub0port0: virtio-net-pci.0: index=0,type=nic,model=virtio-net-pci,...
+Ethernet controller: PCI device 1af4:1000
+
+$ qemu-system-x86_64 -M q35 ...            (Windows and Linux x86_64 hosts)
+ \ hub0port1: #net171: index=0,type=user,net=10.0.2.0,restrict=off
+ \ hub0port0: e1000e.0: index=0,type=nic,model=e1000e,...
+Ethernet controller: PCI device 8086:10d3
+```
+
+So every guest was constructed with a NIC attached to a SLIRP backend. On the
+reference host it was never usable: the ARM64 Validation OS guest has no driver
+that binds to `virtio-net-pci`, and nothing WinQuick stages would supply one --
+the desktop capability stages `viogpudo` and `vioinput`, not `netkvm`.
+
+The x86_64 side was not tested. `q35` supplies an `e1000e` and Windows does ship
+an inbox driver for that part, so whether a guest there would have bound it and
+reached the network is an open question rather than a measurement. No guest is
+known to have had working connectivity, and none was shown not to.
+
+Either way the guarantee rested on the guest image having no matching driver,
+which is not something WinQuick controls or checks. That is what was wrong: the
+property was documented but not enforced.
+
+Fixed by passing `-nic none` from all three boot paths (run, desktop,
+servicing), which suppresses both the device and the backend. Verified after the
+change on a live desktop session over QMP:
+
+```
+info network        (empty)
+network PCI devices none
+```
+
+and in the guest: zero IPv4 adapters, `ping` exits 1, and QMP still works
+because it is a host-side socket and unrelated.
+
+`qemu::tests::no_guest_gets_a_network_device` builds all three command lines and
+asserts `-nic none` is present and that no `-netdev`, `-net`, `virtio-net` or
+`e1000` argument appears. Removing the flag from one path fails the test.
+
