@@ -564,8 +564,12 @@ impl Qemu {
 mod tests {
     use super::*;
 
+    /// A path the test can hand to every field. It has to be somewhere real:
+    /// on Windows `qmp_arg` reserves a port and writes the address to this
+    /// path, so a made-up directory fails the build of the command rather than
+    /// the assertion the test is about.
     fn dummy() -> PathBuf {
-        PathBuf::from("/tmp/wq-not-a-real-path")
+        std::env::temp_dir().join(format!("wq-argv-{}", std::process::id()))
     }
 
     fn qemu() -> Qemu {
