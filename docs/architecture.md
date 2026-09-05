@@ -1,7 +1,8 @@
 # WinQuick architecture
 
-This describes what v0.1 actually does, and where it is heading. Measurements and
-the reasoning behind each choice are in [research.md](research.md).
+This describes what WinQuick does today. Measurements and the reasoning behind
+each choice are in [research.md](research.md). Sections still marked v0.1
+describe decisions taken then that have not changed since.
 
 ## Shape
 
@@ -31,12 +32,22 @@ That is a licensing boundary (QEMU is GPLv2) as much as a stability one.
 
 ## Host requirements
 
-Apple Silicon macOS only. `-accel hvf` runs guest ARM64 code directly on the
-host's ARM64 cores through Apple's Hypervisor Framework, so there is no
-instruction emulation. This is the entire reason the product is viable; the same
-design under TCG would be far too slow to be interesting.
+The guest always runs on the host's own hypervisor, never under TCG: guest code
+executes directly on the host's cores, and the same design under emulation would
+be far too slow to be interesting. That is the entire reason the product is
+viable, and it fixes the guest architecture to the host's.
 
-That also fixes the guest architecture: it must be ARM64 Windows.
+| Host | Accelerator | Guest |
+|---|---|---|
+| Apple Silicon macOS | `-accel hvf` | Windows ARM64 |
+| Windows x86_64 | `-accel whpx` | Windows x64 |
+| Linux x86_64 / arm64 | `-accel kvm` | matches the host |
+
+macOS on Apple Silicon is the reference host and the only one where a guest runs
+continuously. [windows-host.md](windows-host.md) covers what differs on Windows,
+and the readme's host table says what has and has not been verified where.
+
+No guest is given a network device; see [security.md](security.md).
 
 ## Machine configuration
 

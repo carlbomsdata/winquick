@@ -2292,6 +2292,7 @@ faster. The cause was not chased down: both measurements are on the same
 machine with the same capabilities installed, so it is host state rather than
 anything in the product, and nothing in the recovery fix touches the path a
 successful run takes. What is published is what was measured last.
+
 ## Guests had a network device the whole time, 2026-09-05
 
 The product guarantee is that a guest has no network. The documentation said so
@@ -2345,3 +2346,33 @@ because it is a host-side socket and unrelated.
 asserts `-nic none` is present and that no `-netdev`, `-net`, `virtio-net` or
 `e1000` argument appears. Removing the flag from one path fails the test.
 
+## What the ARM64 guest actually runs
+
+Tested rather than assumed, on the ARM64 Validation OS guest.
+
+| | Result |
+|---|---|
+| Console programs via `winquick run` | 21 of 26 Sysinternals command-line tools ran clean; the rest returned their own status codes, not errors |
+| GUI programs in a desktop session | Notepad, Task Manager, Process Monitor, TCPView, VMMap, RamMap and DiskView all open, and each was driven through UI Automation |
+| x64 binaries on the ARM64 guest | Run under Windows' own emulation, including a self-contained x64 WPF application |
+| Kernel-driver tools | Process Monitor loaded its driver and captured live kernel events |
+| GUI programs via `winquick run` | **Fail.** The base runtime has no graphics stack; a desktop session is required |
+| Tools needing a Windows service Validation OS lacks | **Fail**, and no package adds one |
+
+None of the programs in the second row are .NET applications. The desktop
+capability starts a Windows desktop and launches Windows software; the WPF and
+WinForms work is the part that is built *and* driven end to end, not the limit
+of what runs.
+
+### A tool that cannot work, and why
+
+Sysinternals' `disk2vhd` needs the Volume Shadow Copy service to snapshot a live
+volume. `vssvc.exe` is not on Microsoft's Validation OS media at all, so there
+is no package to add and no configuration that helps. It starts and exits
+without a window.
+
+Its console sibling `autorunsc`, which only reads the registry, works. The
+distinction is what a tool needs from Windows, not whether Sysinternals wrote
+it. `winquick run -- sc query <name>` answers it for any tool in a second, and
+running the tool under `winquick run` surfaces the loader error when a DLL is
+missing.
