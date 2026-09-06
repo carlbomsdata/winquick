@@ -271,6 +271,13 @@ pub fn install(opts: &Options) -> Result<()> {
     let staged = work.join("base.qcow2");
     q.convert(&target_raw, &staged, "qcow2")?;
     let _ = std::fs::remove_file(&target_raw);
+    // The agent came along with the image, so its metadata comes along too --
+    // the same reason the framework image does it. Without this the desktop
+    // image is the one image nothing ever version-checks, and a session goes
+    // on running an agent from whichever WinQuick built it.
+    std::fs::copy(crate::state::base_meta_path(&base)?, crate::state::base_meta_path(&staged)?)
+        .context("carrying the runtime metadata onto the desktop image")?;
+    std::fs::rename(crate::state::base_meta_path(&staged)?, crate::state::base_meta_path(&out)?)?;
     // Rename last, so an interrupted build never leaves a half-written image
     // that looks installed.
     std::fs::rename(&staged, &out)?;

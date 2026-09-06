@@ -148,10 +148,23 @@ pub fn write_base_meta(base: &Path, agent: &str) -> Result<()> {
     Ok(())
 }
 
-/// Confirm the agent baked into the base image is the one this binary expects.
+/// Confirm the agent baked into an image is the one this binary expects.
 pub fn check_base_meta(base: &Path, agent: &str) -> Result<()> {
-    let p = base_meta_path(base)?;
-    let stale = "The Windows runtime was built by a different version of winquick.\n\nRebuild it with:  winquick setup --force";
+    check_image_meta(base, agent, "winquick setup --force")
+}
+
+/// The same, for an image that is not rebuilt by `setup`.
+///
+/// A serviced image carries its own copy of the base metadata, so it goes stale
+/// on its own and `setup --force` does not touch it -- naming that as the fix
+/// sends the user to rebuild the one image that was already fine. Each caller
+/// says how to rebuild the image it is asking about.
+pub fn check_image_meta(image: &Path, agent: &str, rebuild: &str) -> Result<()> {
+    let p = base_meta_path(image)?;
+    let stale = format!(
+        "This Windows image was built by a different version of winquick.\n\n\
+         Rebuild it with:  {rebuild}"
+    );
     let text = std::fs::read_to_string(&p).map_err(|_| anyhow::anyhow!("{stale}"))?;
     let m: BaseMeta = serde_json::from_str(&text).map_err(|_| anyhow::anyhow!("{stale}"))?;
     if m.protocol_version != PROTOCOL_VERSION || m.agent_hash != fnv1a(agent.as_bytes()) {

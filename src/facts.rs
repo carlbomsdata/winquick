@@ -284,7 +284,11 @@ pub fn doctor() -> Result<Doctor> {
                 ".NET Framework",
                 format!("{}, and `run` boots it", helpers::human(helpers::allocated(&netfx))),
             );
-            if let Err(e) = state::check_base_meta(&netfx, setup::AGENT) {
+            if let Err(e) = state::check_image_meta(
+                &netfx,
+                setup::AGENT,
+                "winquick capability install dotnet-framework --force",
+            ) {
                 b.fail(
                     "Runtime",
                     ".NET Framework image",
@@ -357,6 +361,22 @@ pub fn doctor() -> Result<Doctor> {
     let desk = desktop::base_image()?;
     if desk.exists() {
         b.ok("Desktop", "desktop image", helpers::human(helpers::allocated(&desk)));
+        // The desktop image is serviced from the runtime and carries the same
+        // guest agent, so it goes stale the same way the .NET Framework image
+        // does. It used to be the one image nothing checked, which meant a
+        // session could go on running an agent from whichever WinQuick built it.
+        if let Err(e) = state::check_image_meta(
+            &desk,
+            setup::AGENT,
+            "winquick capability install desktop --force",
+        ) {
+            b.fail(
+                "Desktop",
+                "desktop image version",
+                "serviced from a different WinQuick version",
+                format!("{e:#}"),
+            );
+        }
     } else {
         b.note("Desktop", "desktop image", "not installed (winquick capability install desktop)");
     }
