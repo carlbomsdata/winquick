@@ -1,5 +1,67 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **The guest now tells the host it has taken the command.** The agent deleted
+  the go flag with the mailbox still mounted, and Windows only synchronises a
+  FAT volume at mount and dismount — so the delete stayed in the guest's cache
+  until the command had finished and the volume was released. The host, which
+  reads the mailbox image directly, could not see the acknowledgement while it
+  was the thing being waited for.
+
+  Any command that outlived the ten-second first-contact window therefore looked
+  like a guest that had resumed and run nothing, which is the signature of a bad
+  freeze: WinQuick discarded a healthy prepared guest, rebuilt it five times and
+  cold booted. Measured at **182 s for a 60 s timeout**, reproducible every time,
+  and it cost another rebuild on the following run. The agent now dismounts and
+  remounts the mailbox between taking the command and starting it, which puts the
+  delete where the host can read it. The same case now costs 60 s and keeps the
+  prepared guest. ([#1](https://github.com/carlbomsdata/winquick/issues/1))
+
+  This changes the guest agent, so images built by an earlier WinQuick are stale.
+  `winquick doctor` says which ones and how to rebuild each.
+
+- **A stale image now names the command that rebuilds *it*.** Serviced images
+  carry their own copy of the runtime metadata and go stale on their own, but
+  every such report said `winquick setup --force`, which rebuilds the pristine
+  image and leaves the stale one untouched. `winquick run` and `winquick doctor`
+  now name `winquick capability install dotnet-framework --force` or
+  `... desktop --force` when that is what is actually needed.
+
+- **The desktop image is version-checked.** It is serviced from the runtime and
+  carries the same guest agent as the .NET Framework image, but unlike that one it
+  never recorded which WinQuick built it — so it was the one image nothing checked,
+  and a session could go on running an agent from any earlier version. It now
+  carries the metadata and `doctor` reports it.
+
+### Changed
+
+- Two verbose messages 0.1 s apart said the guest was "working, not halted" and
+  then that it had "timed out without ever taking the command". The second now
+  says what actually happened and that a command needing longer is the usual
+  cause.
+- `--timeout` is documented as running from when the guest takes the command,
+  not from launch — the clock has always started at first contact, so a timed-out
+  run costs roughly ten seconds more than the number passed.
+- Doc comments in `src/runner.rs` described the acknowledgement as racing the
+  workload for the mailbox, with the workload sometimes winning. There was no
+  race: the write could not reach the host at all. `PROOF_OF_LIFE_BYTES` and
+  `STILL_MOVING_WINDOW` are kept as a backstop and now say so.
+
+### Testing
+
+- `tests/firstrun.sh` is new: it installs a runtime into a throwaway `HOME` from
+  a user-supplied Validation OS image and runs what the readme tells a new user to
+  run — the first test here that does not assume an existing `~/.winquick`.
+- `tests/integration.sh` exercises a timeout at 60 s as well as at 2 s. It had
+  asserted the right properties since v0.4.1, but only at `--timeout 2`, which is
+  below the threshold where the host acts on the verdict — so the suite passed
+  while the case above it was broken.
+- A unit test asserts the agent dismounts the mailbox between deleting the go flag
+  and starting the command.
+
 ## v0.4.2 — guest networking, 2026-09-05
 
 ### Fixed
