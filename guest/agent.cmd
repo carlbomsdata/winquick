@@ -129,6 +129,27 @@ if not defined WQNONCE (
   goto wait
 )
 del %WQ%\WQGO.TXT >nul 2>&1
+
+rem Flush that delete before the command starts, or the host never sees it.
+rem
+rem Windows synchronises this FAT volume with the disk at mount and dismount and
+rem at no other time -- the same fact the wait loop above is built on. A delete
+rem made while the volume is mounted therefore stays in the guest's cache until
+rem the dismount at the end of this block, which does not happen until the
+rem command has finished. So the go flag was still sitting in the image for the
+rem whole run, and the host, which reads the image directly, could only conclude
+rem that this guest had never taken the command.
+rem
+rem That is not a race the workload sometimes wins. It is every command that
+rem outlives the host's first-contact window, every time. It cost a healthy
+rem prepared guest, five rebuilds and a cold boot on any run slower than ten
+rem seconds -- measured at 182 s for a 60 s timeout, against 60 s once flushed.
+rem
+rem The round trip below is the same one the wait loop does per turn, and it
+rem puts the acknowledgement on the disk before the command is started.
+mountvol %WQ% /P >nul 2>&1
+mountvol %WQ% %WQVOL% >nul 2>&1
+
 rem Same cache problem as the mailbox: the guest is holding a stale view of the
 rem workspace from before it was frozen. Dismount and remount to see this run's
 rem files, then surface them at a predictable path.

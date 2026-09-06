@@ -535,6 +535,70 @@ mountvol %WQ% /P                     :: dismount -> flush results to the host
 The poll loop spins, but only while the VM is actually running; between runs no VM exists at
 all.
 
+## The acknowledgement that was never flushed
+
+The agent above has a hole that took until v0.4.2 to find, and it is visible in the
+sketch: the flag is read, the command runs, and the only `mountvol /P` is at the end.
+The shipped agent added a `del %WQ%\WQGO.TXT` before the command, and that delete is a
+write to the mailbox like any other — so by the rule established two sections above, it
+does not reach the host image until the volume is dismounted, which does not happen
+until the command has finished.
+
+The host, meanwhile, reads the image directly and treats the flag disappearing as proof
+that the guest took the command. That proof could not arrive while it was needed.
+
+**Consequence.** For any command finishing inside the host's ten-second first-contact
+window the flag and the results flush together and nothing looks wrong. For every
+command slower than that, the host saw a guest that had resumed and — as far as the
+image showed — never taken its command. That is the signature of a bad freeze, so the
+prepared guest was discarded, rebuilt five times and the command finally run cold.
+
+Measured on an M1, macOS 26.4, QEMU 11.1.1, WinQuick 0.4.2:
+
+| `winquick run --timeout 60 -- cmd /c "ping -n 200 127.0.0.1 >nul"` | |
+|---|---|
+| before | **182 s**, 5 discarded prepared guests, then a cold boot |
+| after | **60 s**, no rebuild, prepared guest kept |
+
+Reproduced on every attempt in both directions. A 44 s command that *succeeds* went from
+reaching the byte-counter fallback to being acknowledged normally within first contact.
+
+**The fix is a round trip, not a threshold.** The agent now dismounts and remounts the
+mailbox between deleting the flag and starting the command, which puts the delete on the
+disk where the host can see it:
+
+```bat
+del %WQ%\WQGO.TXT
+mountvol %WQ% /P          :: flush the acknowledgement to the host image
+mountvol %WQ% %WQVOL%     :: and take the volume back, so output has somewhere to go
+```
+
+Cost: one dismount/remount pair per run, the same operation the poll loop already does
+every turn. A warm `cmd /c ver` measured p50 310 ms before and 310 ms after, 5 runs each.
+
+**What this invalidates.** Two host-side mechanisms were built to work around the missing
+signal, and their reasoning is recorded here because it was wrong in an instructive way.
+`PROOF_OF_LIFE_BYTES` and `STILL_MOVING_WINDOW` (`src/runner.rs`) both describe the
+acknowledgement as *racing* the workload on the same volume, with the workload sometimes
+winning. There was no race. The write could not reach the host at all, so the counters
+were not breaking a tie — they were the only evidence there had ever been. Both are kept
+as a backstop for a guest slow to get back to the mailbox, and both are now documented as
+what they are.
+
+`ACKNOWLEDGEMENT_IS_CERTAIN` is the matching case for a constant that could not have been
+tuned into correctness. It says how long a healthy guest may look untaken; it was 60 s,
+and the failure above reproduces at exactly 60 s. Raising it would have moved the boundary
+without ever making the flag arrive.
+
+**Why the tests did not catch it.** `tests/integration.sh` has covered this exact shape
+since v0.4.1 — a slow command, a timeout, and assertions that the prepared guest survives
+and the run is not retried. It used `--timeout 2`. Two seconds is below
+`ACKNOWLEDGEMENT_IS_CERTAIN`, which is precisely the range where the host declines to act
+on the verdict, so the suite asserted the right properties at the one value that could not
+fail. The regression test now runs at 60 s as well, `tests/firstrun.sh` runs it on a
+brand-new install, and a unit test asserts the agent dismounts between taking a command
+and running it.
+
 ## A trap worth recording: read-only UEFI varstore
 
 Several hours were lost to this. To satisfy `savevm`'s "writable devices must support
@@ -1839,7 +1903,7 @@ winquick: warm run, total 11249ms
 
 **122 s to 11 s, and the prepared guest survives.**
 
-### The guest-side half, not shipped here
+### The guest-side half, deferred here and shipped later
 
 The deeper fix is one line in `guest/agent.cmd`: dismount and remount the
 mailbox immediately after deleting the go flag, exactly as the agent already
@@ -1849,6 +1913,28 @@ is baked into the base image, and changing its hash makes every existing
 runtime report "built by a different version of winquick" until the user runs
 `winquick setup --force`. Worth doing at the next runtime rebuild; the
 host-side check stands on its own either way.
+
+> **Later.** It was shipped, after issue #1 — see *The acknowledgement that was
+> never flushed*. Three things about the paragraph above are worth keeping as
+> written, because the reasoning is a better warning than a correction would be.
+>
+> The diagnosis was right and the one-line fix was already written down. What
+> was deferred was not investigation but a rebuild, and the deferral held for
+> three releases while the host-side workaround stood in for it.
+>
+> The workaround did not stand on its own. It reads the byte counters, which
+> answer for a guest that is *busy* — and the case that came back was a guest
+> that was **idle**. `cmd /c "ping -n 200"` sleeps between pings, moves no
+> measurable I/O, and looks exactly like a halted restore. The counters were
+> never going to cover it, and the section below on the idle guest is the second
+> patch over the same hole.
+>
+> The stated cost was also understated. `setup --force` is not sufficient: the
+> serviced images carry their own copy of the agent and each has to be rebuilt
+> by its own capability, and because `run` boots the .NET Framework image when
+> it is installed, an agent change leaves `winquick run` failing until that one
+> is rebuilt too. That is now in `docs/development.md`, and `doctor` names each
+> stale image and the command that rebuilds it.
 
 
 ## Validation OS can have a .NET Framework, and which one
@@ -2244,6 +2330,14 @@ The evidence is therefore not "untaken" but "untaken *after long enough to
 know*". `ACKNOWLEDGEMENT_IS_CERTAIN` is 60 s: far above the ~100 ms a warm
 guest needs, far below the 300 s default timeout, so an ordinary run gets the
 fallback and a deliberately short timeout keeps its old, fast answer.
+
+> **Later.** This is where the regression test acquired the one value that could
+> not fail. Both checks were written against `--timeout 2`, and two seconds is
+> below `ACKNOWLEDGEMENT_IS_CERTAIN` by construction — the range where the host
+> declines to act on the verdict at all. The suite therefore asserted the right
+> properties, on the right command, at the only timeout for which they were
+> free. At 60 s the same command cost 182 s and discarded the prepared guest,
+> and it did so for three releases. The suite now runs the case at 60 s as well.
 
 | `--timeout 2` on `ping -n 30` | v0.4.0 | first fix | corrected |
 |---|---|---|---|

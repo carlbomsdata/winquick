@@ -137,7 +137,7 @@ cannot change your source. Ask for output explicitly with --artifact.
         /// Write artifacts into a directory that already has files in it
         #[arg(long)]
         artifact_overwrite: bool,
-        /// Give up after this many seconds
+        /// Give up this many seconds after the guest takes the command
         #[arg(long, default_value_t = 300, value_name = "SECONDS")]
         timeout: u64,
         /// Guest memory in MiB

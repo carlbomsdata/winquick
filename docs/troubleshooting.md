@@ -69,6 +69,11 @@ it. It rebuilds and retries automatically. If it repeats, `winquick reset`.
 Every run has a timeout (default 300 s, `--timeout`). Ctrl-C is safe: WinQuick
 kills the VM and cleans up, exiting 130. It never leaves a VM running.
 
+The clock starts when the guest takes the command, not when WinQuick launches,
+so a timed-out run takes about ten seconds longer than the number passed. That
+is the window the guest is given to come back and pick the command up, and it is
+deliberately not charged to the command.
+
 **Windows can't reach the internet**
 
 By design — no network device is attached. That is what makes runs reproducible

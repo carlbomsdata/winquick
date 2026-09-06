@@ -252,7 +252,11 @@ fn execute(command: &str, opts: &Options) -> Result<Outcome> {
     if !ctx.artifacts.is_empty() {
         crate::artifact::prepare_dest(&ctx.artifacts_dir, opts.artifact_overwrite)?;
     }
-    state::check_base_meta(&ctx.base, crate::setup::AGENT)?;
+    // `run` boots the serviced .NET Framework image when it is installed, and
+    // that image goes stale on its own -- so the fix has to name the image this
+    // run would actually boot. Sending someone to `setup --force` here rebuilds
+    // the pristine image and leaves the run failing exactly as before.
+    state::check_image_meta(&ctx.base, crate::setup::AGENT, rebuild_command(&ctx.base)?)?;
     // Whether this run will try to resume a prepared guest. On Windows it will
     // not unless asked: see `platform::RESUME_PREPARED_BY_DEFAULT` for the
     // measurement behind that.
@@ -320,10 +324,13 @@ fn execute(command: &str, opts: &Options) -> Result<Outcome> {
                         if !a_cold_boot_would_help(&e) {
                             return Err(e);
                         }
-                        ctx.vlog(
-                            "the prepared guest timed out without ever taking the command; \
-                             discarding it and booting cold for this run",
-                        );
+                        ctx.vlog(format!(
+                            "the command was never acknowledged before the {} s timeout — \
+                             usually a command that needs longer, but a guest that resumed \
+                             wrong looks identical from here, so this prepared guest is \
+                             discarded and the run boots cold",
+                            ctx.timeout.as_secs()
+                        ));
                         let _ = state::discard();
                     }
                     Err(e) => {
@@ -468,6 +475,20 @@ fn execute(command: &str, opts: &Options) -> Result<Outcome> {
     // Last resort: boot and run, no state involved. This is the path that must
     // never fail for reasons of its own.
     cold_execute(&ctx, command)
+}
+
+/// How to rebuild whichever image this run would boot.
+///
+/// `setup --force` rebuilds the pristine runtime and nothing else. A serviced
+/// image is built by its own capability and has to be rebuilt by that, so
+/// pointing at `setup` would have the user rebuild the image that was fine and
+/// leave the stale one exactly as it was.
+fn rebuild_command(image: &Path) -> Result<&'static str> {
+    Ok(if *image == paths::framework_image()? {
+        "winquick capability install dotnet-framework --force"
+    } else {
+        "winquick setup --force"
+    })
 }
 
 /// The guest has no network on purpose, so a package that is not in the cache
@@ -1027,11 +1048,22 @@ fn as_command_timeout(e: anyhow::Error, limit: Duration, serial: &Path) -> anyho
 /// How long a healthy guest is allowed to take before "the command is still in
 /// the mailbox" means anything.
 ///
-/// The acknowledgement is a FAT directory entry the guest writes and the host
-/// reads out of the image. A guest that has taken the command can still look
-/// untaken for a second or two while Windows holds that write, so below this
-/// the probe reports the flush, not the guest. Well above the roughly 100 ms a
-/// warm guest actually needs, and well below the 300 s default timeout.
+/// The acknowledgement is a FAT directory entry the guest deletes and the host
+/// reads out of the image, and it only reaches the image when the guest
+/// dismounts the mailbox. The agent does that before it starts the command, so
+/// a healthy guest is untaken for the length of one dismount -- but a guest
+/// under load takes longer to get there, and below this the probe still
+/// reports the flush rather than the guest.
+///
+/// It used to report the flush at *every* duration: the agent deleted the flag
+/// and went straight into the command, and the delete stayed in the guest's
+/// cache until the command was over. A 60 s timeout therefore always convicted
+/// a healthy guest, costing five rebuilds and a cold boot -- 182 s, measured.
+/// The constant did not cause that and raising it would not have fixed it; the
+/// agent had to flush. See `guest/agent.cmd`.
+///
+/// Well above the roughly 100 ms a warm guest needs, and well below the 300 s
+/// default timeout.
 const ACKNOWLEDGEMENT_IS_CERTAIN: Duration = Duration::from_secs(60);
 
 /// Whether a warm run's timeout is worth answering with a cold boot.
@@ -1075,7 +1107,7 @@ fn timed_out_without_taking_it(e: &anyhow::Error) -> Option<bool> {
 /// The warm path establishes it by looking at the mailbox when the timeout
 /// fires: a command still sitting there was never taken. That is a stronger
 /// question than the one the first wait asks, which gives up after ten seconds
-/// and can be beaten by a busy guest leaving the acknowledgement unflushed.
+/// and can be beaten by a guest that has not got back to the mailbox yet.
 ///
 /// It matters because the fallback that wait uses -- QEMU's byte counters -- can
 /// be satisfied by a guest that resumed wrong. Measured over a hundred
@@ -1184,33 +1216,32 @@ const FIRST_CONTACT: Duration = Duration::from_secs(10);
 
 /// How much guest I/O counts as "this guest is working, not halted".
 ///
-/// The go flag disappearing is a FAT directory write, and the agent starts the
-/// user's command the moment it has read the token -- so the acknowledgement
-/// and the workload race, on the same volume, and the workload can win. A
-/// build heavy enough to saturate the guest keeps that one directory write
-/// from reaching the image for far longer than `FIRST_CONTACT`, and WinQuick
-/// then threw away a perfectly good prepared guest and cold-booted.
+/// A backstop, and no longer the main event. This existed because the
+/// acknowledgement was not reaching the host at all: the agent deleted the go
+/// flag with the mailbox still mounted, and Windows only synchronises a FAT
+/// volume at mount and dismount, so the delete sat in the guest's cache until
+/// the command had finished. Every command slower than `FIRST_CONTACT` looked
+/// like a guest that had never taken it. The counters were what told a busy
+/// guest from a halted one when the flag could not.
 ///
-/// Measured on `dotnet build` of a three-project solution: **122 s** every
-/// time, five discarded prepared guests per run, against **11 s** for the same
-/// build when the flag was simply waited for longer. The guest was never
-/// halted; it was busy.
+/// The agent now flushes that delete before it starts the command, so the flag
+/// answers the question directly and this path is rarely reached. It is kept
+/// because it is still the only evidence available if a guest is slow to get
+/// back to the mailbox -- but it is evidence about *activity*, never about
+/// whether the command was taken.
 ///
-/// So when the deadline passes, ask a question the guest cannot lie about:
-/// QEMU's own byte counters. A restored guest that came back halted moves
-/// essentially nothing -- its poll loop is a few sectors of FAT metadata per
-/// turn. One that is building moves tens of megabytes in the same window.
-/// Sixteen megabytes sits well clear of both.
+/// A restored guest that came back halted moves essentially nothing: its poll
+/// loop is a few sectors of FAT metadata per turn. One that is building moves
+/// tens of megabytes in the same window. Sixteen megabytes sits well clear of
+/// both.
 const PROOF_OF_LIFE_BYTES: u64 = 16 * 1024 * 1024;
 
 /// How long to watch the counters when the total is not enough to decide.
 ///
 /// `PROOF_OF_LIFE_BYTES` answers "is this guest working hard?", and a great
-/// many perfectly healthy commands are not. `winquick run --timeout 2 -- cmd
-/// /c "ping -n 30 127.0.0.1"` moves almost nothing, holds the go flag in the
-/// guest's cache for the whole thirty seconds, and was therefore read as a
-/// halted guest -- which cost a discarded prepared guest, five rebuilds and
-/// **117 s** for a two-second timeout, measured.
+/// many perfectly healthy commands are not. `cmd /c "ping -n 30 127.0.0.1"`
+/// moves almost nothing and spends most of its time asleep, so the byte total
+/// says no about a guest that is perfectly alive.
 ///
 /// So ask the smaller question the byte total cannot: not *how much* has this
 /// guest moved, but *is it still moving*. A guest that came back halted stops
@@ -1330,7 +1361,7 @@ fn warm_execute(ctx: &Ctx, ready: &state::ReadyState, command: &str) -> Result<O
             };
             ctx.vlog(format!(
                 "the guest has not acknowledged the command yet but {why} — \
-                 it is working, not halted; waiting for the command instead"
+                 treating it as busy and waiting for the command"
             ));
         }
         let deadline = Instant::now() + ctx.timeout;
@@ -1952,6 +1983,37 @@ mod tests {
 
         let _ = std::fs::remove_file(&quiet);
         let _ = std::fs::remove_file(&crashed);
+    }
+
+    /// The host decides whether a prepared guest is healthy by looking for the
+    /// go flag the guest deleted. That delete only reaches the image when the
+    /// guest dismounts the mailbox -- Windows synchronises a FAT volume at
+    /// mount and dismount and at no other time -- so the agent has to dismount
+    /// between taking the command and starting it.
+    ///
+    /// Without that the flag sat in the image for the whole run and every
+    /// command slower than `FIRST_CONTACT` looked like a guest that had never
+    /// taken it. `--timeout 60` on a three-minute command discarded a healthy
+    /// prepared guest, rebuilt it five times and cold booted: 182 s, every
+    /// time. Nothing on the host side could tell the difference, because the
+    /// evidence it was reading was never written.
+    #[test]
+    fn the_agent_flushes_the_acknowledgement_before_running_the_command() {
+        let agent = crate::setup::AGENT;
+        let del = agent.find("del %WQ%\\WQGO.TXT").expect("the agent deletes the go flag");
+        let exec = agent.find("cmd /c %WQ%\\WQCMD.CMD").expect("the agent runs the command");
+        assert!(del < exec, "the flag is deleted before the command runs");
+
+        let between = &agent[del..exec];
+        let dismount = between.find("mountvol %WQ% /P").expect(
+            "the go flag delete must be flushed by a dismount before the command starts, \
+             or the host cannot see it until the command is over",
+        );
+        assert!(
+            between[dismount..].contains("mountvol %WQ% %WQVOL%"),
+            "and the mailbox must be mounted again afterwards, or the command has \
+             nowhere to write its output",
+        );
     }
 
     /// The message is what a user sees; it should name what was waited for.

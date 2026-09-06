@@ -330,6 +330,28 @@ after_q=$(qemu_count)
 check "timeout leaves no qemu behind" "$after_q" "$before_q"
 check "timeout leaves no run directories" "$(ls -A ~/.winquick/run 2>/dev/null | wc -l | tr -d " ")" "0"
 
+# The same again, above the threshold that decides whether a timeout counts as
+# evidence against the prepared guest. `--timeout 2` cannot reach it: two
+# seconds is below ACKNOWLEDGEMENT_IS_CERTAIN by design, so the verdict is
+# never acted on and this suite passed while the case above it was broken.
+#
+# At 60 s the verdict is acted on, which makes this the only check here that
+# needs the acknowledgement to be real. While the guest agent deleted the go
+# flag without dismounting the mailbox, the host never saw the delete, and a
+# healthy prepared guest was discarded, rebuilt five times and cold booted:
+# 182 s for a 60 s timeout, on every attempt.
+t0=$(date +%s)
+"$WQ" run --timeout 60 -- cmd /c "ping -n 200 127.0.0.1 >nul" >/dev/null 2>&1
+rc=$?
+el=$(( $(date +%s)-t0 ))
+[ "$rc" -ne 0 ] && ok "a timeout at the threshold fails rather than hanging" \
+  || bad "60 s timeout" "exit $rc"
+[ "$el" -lt 120 ] && ok "a timeout at the threshold is not answered by rebuilding" \
+  || bad "timeout cascade" "took ${el}s for a 60 s timeout"
+[ -f ~/.winquick/states/validation-$GUEST/ready.json ] \
+  && ok "a timeout at the threshold keeps the prepared guest" \
+  || bad "prepared guest discarded by a 60 s timeout" "no ready.json"
+
 "$WQ" run --timeout 120 -- pwsh -NoProfile -Command "Start-Sleep -Seconds 60" >/dev/null 2>&1 &
 IPID=$!
 sleep 14
