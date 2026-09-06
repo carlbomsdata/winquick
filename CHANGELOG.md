@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.4.3 — the acknowledgement the host never saw, 2026-09-06
 
 ### Fixed
 
