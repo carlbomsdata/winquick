@@ -45,10 +45,31 @@ else sha256() { sha256sum "$@"; }; fi
 # bytes, so putting this under a deep scratch directory fails the run with an
 # error about sockets that has nothing to do with what is being tested. A real
 # home directory is nowhere near the limit; a test harness's can be.
-HOMEDIR=$(mktemp -d /tmp/wq-firstrun.XXXXXX) || exit 2
+# /var/tmp before /tmp: /tmp is a 3.9 GiB tmpfs on a stock Ubuntu, and a runtime
+# needs about 8 GiB, so the install dies part-way through with ENOSPC and every
+# check after it fails for a reason that has nothing to do with WinQuick.
+# WQ_FIRSTRUN_DIR overrides both.
+TMPROOT=${WQ_FIRSTRUN_DIR:-}
+if [ -z "$TMPROOT" ]; then
+  for cand in /var/tmp /tmp; do
+    [ -d "$cand" ] && [ -w "$cand" ] && { TMPROOT=$cand; break; }
+  done
+fi
+HOMEDIR=$(mktemp -d "$TMPROOT/wq-firstrun.XXXXXX") || exit 2
 if [ ${#HOMEDIR} -gt 40 ]; then
   echo "refusing to run: the temporary HOME is $HOMEDIR"
   echo "that leaves too little room for a QMP socket path (limit is 104 bytes)"
+  echo "set WQ_FIRSTRUN_DIR to somewhere shorter"
+  rmdir "$HOMEDIR" 2>/dev/null
+  exit 2
+fi
+# Setup writes a multi-gigabyte image. Finding that out half way through turns
+# every later check into a mystery, so ask first.
+avail_kb=$(df -Pk "$HOMEDIR" | awk 'NR==2 {print $4}')
+if [ "${avail_kb:-0}" -lt 12000000 ]; then
+  echo "refusing to run: only $(( avail_kb / 1024 )) MiB free on $TMPROOT"
+  echo "a runtime needs about 8 GiB; set WQ_FIRSTRUN_DIR to a filesystem with room"
+  rmdir "$HOMEDIR" 2>/dev/null
   exit 2
 fi
 wq() { env HOME="$HOMEDIR" "$WQ" "$@"; }
