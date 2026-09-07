@@ -152,6 +152,25 @@ fn install_capabilities(names: &[String], verbose: bool) -> Result<()> {
 
 /// Never claim success without proving it: boot Windows and run a real command.
 fn smoke_test() -> Result<()> {
+    // `run` boots the serviced image when one is installed, and setup has just
+    // replaced the runtime that image was serviced from -- so the smoke test
+    // would boot something this setup did not build and report the mismatch as
+    // "the runtime was built but Windows failed to start". The runtime is fine;
+    // it is the serviced image that has to catch up, and saying so is the
+    // difference between a next step and a failure.
+    for (image, capability) in [
+        (paths::framework_image()?, "dotnet-framework"),
+        (crate::desktop::base_image()?, "desktop"),
+    ] {
+        if image.exists() && state::check_base_meta(&image, AGENT).is_err() {
+            println!(
+                "\nThe {capability} image was built by an earlier winquick, and \
+                 `winquick run` boots it.\nRebuild it next:\n    \
+                 winquick capability install {capability} --force"
+            );
+            return Ok(());
+        }
+    }
     println!("\nTesting the runtime...");
     let out = crate::runner::run_capture(
         "cmd /c ver",

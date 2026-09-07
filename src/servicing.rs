@@ -155,6 +155,19 @@ pub fn install_framework(opts: &Options) -> Result<()> {
              Run this first:\n    winquick setup --accept-microsoft-terms"
         );
     }
+    // Servicing copies the runtime, its agent and its metadata, so a stale
+    // runtime can only produce another stale image. The message that sends
+    // someone here names this command, so without this they rebuild for twenty
+    // minutes, see the same message and do it again. Refuse before the work.
+    if crate::state::check_base_meta(&base, crate::setup::AGENT).is_err() {
+        bail!(
+            "the Windows runtime this image is serviced from was built by a \
+             different version of winquick, so rebuilding this image would only \
+             produce another one that does not match.\n\n\
+             Rebuild the runtime first:\n    winquick setup --force\n\n\
+             Then:\n    winquick capability install dotnet-framework --force"
+        );
+    }
     let out = paths::framework_image()?;
     if out.exists() && !opts.force {
         println!("The .NET Framework capability is already installed.");
@@ -218,6 +231,19 @@ pub fn install(opts: &Options) -> Result<()> {
         bail!(
             "the Windows runtime is not installed yet.\n\n\
              Run this first:\n    winquick setup --accept-microsoft-terms"
+        );
+    }
+    // Servicing copies the runtime, its agent and its metadata, so a stale
+    // runtime can only produce another stale image. The message that sends
+    // someone here names this command, so without this they rebuild for twenty
+    // minutes, see the same message and do it again. Refuse before the work.
+    if crate::state::check_base_meta(&base, crate::setup::AGENT).is_err() {
+        bail!(
+            "the Windows runtime this image is serviced from was built by a \
+             different version of winquick, so rebuilding this image would only \
+             produce another one that does not match.\n\n\
+             Rebuild the runtime first:\n    winquick setup --force\n\n\
+             Then:\n    winquick capability install desktop --force"
         );
     }
     let out = desktop::base_image()?;

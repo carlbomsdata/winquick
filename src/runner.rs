@@ -256,6 +256,11 @@ fn execute(command: &str, opts: &Options) -> Result<Outcome> {
     // that image goes stale on its own -- so the fix has to name the image this
     // run would actually boot. Sending someone to `setup --force` here rebuilds
     // the pristine image and leaves the run failing exactly as before.
+    //
+    // The runtime is checked first because a serviced image is a copy of it. If
+    // both are stale, naming the serviced one sends the user to rebuild an image
+    // that can only come out stale again, and the same message comes back.
+    state::check_base_meta(&paths::base_image()?, crate::setup::AGENT)?;
     state::check_image_meta(&ctx.base, crate::setup::AGENT, rebuild_command(&ctx.base)?)?;
     // Whether this run will try to resume a prepared guest. On Windows it will
     // not unless asked: see `platform::RESUME_PREPARED_BY_DEFAULT` for the
