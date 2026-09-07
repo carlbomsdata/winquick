@@ -599,6 +599,56 @@ fail. The regression test now runs at 60 s as well, `tests/firstrun.sh` runs it 
 brand-new install, and a unit test asserts the agent dismounts between taking a command
 and running it.
 
+## Linux: what has been verified, and the wall it hits
+
+The readme calls Linux unverified at runtime. Measured 2026-09-07 on the machine
+that was available -- a Lima VM, Ubuntu 26.04 aarch64, on an Apple M4 Pro host,
+which does expose `/dev/kvm` to the guest through Apple's Virtualization
+framework. So this is a real KVM host, not an emulated one.
+
+| Step | Result |
+|---|---|
+| build, `cargo test --release` | **works**, 182 tests pass |
+| `winquick doctor` | **correct**: `aarch64 (kvm)`, `qemu version 11.1`, firmware found |
+| `winquick setup` | **works**, builds a valid runtime from the ISO: all four stages, agent installed, registry edited, `base.json` written |
+| booting the guest | **fails**: `Synchronous Exception at 0x000000007C16DDD4` |
+
+Everything up to the boot works on Linux. The boot does not, and WinQuick already
+says why without being asked:
+
+```
+winquick: the runtime was built but Windows failed to start: Windows never
+started -- the guest firmware faulted (Synchronous Exception ...). The usual
+cause is a host that cannot give the guest full hardware virtualisation, which
+is what running WinQuick inside another virtual machine does
+```
+
+Nested KVM under Apple's hypervisor is enough to *create* a VM and not enough to
+run this guest's firmware. That is a property of the test rig, not a measurement
+of Linux: it neither confirms nor refutes that WinQuick works on a bare-metal
+Linux host. **Verifying Linux needs physical Linux hardware**, and until that
+exists the readme's wording stands as the honest one.
+
+### Two things measured on the way
+
+**Ubuntu ships a QEMU that is too old.** `apt install qemu-system` on Ubuntu
+24.04 gives QEMU 8.2.2 and on 26.04 gives 10.2.1; WinQuick wants 11. It runs on
+older ones, but they cannot migrate the NVMe device the guest boots from, so
+every run boots cold and `doctor` fails the version. QEMU 11.1.1 built from
+source installs cleanly and `doctor` then reports `qemu version 11.1`.
+`docs/install.md` stated this in its prerequisites while its install steps handed
+out that exact `apt` line without comment; the steps now say what it gives you.
+
+**A firmware from the wrong host is worse than none.** The test VM had a
+`/usr/share/qemu/edk2-aarch64-code.fd` that `dpkg` did not own -- byte-identical
+to the macOS Homebrew QEMU 11.1.1 firmware, copied across during earlier work.
+WinQuick prefers QEMU's own firmware name, found that one, and paired a macOS
+EDK2 build with Ubuntu's QEMU 10.2.1. The result was
+`NvmExpressPassThru: Timeout occurs for an NVMe command` and a drop to the UEFI
+shell -- a failure that looks like a WinQuick defect and is not one. Worth
+recognising the shape: a firmware that cannot see the disk at all, rather than
+one that faults after finding it.
+
 ## A trap worth recording: read-only UEFI varstore
 
 Several hours were lost to this. To satisfy `savevm`'s "writable devices must support

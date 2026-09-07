@@ -76,7 +76,16 @@ sudo apt install qemu-system qemu-utils ovmf libhivex-bin
 curl -LO https://github.com/carlbomsdata/winquick/releases/download/v0.4.4/winquick-0.4.4-linux-x86_64.tar.gz
 tar xzf winquick-0.4.4-linux-x86_64.tar.gz
 sudo cp -R winquick-0.4.4-linux-x86_64/* /usr/local/
+winquick doctor
 ```
+
+**Check what QEMU that gave you.** The line above installs whatever your
+distribution packages, and on Ubuntu 24.04 that is QEMU 8.2.2 — measured, on a
+current image. WinQuick runs on it, but 8.2.2 cannot migrate the NVMe device the
+guest boots from, so every run boots cold instead of resuming in a fraction of a
+second, and `winquick doctor` reports the version as too old. For the fast path
+you need QEMU 11 or newer than your distribution is likely to carry, from
+Homebrew on Linux, a backport, or a source build.
 
 Both `linux-x86_64` and `linux-aarch64` are published.
 
