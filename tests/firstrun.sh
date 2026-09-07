@@ -193,6 +193,60 @@ check "no run directories are left behind" "$left" "0"
 q=$(ps -eo comm= 2>/dev/null | grep -c '^qemu-system' || true)
 check "no qemu is left running" "$q" "0"
 
+# -- stale images name the right rebuild ------------------------------------
+#
+# A serviced image is a copy of the runtime and carries the runtime's agent, so
+# a stale runtime can only produce another stale serviced image. Getting the
+# order wrong sent the user to rebuild the serviced one, which came out stale,
+# printed the same message and sent them round again -- roughly ten minutes of
+# DISM servicing per lap. Faked by editing metadata rather than by installing a
+# real capability, which the rest of this test cannot afford. Runs last because
+# it rebuilds the runtime.
+echo "== stale images name the right rebuild =="
+NETFX="$HOMEDIR/.winquick/images/netfx-$GUEST"
+mkdir -p "$NETFX"
+: > "$NETFX/base.qcow2"          # run() only has to see that the file is there
+cp "${BASE%.qcow2}.json" "$NETFX/base.json"
+stale() { sed 's/"agent_hash": *"[^"]*"/"agent_hash": "deadbeefdeadbeef"/' "$1" > "$1.new" && mv "$1.new" "$1"; }
+
+stale "${BASE%.qcow2}.json"
+stale "$NETFX/base.json"
+case "$(wq run -- cmd /c ver 2>&1)" in
+  *"winquick setup --force"*) ok "with both stale, run names the runtime first" ;;
+  *) bad "run names the wrong rebuild" "$(wq run -- cmd /c ver 2>&1)" ;;
+esac
+t0=$(date +%s)
+out=$(wq capability install dotnet-framework --force 2>&1); rc=$?
+el=$(( $(date +%s)-t0 ))
+[ "$rc" -ne 0 ] && ok "servicing from a stale runtime is refused" \
+  || bad "servicing from a stale runtime succeeded" "it can only produce another stale image"
+[ "$el" -lt 15 ] && ok "and refuses before doing the work (${el}s)" \
+  || bad "refused only after servicing" "took ${el}s"
+case "$out" in
+  *"winquick setup --force"*) ok "and says to rebuild the runtime first" ;;
+  *) bad "the refusal names no way out" "$out" ;;
+esac
+
+# Runtime current again, serviced image still behind. setup rewrites the
+# runtime's metadata and leaves the serviced image alone, which is the state a
+# half-finished upgrade is in.
+out=$(wq setup --force --from "$IMAGE" 2>&1)
+case "$out" in
+  *"failed to start"*) bad "setup calls a healthy runtime broken" "$out" ;;
+  *"capability install dotnet-framework --force"*)
+    ok "setup reports the stale serviced image as a next step, not a failure" ;;
+  *) bad "setup says nothing about the stale serviced image" "$out" ;;
+esac
+case "$(wq run -- cmd /c ver 2>&1)" in
+  *"capability install dotnet-framework --force"*)
+    ok "and run now names that capability, not setup" ;;
+  *) bad "run names the wrong rebuild for a stale serviced image" "$(wq run -- cmd /c ver 2>&1)" ;;
+esac
+
+rm -rf "$NETFX"
+wq run -- cmd /c ver >/dev/null 2>&1 && ok "runs work again once it is gone" \
+  || bad "run still fails" "after the stale serviced image was removed"
+
 # -- clean -------------------------------------------------------------------
 echo "== clean =="
 wq clean --all >/dev/null 2>&1 && ok "clean --all succeeds" || bad "clean --all" "non-zero exit"

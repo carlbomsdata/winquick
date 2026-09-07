@@ -409,6 +409,15 @@ def test_workspace_immutability():
         shutil.rmtree(ws, ignore_errors=True)
 
 
+def summarise(r):
+    """The first useful line of a tool result, for a failure message."""
+    for block in r.get("content", []) or []:
+        text = (block.get("text") or "").strip()
+        if text:
+            return text.splitlines()[0][:200]
+    return repr(r)[:200]
+
+
 def test_artifacts():
     print("== artifacts through MCP ==")
     ws = native_temp_dir("wq-mcp-art-")
@@ -454,6 +463,13 @@ def test_artifacts():
                     "artifactsDir": str(out),
                 },
             )
+            # A run that failed returns no artifacts, and comparing the empty
+            # set against the expected one reports it as a glob that did not
+            # match -- which is the wrong defect and gives nothing to chase.
+            # Say what actually went wrong before comparing.
+            if r.get("isError"):
+                bad(f"artifact {pattern}", f"the run itself failed: {summarise(r)}")
+                continue
             got = {a["path"].replace("\\", "/") for a in r.get("artifacts", [])}
             check(f"artifact {pattern}", got, want)
             if got:
