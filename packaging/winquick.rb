@@ -7,7 +7,7 @@
 class Winquick < Formula
   desc "Run commands inside a real, disposable Windows environment"
   homepage "https://github.com/carlbomsdata/winquick"
-  url "https://github.com/carlbomsdata/winquick/releases/download/v0.4.3/winquick-0.4.3-darwin-arm64.tar.gz"
+  url "https://github.com/carlbomsdata/winquick/releases/download/v0.4.4/winquick-0.4.4-darwin-arm64.tar.gz"
   sha256 "b8e9ef82f201bf3c2bd2b53b116698aa400df9bb368739fceac82d1838afe35c"
   license "Apache-2.0"
 
