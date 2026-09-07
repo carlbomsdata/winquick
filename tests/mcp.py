@@ -521,7 +521,15 @@ def test_desktop_without_session():
     r = c.call("desktop_status")
     check("desktop_status answers when nothing runs", r["isError"], False)
     if r.get("running"):
-        print("  (a session is running; skipping the no-session assertions)")
+        # Nothing in this suite starts a session, so one being reported is a
+        # stale session file or a reused pid. Skipping quietly let the suite
+        # print "0 failed" while running six fewer checks than usual, which is
+        # the same way a green suite hid a real defect once already.
+        bad(
+            "desktop_status reports not running",
+            "a session is reported as running, but nothing here starts one -- "
+            "stop it with `winquick stop`, or delete a stale ~/.winquick/desktop",
+        )
         c.close()
         return
     check("desktop_status reports not running", r.get("running"), False)

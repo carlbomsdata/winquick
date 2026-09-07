@@ -132,8 +132,16 @@ pub fn alive(pid: u32) -> bool {
     crate::proc::is_alive(pid)
 }
 
+/// The session, if one is really there.
+///
+/// Being alive is not enough. A session file that outlived its QEMU names a pid
+/// the system is free to hand to anything else, and then `start` refuses to
+/// start a session because it believes one is already up, while every desktop
+/// verb reports a session that does not exist. The orphan reaper asks this same
+/// second question before it signals anything (see `runner.rs`), and the answer
+/// is just as load-bearing here.
 pub fn running() -> Option<Session> {
-    read_session().filter(|s| alive(s.pid))
+    read_session().filter(|s| alive(s.pid) && crate::proc::looks_like_qemu(s.pid))
 }
 
 // ---------------------------------------------------------------- lifecycle
@@ -1141,6 +1149,19 @@ fn summarise(r: &CallResult) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// A session file that outlived its QEMU names a pid the system is free to
+    /// reuse, and `running()` used to accept any live pid at all. The cost is
+    /// not cosmetic: `start` refuses when it believes a session is up, so one
+    /// stale file plus an unlucky pid means the desktop cannot be started at
+    /// all until it is deleted by hand. This test points the check at the test
+    /// binary, which is alive and is certainly not QEMU.
+    #[test]
+    fn a_live_pid_that_is_not_qemu_is_not_a_session() {
+        let me = std::process::id();
+        assert!(crate::proc::is_alive(me), "the test binary is alive");
+        assert!(!crate::proc::looks_like_qemu(me), "and is not QEMU, so it is not a session");
+    }
+
     /// Every forwarded verb must be documented, or `--help` falls through to
     /// the guest again and becomes unanswerable without a booted Windows.
     #[test]

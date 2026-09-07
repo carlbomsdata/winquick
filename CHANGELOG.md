@@ -1,5 +1,52 @@
 # Changelog
 
+## v0.4.4 — the upgrade path, 2026-09-07
+
+v0.4.3 invalidated every image built by an earlier WinQuick, which is correct —
+the guest agent changed — but the way out of it was broken. Found by walking a
+real 0.4.2 install through the upgrade rather than by reasoning about it.
+
+The guest agent is **unchanged** since v0.4.3, so upgrading from v0.4.3 needs no
+image rebuild.
+
+### Fixed
+
+- **Rebuilding a serviced image could not fix a stale one.** A serviced image is
+  a copy of the runtime and carries the runtime's agent, so servicing from a
+  stale runtime produced another stale image. `winquick run` named the
+  capability, the capability rebuilt for about ten minutes, printed the same
+  message, and sent the user round again. `run` now checks the runtime first and
+  names `winquick setup --force` when that is the step that has to happen, and
+  the servicing commands refuse in under a second rather than doing work that
+  cannot help.
+
+- **A reused pid could report a desktop session that was not there.** A session
+  file that outlives its QEMU names a pid the system is free to hand to anything
+  else, and the check only asked whether that pid was alive. `winquick start`
+  refuses when it believes a session is up, so one stale file plus an unlucky pid
+  meant the desktop could not be started at all. It now asks what the process is,
+  which is the question the orphan reaper has always asked. Surfaced by the MCP
+  suite quietly running six fewer checks.
+
+- **`winquick setup` called a healthy runtime broken.** Its closing smoke test
+  boots whatever `run` boots, which is the serviced image when one is installed —
+  so immediately after rebuilding the runtime it reported "the runtime was built
+  but Windows failed to start". The runtime was fine. Setup now says which
+  serviced image is behind and what rebuilds it, as a next step rather than a
+  failure.
+
+### Testing
+
+- `tests/firstrun.sh` covers the whole stale-image sequence: which command each
+  message names, that servicing refuses before doing the work, and that setup
+  reports a next step instead of a failure. It fakes the state by editing image
+  metadata, so it costs a second rather than the twenty minutes a real serviced
+  capability would.
+- The MCP suite no longer passes quietly when it cannot run all of its checks. A
+  reported desktop session used to skip six assertions and still print "0
+  failed", and an artifact case compared an empty result against the expected
+  paths without first asking whether the run had failed at all.
+
 ## v0.4.3 — the acknowledgement the host never saw, 2026-09-06
 
 ### Fixed
