@@ -124,6 +124,22 @@ Never disable Gatekeeper system-wide.
 Installing with **Homebrew needs none of this**: brew fetches the archive itself,
 so the quarantine attribute is never set.
 
+### On Windows: unsigned, and antivirus may quarantine it
+
+The Windows binaries are unsigned too, and the consequence there is sharper than
+a Gatekeeper prompt. Windows SmartScreen warns on first run ("Windows protected
+your PC" -> More info -> Run anyway). More aggressively, an endpoint-protection
+product can **quarantine `winquick.exe` outright**: measured on a machine running
+Bitdefender Endpoint Security, the binary ran once and was then removed, and a
+fresh download was blocked with "access denied" before it reached disk. This is
+a property of the security product, not of WinQuick, but the effect on a first
+run is real.
+
+If that happens, the fix is an exclusion for the install directory in your AV
+console -- not disabling protection. On a machine with only Microsoft Defender,
+a first run typically gets the SmartScreen prompt and nothing worse. A signed
+release is the proper fix and is not yet available.
+
 ## Setting up Windows
 
 ```console

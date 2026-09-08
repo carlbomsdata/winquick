@@ -680,3 +680,24 @@ prepared state being useful for real work and not.
 
 The absolute figures are slow because the lab is nested -- KVM inside VMware
 inside Windows on a 2018 i5-8265U -- not because of anything WinQuick does.
+
+
+## Verified on 0.4.4 (2026-09-08)
+
+The release chain re-run on the reference host: i5-8265U, Windows 11
+(build 26200), stock QEMU 11.1.0 from `C:\Program Files\qemu`, WHPX enabled.
+
+- `winquick doctor`: clean. Correctly reports `x86_64`, `qemu version 11.1`, all
+  helpers found, and the Windows-specific runtime lines -- "prepared guest not
+  used on this host; every run boots cold" and the `--warm` fast-path note.
+- `winquick setup --from ValidationOS.vhdx`: built the runtime and its closing
+  smoke test **booted real Windows x64 under WHPX** and ran `cmd /c ver` inside
+  the guest -- `Microsoft Windows [Version 10.0.26100.8972]`, exit 0, 50 s.
+
+So the Windows guest bring-up path -- WHPX boot, x64 guest, the mailbox round
+trip, stdout capture and exit code -- is confirmed on 0.4.4. The remaining
+first-run assertions (exit-code passthrough, stream separation, workspace and
+artifacts) could not be run to completion on that machine: **Bitdefender Endpoint
+Security quarantined the unsigned `winquick.exe`** after its first run and then
+blocked a fresh download. Those checks are host-agnostic host-side logic, verified
+by the macOS integration suite; see `docs/install.md` for the antivirus note.
