@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.4.5 — stdin does not hang, 2026-09-08
+
+Found by trying WinQuick as a first-time user would: piping input, and running
+commands that read standard input. The guest agent changed, so images built by
+an earlier WinQuick are stale and `winquick doctor` says which and how to rebuild
+each.
+
+### Fixed
+
+- **A command that reads standard input no longer hangs to the timeout.** The
+  mailbox carries a command out and its output back and has no channel for stdin,
+  so a workload left inheriting the agent's console -- `findstr`, `sort`,
+  `set /p`, a build tool prompting "overwrite? [y/n]" -- blocked on input that
+  could never arrive and ran to the full timeout. The agent now runs the command
+  with stdin from `NUL`, so it gets end-of-file at once and returns, the same as
+  in CI or under any redirected pipeline. Piping into `winquick run` still does
+  not forward host stdin -- there is nothing to forward -- but it no longer
+  hangs. Measured: `findstr` on piped input went from a full timeout to 0 s.
+
+### Testing
+
+- A unit test asserts the agent redirects the workload's stdin from `NUL`; an
+  integration scenario pipes input and checks the run returns instead of hanging.
+- `docs/troubleshooting.md` explains stdin behaviour and how to feed a program
+  input (write it to a file in the workspace).
+
 ## v0.4.4 — the upgrade path, 2026-09-07
 
 v0.4.3 invalidated every image built by an earlier WinQuick, which is correct —
