@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.4.6 — robustness, 2026-09-08
+
+Hardening found by trying to break WinQuick as a first-time user would. Host-side
+only: no guest-agent change, so images built by v0.4.5 stay valid and there is
+nothing to rebuild.
+
+### Fixed
+
+- **`--cpus` and `--memory` are checked before a guest is built.** A bad value
+  used to reach QEMU raw -- `--cpus 0` and `--memory 8` surfaced QEMU's own
+  error, and `--cpus 999` spent ~30 s on failed prepare attempts before QEMU
+  rejected the topology. `run`, `start` and `ui-test` now refuse an impossible
+  size in one line, instantly: `--cpus` outside 1..=64, or `--memory` under
+  512 MiB.
+- **`winquick clean` refuses while a run is in progress.** `clean` deletes disks
+  under `run/`, and a warm run holds no global lock while it executes, so a
+  clean could delete the overlays a booted guest was still reading and wedge it
+  until the timeout. `clean` already stopped a running desktop session; it now
+  also refuses when a `run` is live, and leaves the runtime untouched.
+- **The macOS Gatekeeper instructions were wrong for a browser download.** A
+  browser download quarantines the whole extracted tree, `ntfscp`/`ntfscat`
+  included, and on recent macOS a quarantined unsigned binary hangs on a
+  Gatekeeper prompt rather than failing. The install docs now lead with Homebrew
+  (the clean path) and clear quarantine recursively for the tarball.
+
 ## v0.4.5 — stdin does not hang, 2026-09-08
 
 Found by trying WinQuick as a first-time user would: piping input, and running
