@@ -856,6 +856,28 @@ fn sweep_stale_run_dirs(run_root: &Path) {
     }
 }
 
+/// Whether a `run` is in progress under this WinQuick home.
+///
+/// A live run keeps a directory named `<pid>-<millis>` holding its overlays and
+/// a booted QEMU, and `clean` deleting those out from under it wedges the guest
+/// and hangs the command to its timeout. The creator pid is the same signal
+/// `sweep_stale_run_dirs` trusts: alive means a run in progress, or at worst a
+/// reused pid, and refusing to clean is the safe side of that ambiguity.
+pub fn run_in_progress(run_root: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(run_root) else { return false };
+    for e in entries.flatten() {
+        if !e.path().is_dir() {
+            continue;
+        }
+        let name = e.file_name();
+        let Some((pid, _)) = name.to_str().and_then(|n| n.split_once('-')) else { continue };
+        if pid.parse::<u32>().is_ok_and(crate::proc::is_alive) {
+            return true;
+        }
+    }
+    false
+}
+
 fn new_run_dir() -> Result<PathBuf> {
     let id = format!(
         "{}-{}",
@@ -2061,6 +2083,28 @@ mod tests {
             "the workload's stdin must come from NUL so a command that reads it gets \
              EOF instead of hanging to the timeout: {exec}",
         );
+    }
+
+    /// `clean` must not delete a run's disks while its guest is still booted:
+    /// deleting under a live run wedged the guest and hung the command. A run
+    /// directory is named `<pid>-<millis>`, and a live creator pid means a run.
+    #[test]
+    fn an_active_run_is_detected_so_clean_can_refuse() {
+        let root = std::env::temp_dir().join(format!("wq-runcheck-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        assert!(!run_in_progress(&root), "an empty run root has no active run");
+
+        // A directory whose creator is this very test process is "in progress".
+        std::fs::create_dir_all(root.join(format!("{}-123", std::process::id()))).unwrap();
+        assert!(run_in_progress(&root), "a live creator pid is an active run");
+
+        // A directory from a pid that is certainly gone is not.
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("4294967294-123")).unwrap();
+        assert!(!run_in_progress(&root), "a dead creator pid is not an active run");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A fat-fingered `--cpus` or `--memory` should be caught with one clear

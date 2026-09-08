@@ -1111,6 +1111,21 @@ fn clean(all: bool, dry_run: bool) -> Result<i32> {
         println!("Nothing to clean.");
         return Ok(0);
     }
+    // A run in progress has a booted QEMU reading disks under `run/`. Deleting
+    // those mid-run wedges the guest and hangs the command, so refuse rather
+    // than pull the floor out from under it. `--dry-run` only lists, so it may
+    // proceed with a note.
+    if runner::run_in_progress(&root.join("run")) {
+        if dry_run {
+            println!("  {:<28} {:>10}", "a run is in progress", "(active)");
+        } else {
+            bail!(
+                "a run is in progress -- its Windows guest is still using files under {}.\n\
+                 Wait for it to finish (or interrupt it) before cleaning.",
+                root.join("run").display()
+            );
+        }
+    }
     // A running desktop session holds its disk open; stopping it first keeps
     // `clean` from leaving an orphaned QEMU behind with no session file.
     if let Some(session) = desktop::running() {
