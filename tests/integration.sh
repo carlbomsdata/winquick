@@ -68,6 +68,15 @@ grep -q S-ERR /tmp/wq_e && ! grep -q S-OUT /tmp/wq_e && ok "stderr holds only st
 check "unknown command exits 1" "$?" "1"
 grep -qi "not recognized" /tmp/wq_e && ok "unknown command explains itself on stderr" || bad "stderr message" "$(cat /tmp/wq_e)"
 
+# A command that reads standard input must get EOF, not block. The mailbox has
+# no stdin channel, so before the agent redirected it from NUL a stdin-reading
+# command ran to the full timeout. `findstr .` on empty input exits 1 fast.
+t0=$(date +%s)
+echo feed | "$WQ" run --timeout 60 -- cmd /c "findstr ." >/dev/null 2>&1
+el=$(( $(date +%s)-t0 ))
+[ "$el" -lt 30 ] && ok "a command that reads stdin gets EOF instead of hanging (${el}s)" \
+  || bad "stdin read hung" "took ${el}s -- stdin is not connected to NUL"
+
 echo "== disposability =="
 "$WQ" run -- cmd /c "echo SENTINEL> C:\wqtest.txt" >/dev/null 2>&1
 "$WQ" run -- cmd /c "type C:\wqtest.txt" >/dev/null 2>&1

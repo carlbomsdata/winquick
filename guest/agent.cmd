@@ -181,7 +181,16 @@ rem wrong success. The host writes the command first and arms the flag second,
 rem so a flag we can read means the command behind it is this run's.
 rem A child cmd.exe, not `call`: the workload must not be able to end the agent
 rem with `exit`, and its errorlevel has to come back cleanly.
-cmd /c %WQ%\WQCMD.CMD > %WQ%\WQOUT.TXT 2> %WQ%\WQERR.TXT
+rem
+rem stdin comes from NUL. The mailbox carries a command out and its output back;
+rem it has no channel for standard input, so there is nothing to forward from the
+rem host. Left inheriting the agent's console, a workload that reads stdin --
+rem `findstr`, `sort`, a build tool prompting "overwrite? [y/n]", `set /p` --
+rem blocks on input that can never arrive and runs to the timeout. From NUL it
+rem gets end-of-file immediately, which is how the same command behaves in CI and
+rem under any redirected pipeline. This does not forward host stdin; it stops a
+rem stdin-reading command from hanging.
+cmd /c %WQ%\WQCMD.CMD < NUL > %WQ%\WQOUT.TXT 2> %WQ%\WQERR.TXT
 set WQRC=%errorlevel%
 rem Artifacts are collected even when the command failed - a failed build's logs
 rem are usually the thing you wanted. The command's exit code is already saved.

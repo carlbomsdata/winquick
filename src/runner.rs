@@ -2021,6 +2021,24 @@ mod tests {
         );
     }
 
+    /// A workload that reads standard input must not hang. The mailbox has no
+    /// channel for stdin, so a command left inheriting the agent's console --
+    /// findstr, sort, a prompt on `set /p` -- blocks on input that never comes
+    /// and runs to the timeout. From NUL it gets EOF at once, the same as in CI.
+    #[test]
+    fn the_workload_reads_stdin_from_nul() {
+        let agent = crate::setup::AGENT;
+        let exec = agent
+            .lines()
+            .find(|l| l.trim_start().starts_with("cmd /c %WQ%\\WQCMD.CMD"))
+            .expect("the agent runs the command");
+        assert!(
+            exec.contains("< NUL"),
+            "the workload's stdin must come from NUL so a command that reads it gets \
+             EOF instead of hanging to the timeout: {exec}",
+        );
+    }
+
     /// The message is what a user sees; it should name what was waited for.
     #[test]
     fn a_silent_guest_says_what_it_was_waiting_for() {

@@ -273,6 +273,21 @@ exclude those files.
 `winquick --verbose run -- ...` shows what WinQuick is doing: which path it took,
 phase timings, and why it rebuilt anything. Include that when reporting a bug.
 
+## A command that reads standard input does not block
+
+The mailbox carries a command out and its output back; it has no channel for
+standard input. Piping into `winquick run` therefore does not reach the guest:
+
+```console
+$ echo hello | winquick run -- cmd /c "findstr ."
+```
+
+The guest's stdin is connected to `NUL`, so a command that reads input gets
+end-of-file at once -- the same as in CI or under any redirected pipeline -- and
+returns instead of waiting. `set /p`, `findstr`, `sort` and a build tool that
+prompts "overwrite? [y/n]" all see EOF and move on. If you need to feed a program
+input, write it to a file in the workspace and have the command read the file.
+
 ## `%` in a command does not mean what it does at a Windows prompt
 
 A command is delivered to the guest as a batch file, so `%` follows batch rules
