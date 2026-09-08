@@ -107,22 +107,33 @@ Then `winquick doctor` to check, and `winquick setup`.
 
 ## Gatekeeper
 
-The v0.4.5 release is **not signed and not notarized** — no Apple Developer ID
-was available when it was built.
+The release is **not signed and not notarized** — no Apple Developer ID was
+available when it was built.
 
-This only matters for a **browser download**. Safari and other browsers mark
-downloaded files with `com.apple.quarantine`, and macOS then refuses to run an
-unsigned binary. Clear the attribute on the file you installed, and nothing
-broader:
+**Use Homebrew.** `brew install carlbomsdata/tap/winquick` fetches the archive
+itself, so the quarantine flag is never set and every file runs without a prompt.
+This is the tested, clean path on macOS and the one to give other people.
+
+A **browser download of the tarball is the awkward path**, and worse than a
+one-line fix suggests. Safari and other browsers stamp the download with
+`com.apple.quarantine`, `tar` carries that flag onto **every file it extracts** —
+the `winquick` binary *and* the `ntfscp`/`ntfscat` helpers it runs during setup —
+and on recent macOS a quarantined unsigned binary does not fail cleanly: it
+**hangs on a Gatekeeper prompt**. Clearing the flag from the binary alone is not
+enough, because setup then blocks on a quarantined helper. Clear it from the
+whole tree before copying it into place:
 
 ```console
-xattr -d com.apple.quarantine /usr/local/bin/winquick
+tar xzf winquick-*-darwin-arm64.tar.gz
+xattr -dr com.apple.quarantine winquick-*-darwin-arm64
+sudo cp -R winquick-*-darwin-arm64/* /usr/local/
 ```
 
-Never disable Gatekeeper system-wide.
-
-Installing with **Homebrew needs none of this**: brew fetches the archive itself,
-so the quarantine attribute is never set.
+Never disable Gatekeeper system-wide. If `winquick` ever seems to hang doing
+nothing on a fresh install, a leftover quarantine flag is the first thing to
+check (`xattr -r com.apple.quarantine "$(dirname "$(command -v winquick)")"/..`).
+A signed, notarized release is the proper fix and is not yet available; until
+then, Homebrew is the path that avoids all of this.
 
 ### On Windows: unsigned, and antivirus may quarantine it
 
