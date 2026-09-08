@@ -39,6 +39,30 @@ pub const DEFAULT_MEMORY_MB: u32 = 1024;
 /// `platform::MAX_PREPARED_CPUS` for why.
 pub const DEFAULT_CPUS: u32 = if cfg!(target_os = "windows") { 2 } else { 4 };
 
+/// Largest `--cpus` and smallest `--memory` worth letting through.
+///
+/// QEMU rejects zero or oversized topologies and too-small memory with its own
+/// errors, but only after WinQuick has started building a guest -- so a bad
+/// value surfaced as a raw QEMU line, and an oversized `--cpus` first burned a
+/// run of failed prepare attempts. The bounds are generous: past 64 processors
+/// or below half a gigabyte is a fat-fingered flag, not a real request.
+pub const MAX_CPUS: u32 = 64;
+pub const MIN_MEMORY_MB: u32 = 512;
+
+/// Reject an impossible guest size before any VM is built, with one clear line.
+pub fn validate_sizing(cpus: u32, memory_mb: u32) -> Result<()> {
+    if !(1..=MAX_CPUS).contains(&cpus) {
+        bail!("--cpus must be between 1 and {MAX_CPUS} (got {cpus})");
+    }
+    if memory_mb < MIN_MEMORY_MB {
+        bail!(
+            "--memory is in MiB and must be at least {MIN_MEMORY_MB} (got {memory_mb}) \
+             -- Windows will not boot in less"
+        );
+    }
+    Ok(())
+}
+
 pub struct Options {
     pub memory_mb: u32,
     pub cpus: u32,
@@ -2037,6 +2061,23 @@ mod tests {
             "the workload's stdin must come from NUL so a command that reads it gets \
              EOF instead of hanging to the timeout: {exec}",
         );
+    }
+
+    /// A fat-fingered `--cpus` or `--memory` should be caught with one clear
+    /// line before any VM is built, not surface as a raw QEMU error after a
+    /// wasted boot. `--cpus 999` used to spend prepare attempts before QEMU
+    /// rejected the topology.
+    #[test]
+    fn an_impossible_guest_size_is_refused_early() {
+        assert!(validate_sizing(DEFAULT_CPUS, DEFAULT_MEMORY_MB).is_ok(), "the defaults are valid");
+        assert!(validate_sizing(1, MIN_MEMORY_MB).is_ok(), "the boundary values are valid");
+        assert!(validate_sizing(MAX_CPUS, 8192).is_ok(), "a big-but-sane size is valid");
+        for bad in [0, MAX_CPUS + 1, 999] {
+            let e = validate_sizing(bad, DEFAULT_MEMORY_MB).unwrap_err().to_string();
+            assert!(e.contains("--cpus"), "cpus {bad} must be named in: {e}");
+        }
+        let e = validate_sizing(DEFAULT_CPUS, 8).unwrap_err().to_string();
+        assert!(e.contains("--memory"), "a tiny memory must be named: {e}");
     }
 
     /// The message is what a user sees; it should name what was waited for.

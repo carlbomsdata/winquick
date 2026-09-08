@@ -498,6 +498,7 @@ fn dispatch(cli: Cli) -> Result<i32> {
             argv,
         } => {
             artifact_patterns::validate(&artifacts)?;
+            runner::validate_sizing(cpus, memory)?;
             runner::run(
                 &argv::join(&argv),
                 &runner::Options {
@@ -553,6 +554,7 @@ fn ui_test(
     memory: u32,
     verbose: bool,
 ) -> Result<i32> {
+    runner::validate_sizing(desktop::DEFAULT_CPUS, memory)?;
     if desktop::running().is_some() {
         anyhow::bail!(
             "a desktop session is already running.\n\n\
@@ -687,6 +689,7 @@ fn desktop_cmd(action: DesktopCmd, verbose: bool) -> Result<i32> {
 
     match action {
         DesktopCmd::Start { app, memory, cpus } => {
+            runner::validate_sizing(cpus, memory)?;
             let _guard = lock::acquire_blocking("desktop start")?;
             desktop::start(&desktop::StartOptions {
                 app: app.clone(),
