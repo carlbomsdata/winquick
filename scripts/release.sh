@@ -88,6 +88,24 @@ gzip -n -9 -c "$DIST/.$NAME.tar" > "$DIST/$NAME.tar.gz"
 rm -f "$DIST/.$NAME.tar" "$DIST/.filelist"
 shasum -a 256 "$DIST/$NAME.tar.gz" | sed "s|$DIST/||" > "$DIST/$NAME.tar.gz.sha256"
 
+# Notarize the finished archive, if credentials are configured. The binaries
+# were signed above, before packaging; a tarball is notarized after it exists,
+# and Apple looks the ticket up online (a .tar.gz cannot be stapled). Without a
+# notary profile this is skipped and the release is still usable -- users clear
+# the quarantine flag themselves, or install with Homebrew, which never sets it.
+if [ -n "${WINQUICK_SIGN_IDENTITY:-}" ] && [ -n "${WINQUICK_NOTARY_PROFILE:-}" ]; then
+  echo "==> notarizing $NAME.tar.gz"
+  xcrun notarytool submit "$DIST/$NAME.tar.gz" \
+    --keychain-profile "$WINQUICK_NOTARY_PROFILE" --wait
+  # What Gatekeeper will conclude once the ticket is published.
+  spctl --assess --type execute --verbose=4 "$STAGE/bin/winquick" || true
+  echo "==> signed and notarized"
+elif [ -n "${WINQUICK_SIGN_IDENTITY:-}" ]; then
+  echo "==> signed but not notarized (set WINQUICK_NOTARY_PROFILE to notarize)"
+else
+  echo "==> unsigned release (set WINQUICK_SIGN_IDENTITY to sign; see docs/signing.md)"
+fi
+
 echo "==> GPL corresponding source"
 NTFS_VER="2022.10.3"
 curl -sSL -o "$DIST/ntfs-3g_ntfsprogs-${NTFS_VER}.tgz" \

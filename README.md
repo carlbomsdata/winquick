@@ -275,6 +275,7 @@ winquick clean [--all]                  remove generated data
 - [docs/windows-host.md](docs/windows-host.md) — the Windows host
 - [docs/security.md](docs/security.md) — the isolation model
 - [docs/licensing.md](docs/licensing.md) — what may be redistributed
+- [docs/signing.md](docs/signing.md) — signing and notarizing the macOS release
 - [docs/troubleshooting.md](docs/troubleshooting.md) — when something breaks
 - [docs/research.md](docs/research.md) — measurements and findings
 - [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
