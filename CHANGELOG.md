@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.4.7 — first-run friction, 2026-09-10
+
+From a fresh-machine trial that was not hassle-free. All host-side — the guest
+agent is unchanged, so images built by 0.4.6 stay valid and there is nothing to
+rebuild.
+
+### Fixed
+
+- **Upgrading no longer looks like a 2.4 GB re-download.** `winquick setup
+  --force` already reuses the image already in `~/.winquick/cache/` and rebuilds
+  in about a minute, but nothing said so — so people passed `--from` by hand or
+  feared a download. `winquick doctor` now appends *"(reuses your downloaded
+  image — no re-download)"* to its rebuild hint when the cache is present, and
+  the install docs explain it (serviced capabilities included).
+- **A build that keeps nothing warns you.** A run is disposable, so a build that
+  succeeds and is not asked for its output with `-a` loses that output silently.
+  After a build-shaped command (`dotnet build`, `dotnet publish`, `msbuild`,
+  `cargo build`, …) with no `-a`, WinQuick now prints a one-line reminder that
+  the output was discarded and how to keep it.
+- **`cache sync` vs `cache add` is clearer.** The docs and `cache add --help` now
+  lead with "sync first" — `add` is the fallback for a package a project uses
+  without declaring, not the first move. `cache info` now names where Windows
+  sees the cache (`%NUGET_PACKAGES%`), and `docs/dotnet.md` gains a note on
+  keeping build output (`-a`, `winquick-artifacts/`, `--artifacts-dir`).
+
 ## v0.4.6 — robustness, 2026-09-08
 
 Hardening found by trying to break WinQuick as a first-time user would. Host-side
