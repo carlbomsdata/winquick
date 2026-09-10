@@ -255,14 +255,22 @@ into the guest — `MSBuild.exe`, `Microsoft.Common.targets`,
 ## Offline reference and targeting packs
 
 The guest has no network, so everything a build needs must already be in the
-package cache:
+package cache. **Always start with `cache sync`, pointed at the project** — it
+restores exactly what that project declares and is the fix for almost every
+offline restore failure:
 
 ```console
 winquick cache sync ./MyProject
 ```
 
-That restores on the Mac, where there *is* a network, and rebuilds the volume
-Windows sees. Two things are worth knowing:
+`cache add <package>` is the fallback, not the first move: it is for a package a
+build still cannot find because the project uses it without declaring it (the
+.NET Framework reference-assembly case below). Reaching for `add` before `sync`
+is the usual wrong turn — it "succeeds", the build fails identically, and only
+`sync` fixes it.
+
+`cache sync` restores on the Mac, where there *is* a network, and rebuilds the
+volume Windows sees. Two things are worth knowing:
 
 - **Add the reference assemblies package** to an SDK-style project targeting
   .NET Framework:
@@ -288,6 +296,22 @@ api.nuget.org is unreachable.
   <packageSources><clear /></packageSources>
 </configuration>
 ```
+
+## Keeping the build output
+
+A build runs in a disposable guest: it compiles, reports success, and is thrown
+away with everything it wrote **unless you pass `-a`**. Nothing warns you at the
+time — a build that produced a binary you never see is the classic first mistake.
+
+```console
+winquick run -w . -a "**/bin/**" -- dotnet build -c Release
+```
+
+`-a` globs are relative to the workspace, and the files land in a
+`winquick-artifacts/` directory at the workspace root, mirroring where they sat
+inside Windows (`winquick-artifacts/MyApp/bin/Release/net8.0/…`). Point them
+elsewhere with `--artifacts-dir <path>`, and add `winquick-artifacts/` to the
+project's `.gitignore` so a build never shows up as an untracked change.
 
 ## Fixtures
 

@@ -435,6 +435,10 @@ enum CacheCmd {
     },
     /// Add named packages to the cache, without touching any project
     #[command(after_help = "\
+Reach for `winquick cache sync <project>` first — it restores exactly what a
+project needs, and it is the answer for most build failures. Use `add` only
+when a build still cannot find a package the project uses but never declared.
+
 `sync` answers \"what does this project need\". This answers \"this project
 needs something its author never declared\" — which is the normal situation for
 a .NET Framework project, because on Windows its reference assemblies come from
@@ -499,8 +503,12 @@ fn dispatch(cli: Cli) -> Result<i32> {
         } => {
             artifact_patterns::validate(&artifacts)?;
             runner::validate_sizing(cpus, memory)?;
-            runner::run(
-                &argv::join(&argv),
+            let joined = argv::join(&argv);
+            // A build that succeeds and keeps nothing is silent data loss. Warn
+            // once, only when the command was plainly a build and no `-a` was set.
+            let unkept_build = artifacts.is_empty() && runner::looks_like_a_build(&joined);
+            let code = runner::run(
+                &joined,
                 &runner::Options {
                     memory_mb: memory,
                     cpus,
@@ -513,7 +521,18 @@ fn dispatch(cli: Cli) -> Result<i32> {
                     artifacts_dir: artifacts_dir.unwrap_or_else(artifact::default_dest),
                     artifact_overwrite,
                 },
-            )
+            )?;
+            if code == 0 && unkept_build {
+                eprintln!(
+                    "\nwinquick: the build finished, but nothing was kept -- the guest and \
+                     everything it wrote are gone now."
+                );
+                eprintln!(
+                    "winquick: re-run with  -a \"<glob>\"  to copy the output back, \
+                     e.g. -a \"**/bin/**\" or -a \"**/publish/**\"."
+                );
+            }
+            Ok(code)
         }
 
         Cmd::Desktop { action } => desktop_cmd(action, verbose),
@@ -953,6 +972,9 @@ fn cache_cmd(action: CacheCmd, verbose: bool) -> Result<i32> {
                 helpers::human(helpers::allocated(&img))
             );
             println!("  restored here into {}", dir.display());
+            println!(
+                "  inside Windows it is at %NUGET_PACKAGES% (a drive with a \\packages folder)"
+            );
             println!("  Windows sees a throwaway copy, so a build cannot change it");
             Ok(0)
         }

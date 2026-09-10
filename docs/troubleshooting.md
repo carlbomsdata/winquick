@@ -134,12 +134,32 @@ winquick cache sync
 WinQuick prints this hint when it sees NU1301. The next run rebuilds the prepared
 guest once, then it is fast again.
 
+Use `cache sync <project>` — not `cache add`. `sync` restores exactly what the
+project needs; `add` only fetches a package you name, so if you guess a package
+and `add` it, the build fails with the *same* NU1301 and looks like nothing
+changed. Reach for `add` only when a `sync`'d build still cannot find a package
+the project uses without declaring (a .NET Framework reference-assembly pack).
+
 **`dotnet test` takes ~10 seconds**
 
 Most of that is .NET: `dotnet restore` alone costs about 6 seconds inside the
 guest even reading from a local cache. WinQuick's own overhead is ~145 ms.
 
 ## Workspace and artifacts
+
+**My build succeeded but I got no files back**
+
+A run is disposable: the guest and everything it built are discarded when the
+command finishes, unless you asked for the output with `-a`. The build reporting
+success is not enough — re-run with a pattern:
+
+```console
+winquick run -w . -a "**/bin/**" -- dotnet build -c Release
+```
+
+WinQuick prints a reminder after a build-shaped command when no `-a` was given,
+but it cannot rescue output from a run that already finished. Files come back
+into `winquick-artifacts/` at the workspace root; `--artifacts-dir` moves them.
 
 **Windows didn't see my changes**
 

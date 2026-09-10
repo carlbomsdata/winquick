@@ -150,7 +150,23 @@ pub fn write_base_meta(base: &Path, agent: &str) -> Result<()> {
 
 /// Confirm the agent baked into an image is the one this binary expects.
 pub fn check_base_meta(base: &Path, agent: &str) -> Result<()> {
-    check_image_meta(base, agent, "winquick setup --force")
+    // The commonest reason someone sees this is an upgrade, and the commonest
+    // fear is that `setup --force` re-downloads the 2.4 GB image. It does not:
+    // `setup` reuses the copy already in the cache. Say so, when it is there,
+    // so nobody reaches for a download they do not need.
+    let hint = if cached_image_present() {
+        "winquick setup --force   (reuses your downloaded image — no re-download)"
+    } else {
+        "winquick setup --force"
+    };
+    check_image_meta(base, agent, hint)
+}
+
+/// Whether the Validation OS image `setup --force` would reuse is on disk.
+fn cached_image_present() -> bool {
+    paths::cache()
+        .map(|c| c.join(format!("validationos-{}.iso", crate::platform::GUEST_ARCH)).exists())
+        .unwrap_or(false)
 }
 
 /// The same, for an image that is not rebuilt by `setup`.

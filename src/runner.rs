@@ -39,6 +39,31 @@ pub const DEFAULT_MEMORY_MB: u32 = 1024;
 /// `platform::MAX_PREPARED_CPUS` for why.
 pub const DEFAULT_CPUS: u32 = if cfg!(target_os = "windows") { 2 } else { 4 };
 
+/// Whether a command looks like a build whose output a user probably wants kept.
+///
+/// A build that succeeds and then vanishes is the worst thing this tool can do
+/// quietly: the guest is discarded, and with it everything the build wrote,
+/// unless `-a` was passed. When the command is plainly a build and no artifact
+/// was requested, a one-line reminder afterwards is worth the small risk of
+/// naming a case where the user did not want the output.
+pub fn looks_like_a_build(command: &str) -> bool {
+    let c = command.to_ascii_lowercase();
+    const BUILDS: [&str; 11] = [
+        "dotnet build",
+        "dotnet publish",
+        "dotnet pack",
+        "dotnet msbuild",
+        "msbuild",
+        "csc ",
+        "csc.exe",
+        "cargo build",
+        "cmake --build",
+        "xcodebuild",
+        "go build",
+    ];
+    BUILDS.iter().any(|b| c.contains(b))
+}
+
 /// Largest `--cpus` and smallest `--memory` worth letting through.
 ///
 /// QEMU rejects zero or oversized topologies and too-small memory with its own
@@ -2105,6 +2130,25 @@ mod tests {
         assert!(!run_in_progress(&root), "a dead creator pid is not an active run");
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A build that keeps nothing is silent data loss, so a plain build command
+    /// with no `-a` earns a reminder — but an ordinary command must stay quiet.
+    #[test]
+    fn a_build_command_is_recognised() {
+        for yes in [
+            "dotnet build MyApp.csproj -c Release",
+            "dotnet publish -o out",
+            "dotnet msbuild App.csproj",
+            "MSBuild.exe Solution.sln",
+            "cargo build --release",
+            "cmd /c \"csc /nostdlib+ a.cs\"",
+        ] {
+            assert!(looks_like_a_build(yes), "should look like a build: {yes}");
+        }
+        for no in ["cmd /c ver", "dotnet test", "ipconfig /all", "pwsh -c 1+1"] {
+            assert!(!looks_like_a_build(no), "should not look like a build: {no}");
+        }
     }
 
     /// A fat-fingered `--cpus` or `--memory` should be caught with one clear

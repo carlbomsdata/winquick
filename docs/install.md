@@ -186,6 +186,19 @@ notices and rebuilds it on the next run — there is nothing to do by hand. If a
 release changes the guest agent, `winquick doctor` will say the runtime was built
 by a different version and to run `winquick setup --force`.
 
+**`setup --force` does not re-download the 2.4 GB image.** It reuses the copy
+already in `~/.winquick/cache/` and rebuilds the runtime from it in about a
+minute — it prints *"Using the Validation OS image already downloaded to …"* so
+you can see it never touched the network. Only a first install, on a machine
+with an empty cache, downloads.
+
+If you have installed the `dotnet-framework` or `desktop` capability, those are
+serviced images with their own copy of the agent, so they go stale on the same
+upgrade. `winquick doctor` names each one and the exact command to rebuild it
+(`winquick capability install dotnet-framework --force`, and the same for
+`desktop`). Those rebuild from the runtime you just rebuilt, so they do not
+download either.
+
 ## Uninstalling
 
 ```console
