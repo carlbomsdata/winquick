@@ -527,10 +527,11 @@ fn dispatch(cli: Cli) -> Result<i32> {
                     "\nwinquick: the build finished, but nothing was kept -- the guest and \
                      everything it wrote are gone now."
                 );
-                eprintln!(
-                    "winquick: re-run with  -a \"<glob>\"  to copy the output back, \
-                     e.g. -a \"**/bin/**\" or -a \"**/publish/**\"."
-                );
+                // Prefer the output the command actually names; fall back to the
+                // usual layout when it names none.
+                let suggestion = runner::artifact_hint_for(&joined)
+                    .unwrap_or_else(|| "-a \"**/bin/**\" (or \"**/publish/**\")".to_string());
+                eprintln!("winquick: re-run with  {suggestion}  to copy the output back.");
             }
             Ok(code)
         }

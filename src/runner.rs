@@ -64,6 +64,41 @@ pub fn looks_like_a_build(command: &str) -> bool {
     BUILDS.iter().any(|b| c.contains(b))
 }
 
+/// A specific `-a` glob for a build whose output path is written in the command.
+///
+/// The generic `**/bin/**` hint is wrong for exactly the hardest case: a classic
+/// `csc /out:App.exe` writes to the workspace root, where no `bin` glob catches
+/// it, so a user following the hint literally gets a second empty-handed run.
+/// When the command names its output -- `/out:` for `csc`/`vbc`/`link`, `-o` or
+/// `--output` for `dotnet` -- echo that instead. Returns `None` when there is
+/// nothing to parse, and the caller falls back to the generic suggestion.
+pub fn artifact_hint_for(command: &str) -> Option<String> {
+    let norm = |p: &str| p.trim_matches(['"', '\'']).replace('\\', "/");
+    // `/out:<path>` or `-out:<path>`, case-insensitive, value up to whitespace.
+    let lower = command.to_ascii_lowercase();
+    for key in ["/out:", "-out:"] {
+        if let Some(i) = lower.find(key) {
+            let rest = &command[i + key.len()..];
+            let val = rest.split_whitespace().next().unwrap_or("");
+            let val = norm(val);
+            if !val.is_empty() {
+                return Some(format!("-a \"{val}\""));
+            }
+        }
+    }
+    // `dotnet ... -o <dir>` or `--output <dir>`: the next token is the directory.
+    let toks: Vec<&str> = command.split_whitespace().collect();
+    for (i, t) in toks.iter().enumerate() {
+        if (*t == "-o" || *t == "--output") && i + 1 < toks.len() {
+            let dir = norm(toks[i + 1]);
+            if !dir.is_empty() {
+                return Some(format!("-a \"{}/**\"", dir.trim_end_matches('/')));
+            }
+        }
+    }
+    None
+}
+
 /// Largest `--cpus` and smallest `--memory` worth letting through.
 ///
 /// QEMU rejects zero or oversized topologies and too-small memory with its own
@@ -2130,6 +2165,34 @@ mod tests {
         assert!(!run_in_progress(&root), "a dead creator pid is not an active run");
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The generic `**/bin/**` hint misses a `csc /out:App.exe` that writes to the
+    /// workspace root — the exact legacy case that is hardest to build. When the
+    /// command names its output, echo that instead.
+    #[test]
+    fn the_hint_follows_an_explicit_output_path() {
+        // csc / link `/out:` writes to the workspace root.
+        assert_eq!(
+            artifact_hint_for("csc /noconfig /out:CitectDbfEditor.exe a.cs").as_deref(),
+            Some("-a \"CitectDbfEditor.exe\"")
+        );
+        // Backslashes are normalised; quotes stripped.
+        assert_eq!(
+            artifact_hint_for("csc /out:\"bin\\App.exe\" a.cs").as_deref(),
+            Some("-a \"bin/App.exe\"")
+        );
+        // dotnet publish `-o <dir>` names a directory.
+        assert_eq!(
+            artifact_hint_for("dotnet publish -o out -c Release").as_deref(),
+            Some("-a \"out/**\"")
+        );
+        assert_eq!(
+            artifact_hint_for("dotnet build --output artifacts/win").as_deref(),
+            Some("-a \"artifacts/win/**\"")
+        );
+        // Nothing to parse -> caller uses the generic suggestion.
+        assert_eq!(artifact_hint_for("dotnet build MyApp.csproj -c Release"), None);
     }
 
     /// A build that keeps nothing is silent data loss, so a plain build command
