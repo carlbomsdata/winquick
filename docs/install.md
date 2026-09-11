@@ -1,5 +1,9 @@
 # Installing WinQuick
 
+**macOS on Apple Silicon is the only supported host.** Windows and Linux are a
+future plan; their requirements are recorded below for that work, but neither is
+released or something to depend on. See [Host support](../README.md#host-support).
+
 ## Requirements
 
 Common to every host: about 4 GB of disk for the Windows runtime (more for
@@ -10,7 +14,7 @@ Microsoft.
 
 - An Apple Silicon Mac (M1 or newer), macOS 13 (Ventura) or later
 
-### Linux x86_64 or aarch64
+### Linux x86_64 or aarch64 (future plan)
 
 - Hardware virtualisation enabled in firmware, and KVM available:
   `/dev/kvm` must exist and be readable and writable by you. If it is not,
@@ -24,7 +28,7 @@ Microsoft.
 
 WinQuick does not use libvirt and does not run a daemon.
 
-### Windows x86_64
+### Windows x86_64 (future plan)
 
 - Hardware virtualisation, and the **Windows Hypervisor Platform** feature,
   which is not the same thing as installing the Hyper-V role
@@ -58,47 +62,22 @@ Homebrew downloads and unpacks the archive itself, so nothing is marked with
 
 ## Release archive
 
-If you would rather not use Homebrew:
+If you would rather not use Homebrew, take the macOS archive:
 
 ```console
-curl -LO https://github.com/carlbomsdata/winquick/releases/download/v0.4.9/winquick-0.4.9-darwin-arm64.tar.gz
-curl -LO https://github.com/carlbomsdata/winquick/releases/download/v0.4.9/winquick-0.4.9-darwin-arm64.tar.gz.sha256
-shasum -a 256 -c winquick-0.4.9-darwin-arm64.tar.gz.sha256
-tar xzf winquick-0.4.9-darwin-arm64.tar.gz
-sudo cp -R winquick-0.4.9-darwin-arm64/* /usr/local/
+curl -LO https://github.com/carlbomsdata/winquick/releases/download/v0.5.0/winquick-0.5.0-darwin-arm64.tar.gz
+curl -LO https://github.com/carlbomsdata/winquick/releases/download/v0.5.0/winquick-0.5.0-darwin-arm64.tar.gz.sha256
+shasum -a 256 -c winquick-0.5.0-darwin-arm64.tar.gz.sha256
+tar xzf winquick-0.5.0-darwin-arm64.tar.gz
+sudo cp -R winquick-0.5.0-darwin-arm64/* /usr/local/
 brew install qemu hivex
 ```
 
-On Linux, take the archive matching `uname -m`:
+The macOS archive's SHA-256 is published beside it, and `SHA256SUMS` covers the
+release.
 
-```console
-sudo apt install qemu-system qemu-utils ovmf libhivex-bin
-curl -LO https://github.com/carlbomsdata/winquick/releases/download/v0.4.9/winquick-0.4.9-linux-x86_64.tar.gz
-tar xzf winquick-0.4.9-linux-x86_64.tar.gz
-sudo cp -R winquick-0.4.9-linux-x86_64/* /usr/local/
-winquick doctor
-```
-
-**Check what QEMU that gave you.** The line above installs whatever your
-distribution packages, and on Ubuntu 24.04 that is QEMU 8.2.2 — measured, on a
-current image. WinQuick runs on it, but 8.2.2 cannot migrate the NVMe device the
-guest boots from, so every run boots cold instead of resuming in a fraction of a
-second, and `winquick doctor` reports the version as too old. For the fast path
-you need QEMU 11 or newer than your distribution is likely to carry, from
-Homebrew on Linux, a backport, or a source build.
-
-Both `linux-x86_64` and `linux-aarch64` are published.
-
-On Windows, install QEMU 11 or newer, then unpack the zip and put the folder on
-`PATH`. It is one flat directory: `winquick.exe` with `ntfscp.exe`,
-`ntfscat.exe` and `hivexsh.exe` beside it, so there is nothing else to install.
-
-```console
-curl.exe -LO https://github.com/carlbomsdata/winquick/releases/download/v0.4.9/winquick-0.4.9-windows-x86_64.zip
-tar -xf winquick-0.4.9-windows-x86_64.zip
-```
-
-Every archive's SHA-256 is published beside it, and `SHA256SUMS` covers the lot.
+Linux and Windows archives are not published: those hosts are a future plan, not
+a supported target. When that changes, this section will describe them.
 
 WinQuick looks for its helpers next to the binary, in `../libexec/winquick`, or
 in a `winquick-helpers` directory beside the binary — any of those layouts work.

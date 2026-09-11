@@ -43,9 +43,10 @@ viable, and it fixes the guest architecture to the host's.
 | Windows x86_64 | `-accel whpx` | Windows x64 |
 | Linux x86_64 / arm64 | `-accel kvm` | matches the host |
 
-macOS on Apple Silicon is the reference host and the only one where a guest runs
-continuously. [windows-host.md](windows-host.md) covers what differs on Windows,
-and the readme's host table says what has and has not been verified where.
+macOS on Apple Silicon is the only supported host and the only one where a guest
+runs continuously; Windows and Linux are a future plan.
+[windows-host.md](windows-host.md) covers what differs on Windows, and the
+readme's host table says what has and has not been verified where.
 
 No guest is given a network device; see [security.md](security.md).
 

@@ -1,4 +1,4 @@
-//! WinQuick — run real Windows commands from macOS, Linux or Windows.
+//! WinQuick — run real Windows commands from macOS on Apple Silicon.
 
 mod argv;
 mod artifact;

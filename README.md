@@ -1,9 +1,9 @@
 # WinQuick
 
-WinQuick runs software inside disposable local Windows environments, from
-macOS, Windows and Linux hosts. A run gets a real Windows kernel in a
-hardware-accelerated QEMU virtual machine, executes what you asked for, and
-returns its stdout, stderr and exit code.
+WinQuick runs software inside disposable local Windows environments on macOS
+with Apple Silicon. A run gets a real Windows kernel in a hardware-accelerated
+QEMU virtual machine, executes what you asked for, and returns its stdout,
+stderr and exit code.
 
 Each run starts from the same clean Windows state and the writes it makes are
 discarded when it ends. WinQuick keeps the base image, capabilities and caches
@@ -13,8 +13,9 @@ It is one binary. QEMU runs the guest as a separate process on the host's own
 hypervisor. There is no daemon and no libvirt.
 
 > **Under heavy development.** Commands, capabilities and measured numbers
-> change between releases, and the hosts are not equally proven. See
-> [Host support](#host-support) before depending on any of it.
+> change between releases. macOS on Apple Silicon is the supported host; Windows
+> and Linux are a future plan, not something to depend on. See
+> [Host support](#host-support).
 
 ## Install
 
@@ -29,10 +30,9 @@ Microsoft's licence, writes the runtime, and verifies it by running a real
 Windows command. WinQuick ships no Microsoft software. If you already have the
 image, use `winquick setup --from <path>` instead.
 
-Archives for Linux and Windows are on the
-[latest release](https://github.com/carlbomsdata/winquick/releases/latest); see
-[docs/install.md](docs/install.md). You need hardware virtualisation, QEMU 11 or
-newer, and about 8 GiB of free disk. `winquick doctor` checks all of it.
+WinQuick runs on macOS with Apple Silicon only; see
+[Host support](#host-support). You need QEMU 11 or newer and about 8 GiB of free
+disk. `winquick doctor` checks all of it.
 
 ## Run Windows software
 
@@ -232,35 +232,31 @@ claude mcp add winquick -- winquick mcp
 
 ## Host support
 
-| Host | Accelerator | Guest | `winquick run` | Desktop |
-|---|---|---|---|---|
-| Apple Silicon macOS 13+ | HVF | Windows ARM64 | ~310 ms warm | yes |
-| Windows 10/11 x86_64 | WHPX | Windows x64 | ~17 s, cold boot each run | only with a patched QEMU |
-| Linux x86_64 / arm64 | KVM | matches the host | not measured | not measured |
+**macOS on Apple Silicon is the only supported host.** It is where WinQuick is
+developed and where every figure here was measured: 100 consecutive runs of
+`cmd /c ver` gave p50 310 ms, p95 317 ms, p99 319 ms, no failures.
 
-macOS on Apple Silicon is the reference host, where WinQuick is developed and
-where every figure here was measured: 100 consecutive runs of `cmd /c ver` gave
-p50 310 ms, p95 317 ms, p99 319 ms, no failures.
+| Host | Accelerator | Guest | Status |
+|---|---|---|---|
+| Apple Silicon macOS 13+ | HVF | Windows ARM64 | **Supported**, ~310 ms warm |
+| Windows 10/11 x86_64 | WHPX | Windows x64 | Future plan |
+| Linux x86_64 / arm64 | KVM | matches the host | Future plan |
 
-**Windows cold-boots every run by design.** A resumed guest under WHPX runs
-correctly until something waits on a timer and then waits far longer than asked
-— 212 s for `ping -n 4` against 20 s cold. Builds, tests and PowerShell wait
-constantly, so the predictable path is the default. `winquick run --warm` asks
-for the prepared guest anyway.
+### Future plan: Windows and Linux
 
-**Saving guest state on Windows needs a patched QEMU.** Stock QEMU's WHPX
-backend registers an unconditional migration blocker, so it refuses every form
-of state save. The seven patches in [patches/](patches/) are not applied to
-anything WinQuick ships; you build QEMU yourself if you want them. Without
-them, `winquick run` works and `--warm`, `winquick start`, `winquick desktop`
-and `winquick ui-test` do not.
-[docs/windows-host.md](docs/windows-host.md) has the detail.
+The groundwork for other hosts exists in the tree but neither is supported or
+released. Do not depend on them.
 
-**Linux is unverified at runtime.** The binary builds, the unit tests pass and
-`winquick doctor` reports the host correctly, all in CI on both architectures.
-No Windows guest has ever been booted on physical Linux hardware, because the
-only Linux machine available was itself a virtual machine. Nothing measured
-argues against it; nothing measured supports it either.
+- **Windows (WHPX).** `winquick run` boots and runs, but cold-boots every run: a
+  resumed guest under WHPX waits far longer than asked on a timer — 212 s for
+  `ping -n 4` against 20 s cold. Saving guest state needs a patched QEMU (stock
+  WHPX registers an unconditional migration blocker); the patches in
+  [patches/](patches/) are not applied to anything WinQuick ships. Without them
+  `--warm`, `start`, `desktop` and `ui-test` do not work.
+  [docs/windows-host.md](docs/windows-host.md) has the detail.
+- **Linux (KVM).** The binary builds and `winquick doctor` reports the host
+  correctly, but no Windows guest has been booted on physical Linux hardware, so
+  guest execution is unverified.
 
 Windows on ARM64 and Intel Macs are not planned.
 

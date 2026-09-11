@@ -38,24 +38,24 @@ and Apple's identity verification, which only the account holder can obtain.
 
 ## Cutting a signed release
 
-Shipped Linux and Windows archives come from CI, which has no certificate, so
-the **signed macOS archive is built on your Mac**. With the two variables set,
+macOS on Apple Silicon is the only supported host, so the release is a single
+**macOS archive built and signed on your Mac**. With the two variables set,
 `release.sh` signs the binaries, packages, and notarizes in one run:
 
 ```console
 export WINQUICK_SIGN_IDENTITY="Developer ID Application: Carlboms Data AB (TEAMID)"
 export WINQUICK_NOTARY_PROFILE="winquick-notary"
-./scripts/release.sh 0.4.6
+./scripts/release.sh 0.5.0
 ```
 
 It prints `signed and notarized` on success. Then, for that release:
 
-- upload `dist/winquick-<version>-darwin-arm64.tar.gz` as the **darwin-arm64**
-  asset, replacing the CI-built one;
+- upload `dist/winquick-<version>-darwin-arm64.tar.gz` as the release asset;
 - put its `.sha256` into `packaging/winquick.rb` (and the tap), the same as any
   release.
 
-Nothing else changes: Linux and Windows keep coming from CI.
+Windows and Linux are a future plan and ship no archives today; when they do,
+their signing story is recorded here.
 
 ## Verifying it worked
 
