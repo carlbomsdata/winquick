@@ -178,10 +178,11 @@ printf '%s' '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>ne
 printf '%s' '<Project ToolsVersion="4.0"><PropertyGroup><TargetFrameworkVersion>v3.5</TargetFrameworkVersion></PropertyGroup></Project>' > "$BT/old/B.csproj"
 o=$("$WQ" build "$BT/sdk" --dry-run 2>&1)
 case "$o" in *"dotnet build"*) ok "an SDK-style project plans dotnet build";; *) bad "build dispatch" "$o";; esac
-"$WQ" build "$BT/old" --dry-run >/dev/null 2>&1; rc=$?
-[ "$rc" -eq 2 ] && ok "a .NET 3.5 project is refused, not built wrong" || bad "pre-v4 refusal" "exit $rc"
-o=$("$WQ" build "$BT/old" 2>&1)
-case "$o" in *"only the .NET Framework 4 compiler"*) ok "the refusal explains why";; *) bad "refusal message" "$o";; esac
+# A .NET 3.5 project takes the legacy path: net35 reference assemblies via
+# FrameworkPathOverride, then a v2.0 verify -- not a naive v4 build.
+o=$("$WQ" build "$BT/old" --dry-run 2>&1)
+case "$o" in *"FrameworkPathOverride"*) ok "a .NET 3.5 project plans the net35 legacy build";; *) bad "pre-v4 dispatch" "$o";; esac
+case "$o" in *"verify the output is CLR v2.0"*) ok "and plans to verify the output is CLR v2.0";; *) bad "pre-v4 verify plan" "$o";; esac
 rm -rf "$BT"
 
 echo "== workspace =="

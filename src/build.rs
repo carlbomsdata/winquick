@@ -9,8 +9,9 @@
 //! *unhelpful*, never *wrong*. The one place it could be wrong is target
 //! framework versus available compiler — a project targeting .NET ≤ 3.5 built by
 //! the guest's v4 compiler yields a binary that looks perfect and silently
-//! breaks the old-runtime support it promises. So it refuses that case with the
-//! manual recipe rather than guessing.
+//! breaks the old-runtime support it promises. So that case is built against the
+//! .NET 3.5 reference assemblies (which compile to the v2.0 runtime), and the
+//! output is verified to be CLR v2.0 before it is called a success.
 
 use crate::{capability, runner};
 use anyhow::{bail, Context, Result};
@@ -56,18 +57,22 @@ struct Project {
     target: String,
 }
 
-/// What the build will do, or why it will not.
-enum Plan {
-    Build {
-        /// The command run inside Windows.
-        command: String,
-        /// The capability the build needs, if it is not already present.
-        need: Option<Capability>,
-        /// The glob copied back out afterwards.
-        keep: String,
-    },
-    /// Refuse rather than emit a silently-wrong binary or a confusing error.
-    Refuse(String),
+/// What the build will do. (Genuinely unbuildable inputs — a solution, an
+/// ambiguous directory — are refused earlier, in `resolve`.)
+struct BuildPlan {
+    /// The command run inside Windows.
+    command: String,
+    /// The capability the build needs, if it is not already present.
+    need: Option<Capability>,
+    /// The glob copied back out afterwards.
+    keep: String,
+    /// A NuGet package to `cache add` before building (the .NET 3.5 reference
+    /// assemblies for a pre-v4 target).
+    ref_pack: Option<&'static str>,
+    /// If set, the produced assembly's CLR metadata version must start with this,
+    /// or the build is reported as failed rather than handed over — the guard that
+    /// keeps a pre-v4 target from silently becoming a v4 binary.
+    verify_prefix: Option<&'static str>,
 }
 
 #[derive(Clone, Copy)]
@@ -98,60 +103,76 @@ impl Capability {
 
 pub fn build(opts: &Options) -> Result<i32> {
     let project = resolve(&opts.project)?;
-    let plan = plan_for(&project, opts)?;
+    let BuildPlan { command, need, keep, ref_pack, verify_prefix } = plan_for(&project, opts)?;
 
-    match &plan {
-        Plan::Refuse(why) => {
-            eprintln!("winquick: {why}");
-            // A refusal is a deliberate stop, not a crash; exit non-zero so a
-            // script notices, but say plainly what happened.
-            Ok(2)
-        }
-        Plan::Build { command, need, keep } => {
-            let dest = opts.out.clone().unwrap_or_else(crate::artifact::default_dest);
-            print_plan(&project, command, *need, keep, &dest, opts);
-            if opts.dry_run {
-                return Ok(0);
-            }
-            if let Some(cap) = need {
-                ensure_capability(*cap, opts)?;
-            }
-            // Restore packages on the host first: the guest has no network, and
-            // this removes the NU1301 detour before it happens.
-            eprintln!("winquick: syncing the package cache for this project…");
-            let _ = capability::nuget_sync(&project.file, "", opts.verbose)?;
-
-            let artifacts = if opts.no_keep { Vec::new() } else { vec![keep.clone()] };
-            let code = runner::run(
-                command,
-                &runner::Options {
-                    memory_mb: runner::DEFAULT_MEMORY_MB,
-                    cpus: runner::DEFAULT_CPUS,
-                    timeout: opts.timeout,
-                    verbose: opts.verbose,
-                    force_cold: false,
-                    force_warm: false,
-                    workspace: Some(project.workspace.clone()),
-                    artifacts,
-                    artifacts_dir: dest.clone(),
-                    artifact_overwrite: true,
-                },
-            )?;
-            if code == 0 {
-                if opts.no_keep {
-                    eprintln!(
-                        "winquick: built, kept nothing (--no-keep). Drop the flag to copy \
-                         the output back."
-                    );
-                } else {
-                    // Say exactly where, absolute — the whole point is not to
-                    // leave the user hunting for output that did land somewhere.
-                    eprintln!("winquick: build output kept in {}", absolute(&dest).display());
-                }
-            }
-            Ok(code)
-        }
+    let dest = opts.out.clone().unwrap_or_else(crate::artifact::default_dest);
+    print_plan(&project, &command, need, &keep, verify_prefix, &dest, opts);
+    if opts.dry_run {
+        return Ok(0);
     }
+    if let Some(cap) = need {
+        ensure_capability(cap, opts)?;
+    }
+    // A pre-v4 target needs the .NET 3.5 reference assemblies, which no project
+    // declares (on Windows they come from a developer pack), so ask for them by
+    // name before restoring the rest.
+    if let Some(pkg) = ref_pack {
+        eprintln!("winquick: adding the .NET 3.5 reference assemblies to the cache…");
+        let _ = capability::nuget_add(&[pkg.to_string()], opts.verbose)?;
+    }
+    // Restore packages on the host first: the guest has no network, and this
+    // removes the NU1301 detour before it happens.
+    eprintln!("winquick: syncing the package cache for this project…");
+    let _ = capability::nuget_sync(&project.file, "", opts.verbose)?;
+
+    let artifacts = if opts.no_keep { Vec::new() } else { vec![keep.clone()] };
+    let code = runner::run(
+        &command,
+        &runner::Options {
+            memory_mb: runner::DEFAULT_MEMORY_MB,
+            cpus: runner::DEFAULT_CPUS,
+            timeout: opts.timeout,
+            verbose: opts.verbose,
+            force_cold: false,
+            force_warm: false,
+            workspace: Some(project.workspace.clone()),
+            artifacts,
+            artifacts_dir: dest.clone(),
+            artifact_overwrite: true,
+        },
+    )?;
+    if code == 0 && !opts.no_keep {
+        // The trust guard: a pre-v4 target must have produced a binary on the old
+        // CLR. If it did not, the build "succeeded" into something that silently
+        // drops the support it targets, which is exactly the outcome this command
+        // exists to prevent — so do not call it done.
+        if let Some(want) = verify_prefix {
+            match produced_clr_version(&dest, &project) {
+                Some(v) if v.starts_with(want) => {
+                    eprintln!("winquick: verified the output runs on CLR {v}");
+                }
+                Some(v) => {
+                    eprintln!(
+                        "winquick: the build produced a CLR {v} binary, not {want}x -- it would \
+                         not run on the old runtime this project targets. Kept the output, but \
+                         treating this as a failure; build it by hand (docs/dotnet.md) if you \
+                         need to inspect what happened."
+                    );
+                    return Ok(1);
+                }
+                None => eprintln!(
+                    "winquick: kept the output but could not read its CLR version to confirm it \
+                     targets the old runtime -- check it with tests/peinfo.py."
+                ),
+            }
+        }
+        eprintln!("winquick: build output kept in {}", absolute(&dest).display());
+    } else if code == 0 {
+        eprintln!(
+            "winquick: built, kept nothing (--no-keep). Drop the flag to copy the output back."
+        );
+    }
+    Ok(code)
 }
 
 /// Find the one project to build, or say why the choice is not obvious.
@@ -299,35 +320,16 @@ fn first_target(s: &str) -> String {
     s.split(';').next().unwrap_or(s).trim().to_string()
 }
 
-/// Turn a project into a plan, or a refusal.
-fn plan_for(p: &Project, opts: &Options) -> Result<Plan> {
-    if targets_pre_v4(&p.target) {
-        return Ok(Plan::Refuse(format!(
-            "this project targets {tfm}, and the guest has only the .NET Framework 4 \
-             compiler.\n\
-             Building it with that compiler would produce a v4 binary that looks fine and \
-             silently loses the ≤3.5 / XP support the project targets — so winquick build \
-             will not guess here.\n\n\
-             Build it explicitly instead: v4 `csc.exe` with `/noconfig /nostdlib+` and \
-             `/r:` pointed at the cached .NET 3.5 reference assemblies. See docs/dotnet.md \
-             (\"Building for Windows XP-era targets\"). This case is planned for a later \
-             winquick build.",
-            tfm = p.target
-        )));
-    }
+/// The pinned .NET 3.5 reference-assembly package, and where it unpacks inside
+/// the guest under `%NUGET_PACKAGES%`. Building against these, rather than the
+/// v4 references, is what makes a pre-v4 target compile to the v2.0 runtime.
+const NET35_REF_PACK: &str = "Microsoft.NETFramework.ReferenceAssemblies.net35@1.0.3";
+const NET35_REF_DIR: &str = r"%NUGET_PACKAGES%\microsoft.netframework.referenceassemblies.net35\1.0.3\build\.NETFramework\v3.5";
 
+/// Turn a project into a plan.
+fn plan_for(p: &Project, opts: &Options) -> Result<BuildPlan> {
     let config = shell_quote(&opts.config);
     let proj = shell_quote(&p.rel);
-    let command = match p.shape {
-        // The SDK reads its own project directly.
-        Shape::Sdk => format!("dotnet build {proj} -c {config} --nologo"),
-        // A classic project builds through MSBuild; `dotnet msbuild` is the more
-        // direct route than `dotnet build`, which adds a restore it does not need.
-        Shape::Classic => {
-            format!("dotnet msbuild {proj} -p:Configuration={config} -nologo")
-        }
-    };
-
     let need = (!Capability::DotnetSdk.present()).then_some(Capability::DotnetSdk);
 
     // Output lives under the project's own bin/<Config>; keep that subtree.
@@ -339,7 +341,125 @@ fn plan_for(p: &Project, opts: &Options) -> Result<Plan> {
         }
     });
 
-    Ok(Plan::Build { command, need, keep })
+    // A pre-v4 target (v2.0/v3.0/v3.5) is the case that could go silently wrong.
+    // Build it against the .NET 3.5 reference assemblies via FrameworkPathOverride,
+    // which compiles to the v2.0 runtime, and verify the output afterwards. The
+    // failure mode of a wrong path is a build error, not a v4 binary; the verify
+    // is the belt to that.
+    if targets_pre_v4(&p.target) {
+        let command = format!(
+            "dotnet msbuild {proj} -p:Configuration={config} \"-p:FrameworkPathOverride={NET35_REF_DIR}\" -nologo"
+        );
+        return Ok(BuildPlan {
+            command,
+            need,
+            keep,
+            ref_pack: Some(NET35_REF_PACK),
+            verify_prefix: Some("v2.0"),
+        });
+    }
+
+    let command = match p.shape {
+        // The SDK reads its own project directly.
+        Shape::Sdk => format!("dotnet build {proj} -c {config} --nologo"),
+        // A classic project builds through MSBuild; `dotnet msbuild` is the more
+        // direct route than `dotnet build`, which adds a restore it does not need.
+        Shape::Classic => format!("dotnet msbuild {proj} -p:Configuration={config} -nologo"),
+    };
+
+    Ok(BuildPlan { command, need, keep, ref_pack: None, verify_prefix: None })
+}
+
+/// The CLR version the produced assembly runs on, read from what was retrieved.
+///
+/// Prefer the assembly named after the project (the primary output); fall back to
+/// any managed `.exe`, then any `.dll`, under the kept output. `None` when nothing
+/// readable is there — a missing output, not a wrong one.
+fn produced_clr_version(dest: &Path, project: &Project) -> Option<String> {
+    let stem = Path::new(&project.rel).file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    let mut exes: Vec<PathBuf> = Vec::new();
+    let mut dlls: Vec<PathBuf> = Vec::new();
+    collect_assemblies(dest, 0, &mut exes, &mut dlls);
+    let pick = exes
+        .iter()
+        .find(|p| p.file_stem().and_then(|s| s.to_str()) == Some(stem))
+        .or_else(|| exes.first())
+        .or_else(|| dlls.iter().find(|p| p.file_stem().and_then(|s| s.to_str()) == Some(stem)))
+        .or_else(|| dlls.first())?;
+    clr_metadata_version(pick)
+}
+
+fn collect_assemblies(dir: &Path, depth: usize, exes: &mut Vec<PathBuf>, dlls: &mut Vec<PathBuf>) {
+    if depth > 8 {
+        return;
+    }
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            collect_assemblies(&p, depth + 1, exes, dlls);
+        } else {
+            match p.extension().and_then(|x| x.to_str()).map(|x| x.to_ascii_lowercase()).as_deref()
+            {
+                Some("exe") => exes.push(p),
+                Some("dll") => dlls.push(p),
+                _ => {}
+            }
+        }
+    }
+}
+
+/// The CLI metadata version string of a managed PE (`v2.0.50727`, `v4.0.30319`).
+///
+/// Walks MZ → PE → the optional header's CLI data directory (index 14) → the
+/// COR20 header → the metadata root's `BSJB` version string, mapping RVAs to file
+/// offsets through the section table. Offsets validated against real v2.0 and v4.0
+/// assemblies. `None` for anything that is not a managed PE.
+fn clr_metadata_version(path: &Path) -> Option<String> {
+    let b = std::fs::read(path).ok()?;
+    let u16_at =
+        |o: usize| -> Option<u16> { Some(u16::from_le_bytes([*b.get(o)?, *b.get(o + 1)?])) };
+    let u32_at = |o: usize| -> Option<u32> {
+        Some(u32::from_le_bytes([*b.get(o)?, *b.get(o + 1)?, *b.get(o + 2)?, *b.get(o + 3)?]))
+    };
+    if b.get(..2)? != b"MZ" {
+        return None;
+    }
+    let pe = u32_at(0x3C)? as usize;
+    if b.get(pe..pe + 4)? != b"PE\0\0" {
+        return None;
+    }
+    let n_sect = u16_at(pe + 6)? as usize;
+    let opt_size = u16_at(pe + 20)? as usize;
+    let opt = pe + 24;
+    let dd = match u16_at(opt)? {
+        0x10b => opt + 96,  // PE32
+        0x20b => opt + 112, // PE32+
+        _ => return None,
+    };
+    let cor_rva = u32_at(dd + 14 * 8)?;
+    if cor_rva == 0 {
+        return None; // not a managed image
+    }
+    let sect = opt + opt_size;
+    let rva_to_off = |rva: u32| -> Option<usize> {
+        (0..n_sect).find_map(|i| {
+            let s = sect + i * 40;
+            let va = u32_at(s + 12)?;
+            let sz = u32_at(s + 16)?;
+            let ptr = u32_at(s + 20)?;
+            (rva >= va && rva < va + sz).then(|| (rva - va + ptr) as usize)
+        })
+    };
+    let cor = rva_to_off(cor_rva)?;
+    let meta = rva_to_off(u32_at(cor + 8)?)?; // COR20: MetaData RVA at +8
+    if b.get(meta..meta + 4)? != b"BSJB" {
+        return None;
+    }
+    let vlen = u32_at(meta + 12)? as usize; // version string length at +12, string at +16
+    let vs = b.get(meta + 16..meta + 16 + vlen)?;
+    let end = vs.iter().position(|&c| c == 0).unwrap_or(vs.len());
+    Some(String::from_utf8_lossy(&vs[..end]).into_owned())
 }
 
 /// Does the target predate the .NET Framework 4 runtime the guest ships?
@@ -355,6 +475,7 @@ fn print_plan(
     command: &str,
     need: Option<Capability>,
     keep: &str,
+    verify_prefix: Option<&str>,
     dest: &Path,
     opts: &Options,
 ) {
@@ -376,6 +497,11 @@ fn print_plan(
         None => eprintln!("  capability dotnet-sdk — already installed"),
     }
     eprintln!("  cache      winquick cache sync (this project)");
+    if verify_prefix.is_some() {
+        // The pre-v4 path: name what makes it safe, so the plan shows why this
+        // target is being built rather than refused.
+        eprintln!("  legacy     .NET 3.5 reference assemblies + verify the output is CLR v2.0");
+    }
     if opts.no_keep {
         eprintln!("  keep       nothing (--no-keep)");
     } else {
@@ -471,7 +597,9 @@ mod tests {
     }
 
     #[test]
-    fn a_pre_v4_target_is_refused_not_guessed() {
+    fn a_pre_v4_target_is_recognised_for_the_legacy_path() {
+        // These take the .NET 3.5 reference-assembly build + v2.0 verify, not the
+        // ordinary v4 route.
         for t in ["v2.0", "v3.0", "v3.5"] {
             assert!(targets_pre_v4(t), "{t} runs on CLR 2.0 the guest lacks");
         }

@@ -131,10 +131,10 @@ winquick build ./MyApp --dry-run        # show the plan without building
 ```
 
 It picks the toolchain from the project's shape (`dotnet build` for SDK-style,
-`dotnet msbuild` for classic). A project targeting .NET 3.5 or older is refused
-rather than built with the guest's .NET 4 compiler, which would silently drop
-the old-runtime support — see [docs/dotnet.md](docs/dotnet.md) for the manual
-recipe there.
+`dotnet msbuild` for classic). A project targeting .NET 3.5 or older is built
+against the .NET 3.5 reference assemblies — so the output runs on the old
+runtime, not the guest's .NET 4 — and WinQuick verifies the produced binary is
+CLR v2.0 before reporting success.
 
 WinQuick can build .NET Framework 2.0 through 4.8.1, netstandard, and net6.0
 through net10.0, including classic non-SDK projects. Running a .NET Framework

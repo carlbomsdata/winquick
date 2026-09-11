@@ -33,12 +33,15 @@ It dispatches on the project's **shape**, not its extension: an SDK-style
 what it decided — tool, capability, cache step, and where the output will land —
 before anything is installed or built.
 
-**It refuses `.NET 3.5` and older rather than building them wrong.** The guest
-has only the .NET 4 compiler, so a project whose `TargetFrameworkVersion` is
-`v2.0`, `v3.0` or `v3.5` cannot be built to run on the old CLR without the
-decoupling below; building it naively yields a v4 binary that looks perfect and
-silently drops the support it targets. `winquick build` stops and points here
-rather than guess. Build those explicitly with the recipe under
+**It builds `.NET 3.5` and older correctly, and proves it.** The guest has only
+the .NET 4 compiler, so a project whose `TargetFrameworkVersion` is `v2.0`,
+`v3.0` or `v3.5`, built naively, yields a v4 binary that looks perfect and
+silently drops the old-runtime support it targets. `winquick build` instead adds
+the .NET 3.5 reference assemblies to the cache and builds with
+`dotnet msbuild … -p:FrameworkPathOverride=<net35 refs>`, which compiles to the
+v2.0 runtime — then reads the produced assembly's CLR metadata version and
+**fails the build unless it is v2.0**, so a silently-v4 result is never handed
+back. The manual form of the same recipe is under
 [Building for Windows XP-era targets](#building-for-windows-xp-era-targets).
 
 ## Build matrix
