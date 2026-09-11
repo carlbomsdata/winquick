@@ -399,6 +399,25 @@ pub fn mark(image: &Path, marker: &str, payload_dir: &str) -> Result<()> {
     Ok(())
 }
 
+/// Write a small text file at the root of a built volume (e.g. the tool PATH
+/// manifest the agent reads). Same plumbing as `mark`, without the payload dir.
+pub fn write_root_file(image: &Path, name: &str, content: &[u8]) -> Result<()> {
+    let img = OpenOptions::new().read(true).write(true).open(image)?;
+    let len = img.metadata()?.len();
+    let slice = StreamSlice::new(img, PART_START_LBA * SECTOR, len)?;
+    let mut buf = BufStream::new(slice);
+    let fs = FileSystem::new(&mut buf, FsOptions::new())?;
+    {
+        let root = fs.root_dir();
+        let mut f = root.create_file(name)?;
+        f.truncate()?;
+        f.write_all(content)?;
+    }
+    fs.unmount()?;
+    buf.flush()?;
+    Ok(())
+}
+
 /// Replace the contents of `dest_name` inside an existing image, without
 /// reformatting — the volume identity has to survive.
 pub fn refill(image: &Path, src_dir: &Path, dest_name: &str) -> Result<()> {

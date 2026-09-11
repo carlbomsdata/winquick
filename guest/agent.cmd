@@ -67,6 +67,17 @@ if defined WQDOTNET (
   if not exist C:\dotnet-home mkdir C:\dotnet-home
 )
 
+rem Tool volumes: a user-brought toolchain (a compiler, Go, Node, a portable
+rem CLI). Each carries WQPATH.TXT at its root listing the directories to put on
+rem PATH. Generic on purpose -- the agent does not care what the tool is.
+rem
+rem A `call` per drive, not an inline loop: accumulating into WQTOOLS inside a
+rem parenthesised `for` would need delayed expansion, which changes how `!` is
+rem handled and is not worth the risk in a script that carries arbitrary
+rem commands. See the :wqtool subroutine at the end.
+set WQTOOLS=
+for %%d in (D E F G H I J K L M N O P Q R S T U V W X Y Z) do if exist %%d:\WQPATH.TXT call :wqtool %%d
+
 rem The workspace, artifact and package-cache volumes all change contents between
 rem runs, so remember their identities now and re-read them just before executing.
 set WQWS=
@@ -102,6 +113,9 @@ rem The mailbox and the workspace have always done this. Capabilities now do too
 if defined WQPSVOL mountvol %WQPSDRV% /P >nul 2>&1
 if defined WQDOTNETVOL mountvol %WQDOTNETDRV% /P >nul 2>&1
 if defined WQNUGETVOL mountvol %WQNUGET% /P >nul 2>&1
+rem Tool volumes are cloned per run like the others, so they get the same
+rem dismount-before-freeze treatment or the restored guest hangs on a stale view.
+for %%t in (%WQTOOLS%) do mountvol %%t: /P >nul 2>&1
 
 >%WQ%\WQREADY.TXT echo 1
 mountvol %WQ% /P >nul 2>&1
@@ -166,6 +180,8 @@ if defined WQNUGETVOL (
   mountvol %WQNUGET% /P >nul 2>&1
   mountvol %WQNUGET% %WQNUGETVOL% >nul 2>&1
 )
+rem Remount each tool volume so this run sees its own clone, not the frozen view.
+for %%t in (%WQTOOLS%) do call :wqremount %%t
 if defined WQWSVOL (
   mountvol %WQWS% /P >nul 2>&1
   mountvol %WQWS% %WQWSVOL% >nul 2>&1
@@ -202,3 +218,31 @@ rem `echo %WQRC%>file` would parse as a stdin redirect. Redirect first instead.
 >%WQ%\WQCODE.TXT echo %WQRC% %WQNONCE%
 mountvol %WQ% /P >nul 2>&1
 goto wait
+
+rem --- tool-volume subroutines ---------------------------------------------
+rem Reached only by `call`; the exec path loops back with `goto wait` and never
+rem falls through to here. `call` gives each a fresh expansion of %WQTOOLS%, so
+rem no delayed expansion is needed.
+
+rem :wqtool <driveLetter> -- record the drive and its volume GUID, and put its
+rem WQPATH.TXT directories on PATH. `.` in the manifest means the volume root.
+:wqtool
+set WQTOOLS=%WQTOOLS% %1
+for /f "tokens=*" %%v in ('mountvol %1: /L') do set WQTV_%1=%%v
+for /f "usebackq delims=" %%l in ("%1:\WQPATH.TXT") do call :wqpath %1 "%%l"
+goto :eof
+
+rem :wqpath <driveLetter> "<subdir>"
+:wqpath
+set "SUB=%~2"
+if "%SUB%"=="." (set "PATH=%1:\;%PATH%") else (set "PATH=%1:\%SUB%;%PATH%")
+goto :eof
+
+rem :wqremount <driveLetter> -- dismount and remount so this run sees its clone.
+rem The GUID was stashed in WQTV_<letter>; `call set` reads it without delayed
+rem expansion.
+:wqremount
+mountvol %1: /P >nul 2>&1
+call set "WQG=%%WQTV_%1%%"
+mountvol %1: %WQG% >nul 2>&1
+goto :eof

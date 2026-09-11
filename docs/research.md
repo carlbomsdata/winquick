@@ -2506,7 +2506,8 @@ Tested rather than assumed, on the ARM64 Validation OS guest.
 None of the programs in the second row are .NET applications. The desktop
 capability starts a Windows desktop and launches Windows software; the WPF and
 WinForms work is the part that is built *and* driven end to end, not the limit
-of what runs.
+of what runs. Node.js, Go and Python — brought in as tool volumes — run and
+compile on the same guest; see "Bring-your-own toolchains" below.
 
 ### A tool that cannot work, and why
 
@@ -2520,3 +2521,57 @@ distinction is what a tool needs from Windows, not whether Sysinternals wrote
 it. `winquick run -- sc query <name>` answers it for any tool in a second, and
 running the tool under `winquick run` surfaces the loader error when a DLL is
 missing.
+
+## Bring-your-own toolchains, measured 2026-09-11
+
+The guest ships only the .NET capability, but it is a real Windows and runs what
+Windows runs. To prove the tool-volume feature (`winquick tool add`) is generic
+rather than another .NET special case, four unrelated ecosystems — none .NET,
+one interpreter, one JS runtime, two compilers — were each registered as a tool
+volume and exercised on the ARM64 Validation OS guest. All are the native
+`win-arm64` builds.
+
+### Registration cost (host, one-off)
+
+| Tool | Version | `tool add` | Volume, allocated |
+|---|---|---|---|
+| Node.js | 22.11.0 | 2.0 s | 86 MiB |
+| Go | 1.23.4 | 60.2 s | 272 MiB |
+| Python (embeddable) | 3.13.1 | 0.27 s | 23 MiB |
+| Zig | (earlier run) | — | 342 MiB |
+
+`add` time tracks file *count*, not bytes: Go ships its whole standard-library
+source as thousands of small files, so packing it into FAT dominates; Node is a
+few large files and packs in seconds.
+
+### Execution, with all four volumes attached at once
+
+The prepared guest was frozen with four tool volumes plus the .NET SDK and
+package-cache capabilities attached — a strong topology test, since every run
+clones and remounts all of them.
+
+| Command | Cold (builds prepared guest) | Warm |
+|---|---|---|
+| `node hello.js` | 10.9 s | 0.5 s |
+| `go version` | — | 0.43 s |
+| `go build -o hello.exe hello.go && hello.exe` | — | 2.9 s |
+| `python --version` | — | 0.39 s |
+
+`go build` produced a real `PE32+ executable (console) Aarch64` (2.1 MB) that
+ran in the same command and was retrieved with `--artifact`. A 272 MiB toolchain
+re-copied on every run could not finish a compile in 2.9 s; the sub-second and
+few-second warm times are the proof that the volume is cloned (an APFS clone,
+effectively free) and frozen, not copied. The base image stayed byte-identical,
+which the integration suite checks independently.
+
+### The one slow measurement, and why it is not the feature
+
+`python -c "import platform; print(platform.machine())"` took a repeatable
+81 seconds, while `python --version`, `import subprocess`, `import socket`,
+`import json` and `import ctypes` were each 0.4 s. The cost is entirely inside
+`platform.uname()`: CPython 3.13 gathers the processor field through a WMI query
+(`_wmi.exec_query`), and the stripped Validation OS has no working WMI service —
+the same reason `wmic` and `systeminfo` are absent — so the query blocks until it
+times out. It is a guest limitation surfaced by one standard-library call, not a
+tool-volume defect: the interpreter starts and runs code in 0.4 s, and the same
+program prints the correct answer once the query returns.
