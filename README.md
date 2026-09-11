@@ -1,9 +1,10 @@
 # WinQuick
 
-WinQuick runs software inside disposable local Windows environments on macOS
-with Apple Silicon. A run gets a real Windows kernel in a hardware-accelerated
-QEMU virtual machine, executes what you asked for, and returns its stdout,
-stderr and exit code.
+WinQuick runs, builds, tests and automates Windows software from macOS with
+Apple Silicon, in disposable local Windows environments. A run gets a real
+Windows kernel in a hardware-accelerated QEMU virtual machine, does what you
+asked — a command, a build, a test, a desktop app, a Windows-only tool — and
+returns its stdout, stderr and exit code.
 
 Each run starts from the same clean Windows state and the writes it makes are
 discarded when it ends. WinQuick keeps the base image, capabilities and caches
