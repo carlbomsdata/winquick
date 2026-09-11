@@ -141,6 +141,31 @@ through net10.0, including classic non-SDK projects. Running a .NET Framework
 binary additionally needs `dotnet-framework`.
 [docs/dotnet.md](docs/dotnet.md) records what was measured.
 
+## Bringing your own tools
+
+The guest is a real Windows, so it will run anything Windows can — not only
+.NET. Anything beyond the .NET capability you bring in yourself: a C toolchain,
+Go, Node, Python, a portable CLI. Dropping it in the workspace works, but the
+workspace is copied into a fresh guest on every run, so a 300 MiB toolchain
+turns a one-second command into a two-minute one.
+
+A tool volume fixes that. Register a directory once and every later `run` and
+`build` attaches it — cloned like a capability volume, which on APFS is
+effectively free — with its directories already on `PATH`:
+
+```console
+winquick tool add zig --from ~/zig-windows-aarch64      # once
+winquick run -w . -- zig build-exe hello.c              # zig is on PATH, no re-copy
+winquick tool list
+winquick tool remove zig
+```
+
+`--from` is a directory; its contents become the volume. WinQuick puts a `bin`
+subdirectory on `PATH` if the toolchain has one, otherwise the volume root —
+override with `--path <dir>` (repeatable) to name the directories yourself.
+Tool volumes are cached, frozen into the prepared guest and discarded from each
+run exactly like the built-in capabilities; nothing about them is .NET-specific.
+
 ## Desktop applications
 
 A desktop session boots Windows once and leaves it running, so each step after

@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.5.0 — bring your own tools, 2026-09-11
+
+The guest is a real Windows, so it runs anything Windows runs — not only .NET.
+This release lets you register any toolchain once and have it cached, frozen
+into the prepared guest and put on `PATH` on every run, instead of re-copying it
+through the workspace each time.
+
+**Upgrading requires `winquick setup --force`.** The guest agent gained tool-volume
+handling, so its hash changed and every existing image (base, serviced
+`dotnet-framework`, `desktop`) is rebuilt against the new agent. Capabilities
+installed as volumes (`powershell`, `dotnet-sdk`) are unaffected and are not
+re-downloaded.
+
+### Added
+
+- **`winquick tool add <name> --from <dir>`** packs a directory — a C toolchain,
+  Go, Node, Python, any portable CLI — into a tool volume. Every later `run` and
+  `build` attaches it (an APFS clone, effectively free) with its directories on
+  `PATH`, so a large toolchain is cached once rather than copied into a fresh
+  guest on every run. `--path <dir>` (repeatable) names the PATH directories;
+  the default is a `bin` subdirectory if present, otherwise the volume root.
+  `winquick tool list` and `winquick tool remove <name>` manage them. Tool
+  volumes reuse the capability clone/attach/freeze machinery, so nothing about
+  them is .NET-specific.
+
 ## v0.4.9 — winquick build, tested on real projects, 2026-09-11
 
 `winquick build` run against real GitHub projects (serilog, commandline,

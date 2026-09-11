@@ -26,6 +26,7 @@ mod servicing;
 mod setup;
 mod sha256;
 mod state;
+mod tool;
 mod udf;
 mod uiscript;
 
@@ -347,6 +348,23 @@ Windows sees a throwaway copy of the cache, so a build cannot change it.")]
         action: CacheCmd,
     },
 
+    /// Register a toolchain the guest keeps and puts on PATH
+    #[command(
+        after_help = "The guest ships no compilers beyond .NET. Bring any other toolchain — a C
+compiler, Go, Node, Python, a portable CLI — once, and it is on PATH in every
+`run` and `build`, without being re-copied each time.
+
+  winquick tool add zig --from ./zig      # ./zig/*, PATH = the volume root
+  winquick tool add go --from ./go        # ./go/bin auto-detected for PATH
+  winquick run -- zig version
+  winquick tool list
+  winquick tool remove zig"
+    )]
+    Tool {
+        #[command(subcommand)]
+        action: ToolCmd,
+    },
+
     /// Check the installation and report problems
     Doctor {
         /// Also run a real Windows command to prove it works
@@ -465,6 +483,28 @@ enum CapabilityCmd {
     },
     /// Remove a capability
     Remove { name: String },
+}
+
+#[derive(Subcommand)]
+enum ToolCmd {
+    /// Pack a directory into a toolchain the guest keeps on PATH
+    Add {
+        /// Name to register it under (what you type to remove it)
+        name: String,
+        /// The directory to pack (a toolchain, a portable app)
+        #[arg(long, value_name = "DIR")]
+        from: PathBuf,
+        /// A directory inside it to put on PATH (repeatable; default: auto)
+        #[arg(long = "path", value_name = "SUBDIR")]
+        paths: Vec<String>,
+    },
+    /// List registered tools
+    List,
+    /// Remove a registered tool
+    Remove {
+        /// The tool name
+        name: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -608,6 +648,20 @@ fn dispatch(cli: Cli) -> Result<i32> {
         }
         Cmd::Capability { action } => capability_cmd(action, verbose),
         Cmd::Cache { action } => cache_cmd(action, verbose),
+        Cmd::Tool { action } => {
+            match action {
+                ToolCmd::Add { name, from, paths } => {
+                    let _guard = lock::acquire_blocking("tool add")?;
+                    tool::add(&name, &from, &paths, verbose)?;
+                }
+                ToolCmd::List => tool::list()?,
+                ToolCmd::Remove { name } => {
+                    let _guard = lock::acquire_blocking("tool remove")?;
+                    tool::remove(&name)?;
+                }
+            }
+            Ok(0)
+        }
         Cmd::Doctor { smoke } => doctor(smoke),
         Cmd::Info => info(),
         Cmd::Mcp => mcp::serve(),
@@ -926,9 +980,20 @@ fn capability_cmd(action: CapabilityCmd, verbose: bool) -> Result<i32> {
                     "not installed".to_string()
                 }
             );
+            // User-registered tool volumes are capability volumes too; list them
+            // under their own heading rather than as unknown capabilities.
+            let tools = tool::installed()?;
+            if !tools.is_empty() {
+                println!("\nTools (winquick tool):");
+                for t in &tools {
+                    println!("  {:<14} {}", t.name, helpers::human(helpers::allocated(&t.image)));
+                }
+            }
             let unknown: Vec<&str> = installed
                 .iter()
-                .filter(|i| capability::spec(&i.name).is_none())
+                .filter(|i| {
+                    capability::spec(&i.name).is_none() && tool::name_of(&i.image).is_none()
+                })
                 .map(|i| i.name.as_str())
                 .collect();
             if !unknown.is_empty() {
