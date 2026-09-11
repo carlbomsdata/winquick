@@ -14,6 +14,33 @@ the output is evidence.
 Measured on Apple Silicon macOS with the `dotnet-sdk` capability, **SDK
 10.0.201**, guest runtime **.NET 10.0.5** (ARM64 Validation OS).
 
+## One command: `winquick build`
+
+Most of this document is the manual path — the capability, the cache, `-w`/`-a`.
+`winquick build <project>` collapses it: it reads the project, installs the
+capability it needs (asking first, unless `--yes`), syncs the package cache,
+builds in a disposable guest, and keeps the output by default.
+
+```console
+winquick build ./MyApp                 # SDK-style: dotnet build, output -> ./winquick-artifacts
+winquick build ./MyApp -c Debug -o out # a config and a destination
+winquick build ./MyApp --dry-run       # print the plan; build nothing
+```
+
+It dispatches on the project's **shape**, not its extension: an SDK-style
+`<Project Sdk="...">` builds with `dotnet build`, a classic
+`<Project ToolsVersion="...">` with `dotnet msbuild`. `--dry-run` shows exactly
+what it decided — tool, capability, cache step, and where the output will land —
+before anything is installed or built.
+
+**It refuses `.NET 3.5` and older rather than building them wrong.** The guest
+has only the .NET 4 compiler, so a project whose `TargetFrameworkVersion` is
+`v2.0`, `v3.0` or `v3.5` cannot be built to run on the old CLR without the
+decoupling below; building it naively yields a v4 binary that looks perfect and
+silently drops the support it targets. `winquick build` stops and points here
+rather than guess. Build those explicitly with the recipe under
+[Building for Windows XP-era targets](#building-for-windows-xp-era-targets).
+
 ## Build matrix
 
 | Target | Build | Run in the stock guest | Run with `dotnet-framework` | Stamped target framework | Machine |

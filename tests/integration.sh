@@ -171,6 +171,19 @@ else
   echo "== dotnet (skipped: capability not installed) =="
 fi
 
+echo "== build (dispatch and the pre-v4 refusal, no guest needed) =="
+BT=$(mktemp -d)
+mkdir -p "$BT/sdk" "$BT/old"
+printf '%s' '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>' > "$BT/sdk/A.csproj"
+printf '%s' '<Project ToolsVersion="4.0"><PropertyGroup><TargetFrameworkVersion>v3.5</TargetFrameworkVersion></PropertyGroup></Project>' > "$BT/old/B.csproj"
+o=$("$WQ" build "$BT/sdk" --dry-run 2>&1)
+case "$o" in *"dotnet build"*) ok "an SDK-style project plans dotnet build";; *) bad "build dispatch" "$o";; esac
+"$WQ" build "$BT/old" --dry-run >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 2 ] && ok "a .NET 3.5 project is refused, not built wrong" || bad "pre-v4 refusal" "exit $rc"
+o=$("$WQ" build "$BT/old" 2>&1)
+case "$o" in *"only the .NET Framework 4 compiler"*) ok "the refusal explains why";; *) bad "refusal message" "$o";; esac
+rm -rf "$BT"
+
 echo "== workspace =="
 WSTMP=$(mktemp -d)
 echo "hello-from-host" > "$WSTMP/probe.txt"

@@ -121,6 +121,21 @@ winquick cache sync                     # once per project, for its packages
 winquick run -w . -- dotnet test
 ```
 
+For a build specifically, `winquick build` does all of that in one step — it
+reads the project, installs the capability it needs, syncs the cache, builds in
+a disposable Windows, and keeps the output:
+
+```console
+winquick build ./MyApp                  # -> ./winquick-artifacts, or -o <dir>
+winquick build ./MyApp --dry-run        # show the plan without building
+```
+
+It picks the toolchain from the project's shape (`dotnet build` for SDK-style,
+`dotnet msbuild` for classic). A project targeting .NET 3.5 or older is refused
+rather than built with the guest's .NET 4 compiler, which would silently drop
+the old-runtime support — see [docs/dotnet.md](docs/dotnet.md) for the manual
+recipe there.
+
 WinQuick can build .NET Framework 2.0 through 4.8.1, netstandard, and net6.0
 through net10.0, including classic non-SDK projects. Running a .NET Framework
 binary additionally needs `dotnet-framework`.
@@ -252,6 +267,7 @@ boundary actually is:
 ```
 winquick setup                          install the Windows runtime (once)
 winquick run -- <command>               run a command
+winquick build <project>                build a project and keep the output
 winquick start|stop|status              a session that stays up
 winquick desktop <verb>                 drive the session's desktop
 winquick ui-test <project>              build a GUI app and test its UI

@@ -3,6 +3,7 @@
 mod argv;
 mod artifact;
 mod artifact_patterns;
+mod build;
 mod capability;
 mod control;
 mod desktop;
@@ -155,6 +156,49 @@ cannot change your source. Ask for output explicitly with --artifact.
         /// The command to run, after `--`
         #[arg(required = true, value_name = "COMMAND")]
         argv: Vec<String>,
+    },
+
+    /// Build a project in Windows and keep the output
+    #[command(
+        after_help = "`run` is `docker run`; this is the missing `docker build`. It reads the project,
+picks the toolchain its shape implies (`dotnet build` for an SDK-style project,
+`dotnet msbuild` for a classic one), installs the capability it needs, restores
+packages offline, builds in a disposable Windows, and keeps the output — unlike
+`run`, which discards it unless you ask.
+
+  winquick build ./MyApp                 build and copy the output back
+  winquick build ./MyApp --dry-run       show the plan without building
+  winquick build ./MyApp -o ./out        choose where the output lands
+
+A project targeting .NET 3.5 or older is refused rather than built wrong: the
+guest has only the .NET 4 compiler, and using it would quietly drop the old
+runtime support. See docs/dotnet.md for the manual recipe."
+    )]
+    Build {
+        /// The project (.csproj) or a directory containing one
+        #[arg(value_name = "PROJECT", default_value = ".")]
+        project: PathBuf,
+        /// Build configuration
+        #[arg(long, default_value = "Release")]
+        config: String,
+        /// Where the output is written [default: ./winquick-artifacts]
+        #[arg(short = 'o', long, value_name = "DIR")]
+        out: Option<PathBuf>,
+        /// Override the output pattern kept from the build
+        #[arg(long, value_name = "GLOB")]
+        keep: Option<String>,
+        /// Build only; keep nothing (like `run`)
+        #[arg(long)]
+        no_keep: bool,
+        /// Install a needed capability without asking
+        #[arg(long)]
+        yes: bool,
+        /// Show the plan and stop
+        #[arg(long)]
+        dry_run: bool,
+        /// Give up this many seconds after the guest takes the command
+        #[arg(long, default_value_t = 900, value_name = "SECONDS")]
+        timeout: u64,
     },
 
     /// Start a Windows session and leave it running
@@ -534,6 +578,20 @@ fn dispatch(cli: Cli) -> Result<i32> {
                 eprintln!("winquick: re-run with  {suggestion}  to copy the output back.");
             }
             Ok(code)
+        }
+
+        Cmd::Build { project, config, out, keep, no_keep, yes, dry_run, timeout } => {
+            build::build(&build::Options {
+                project,
+                config,
+                out,
+                keep,
+                no_keep,
+                yes,
+                dry_run,
+                timeout: Duration::from_secs(timeout),
+                verbose,
+            })
         }
 
         Cmd::Desktop { action } => desktop_cmd(action, verbose),
