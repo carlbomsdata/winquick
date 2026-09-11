@@ -8,7 +8,7 @@ class Winquick < Formula
   desc "Run commands inside a real, disposable Windows environment"
   homepage "https://github.com/carlbomsdata/winquick"
   url "https://github.com/carlbomsdata/winquick/releases/download/v0.4.9/winquick-0.4.9-darwin-arm64.tar.gz"
-  sha256 "d2b622748eda07a7a2c7b8d461a17bbe0544d3441e2db60bf75e45f2f31057da"
+  sha256 "5fb3bbbbfee922f310b0f281f0632250d639bec3b7db35f403dd917aa5f3d37e"
   license "Apache-2.0"
 
   # Apple Silicon only: the guest is ARM64 Windows and acceleration comes from
