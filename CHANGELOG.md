@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.4.8 — `winquick build`, 2026-09-11
+
+`run` is `docker run`; this adds the missing `docker build`. Host-side only —
+the guest agent is unchanged, so images built by 0.4.6+ stay valid.
+
+### Added
+
+- **`winquick build <project>`** turns the whole build session into one command:
+  it reads the `.csproj`, picks the toolchain from its shape (`dotnet build` for
+  SDK-style, `dotnet msbuild` for classic), installs the capability it needs
+  (asking first, or `--yes`), syncs the package cache, builds in a disposable
+  guest, and **keeps the output by default** — the inverse of `run`. Flags:
+  `-o/--out`, `--keep`, `--no-keep`, `--config`, `--yes`, `--dry-run`.
+
+  It may be unhelpful but never wrong: a project targeting **.NET 3.5 or older**
+  is *refused* rather than built with the guest's only compiler (v4), which would
+  produce a binary that looks perfect and silently drops the old-runtime support
+  it targets. `--dry-run` shows the tool, capability, cache step and output
+  location before anything is installed or built.
+
+### Fixed
+
+- The `-a` reminder now names the build's **actual** output when the command
+  carries one (`/out:App.exe` for csc/link, `-o <dir>` for dotnet), instead of a
+  generic `**/bin/**` that misses a classic build writing to the workspace root.
+
 ## v0.4.7 — first-run friction, 2026-09-10
 
 From a fresh-machine trial that was not hassle-free. All host-side — the guest
