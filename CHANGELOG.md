@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.4.9 — winquick build, tested on real projects, 2026-09-11
+
+`winquick build` run against real GitHub projects (serilog, commandline,
+Humanizer, Polly) and the classic v3.5 case finished. Host-side only.
+
+### Added
+
+- **`winquick build` now builds .NET 3.5 and older, and proves it.** Previously it
+  refused a `v2.0`/`v3.0`/`v3.5` target rather than risk a silently-v4 binary. It
+  now adds the .NET 3.5 reference assemblies and builds with
+  `dotnet msbuild -p:FrameworkPathOverride=…`, which compiles to the v2.0 runtime,
+  then reads the produced assembly's CLR metadata version and **fails unless it is
+  v2.0** — so a silently-v4 result is never handed back. Verified on a real x86
+  WinForms v3.5 project: output is CLR v2.0.50727.
+
+### Fixed
+
+- **`winquick build` mounts the repository, not just the project folder.** A bare
+  `.csproj` usually lives in a subdirectory and references things above it — a
+  strong-name `.snk`, `Directory.Build.props`, linked sources — and mounting only
+  the project folder made real builds fail on a file sitting in the repo root. It
+  now mounts the repo (`.git`/`.sln`/`Directory.Build.props`) and keeps output at
+  the project's own subpath.
+- **Targets set by an MSBuild property no longer print as garbage.** Serilog's
+  `$(TargetFrameworksLibrary)` and props-based TFMs read as unknown now (cosmetic
+  for dispatch; the pre-v4 build still keys on a literal version).
+
 ## v0.4.8 — `winquick build`, 2026-09-11
 
 `run` is `docker run`; this adds the missing `docker build`. Host-side only —
