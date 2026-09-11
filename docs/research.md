@@ -2575,3 +2575,34 @@ the same reason `wmic` and `systeminfo` are absent — so the query blocks until
 times out. It is a guest limitation surfaced by one standard-library call, not a
 tool-volume defect: the interpreter starts and runs code in 0.4 s, and the same
 program prints the correct answer once the query returns.
+
+### Real third-party projects, not just hello-world, 2026-09-11
+
+The measurements above ran trivial programs. To test the feature the way a user
+would, three real dependency-having projects were built or run through their
+tool volumes — offline, since the guest has no network.
+
+| Ecosystem | Project | Dependencies | Result |
+|---|---|---|---|
+| Go | `golang/example` `hello` | intra-module `reverse` package | built offline (`GOPROXY=off`) into a running PE32+ ARM64 exe; printed `olleH, dlrow!` |
+| Node | prettier 3.3.3 | a real 7.5 MiB `node_modules` tree | formatted a messy `.js` correctly, 0.66 s warm |
+| Python | black 24.8.0 | a real vendored pip tree | produced the correct reformatting diff, 0.77 s warm |
+
+Three findings came out of it, and none is a tool-volume defect:
+
+- **The offline guest means dependencies must be provided, exactly as for .NET
+  and NuGet.** The *toolchain* is the cached tool volume; a project's
+  *dependencies* are not, and travel in the workspace (vendored `node_modules`,
+  a pip `--target` directory, a committed Go `vendor/`) or via a populated
+  module cache. `npm install`, `pip install` and a bare `go build` that must
+  resolve modules all reach the network and therefore fail in the guest. This is
+  the same constraint `winquick cache` solves for NuGet, not a new one.
+- **`go build` is per-package.** `golang/example`'s module requires
+  `golang.org/x/tools` and `yaml.v3`, but the `hello` package imports neither, so
+  building it needed no download and `GOPROXY=off` succeeded. Only the packages a
+  target actually imports have to be present offline.
+- **The Windows *embeddable* Python disables `PYTHONPATH`.** Its `python3xx._pth`
+  file puts the interpreter in isolated mode, so a vendored package directory is
+  not found until a one-line `sys.path.insert` bootstrap (or an edited `._pth`)
+  adds it. That is a property of the embeddable distribution, not of WinQuick;
+  `python --version` and stdlib imports work without it.

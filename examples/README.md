@@ -44,5 +44,15 @@ Python (`python-X-embed-arm64.zip`), or any portable CLI. WinQuick puts a `bin`
 subdirectory on `PATH` if the toolchain has one, otherwise the volume root; name
 the directories yourself with `--path <dir>` (repeatable).
 
+**Dependencies are offline, like NuGet.** The tool volume carries the
+*toolchain*; a project's *dependencies* are not fetched inside the guest, which
+has no network. Provide them the way each ecosystem allows — a committed Go
+`vendor/` built with `go build -mod=vendor`, a vendored `node_modules`, a pip
+`--target` directory — and they travel in the workspace. `prettier` on a real
+`node_modules` and `black` from a pip `--target` both run offline this way;
+`npm install`, `pip install` and a bare `go build` that must resolve modules
+reach the network and fail. This is the same constraint `winquick cache` solves
+for .NET.
+
 Measured cold/warm times for Go, Node and Python are in
 [docs/research.md](../docs/research.md) under "Bring-your-own toolchains".
