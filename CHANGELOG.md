@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.5.1 — docs match the product, 2026-09-11
+
+A documentation and hygiene release. The v0.5.0 tag was cut before the host
+repositioning landed, so its README and install docs still described a
+macOS/Linux/Windows product and linked stale v0.4.9 Linux/Windows archives that
+the release does not ship. This tag carries the corrected docs. The binary is
+functionally identical to v0.5.0 — no `setup --force` needed when upgrading from
+0.5.0.
+
+### Fixed
+
+- **Docs now say macOS on Apple Silicon is the only supported host**, with
+  Windows and Linux as a future plan, across the README, `docs/install.md`,
+  `docs/signing.md` and `docs/architecture.md`. The stale Linux/Windows install
+  instructions and v0.4.9 archive links are gone; the release ships the macOS
+  archive only.
+- Documented the extended tests against real third-party projects (Go, Node,
+  Python) and the offline-dependency constraint in `docs/research.md`.
+- Closed the tracker's only open issue (#1), fixed since v0.4.6.
+
 ## v0.5.0 — bring your own tools, 2026-09-11
 
 The guest is a real Windows, so it runs anything Windows runs — not only .NET.
