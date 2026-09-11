@@ -158,10 +158,15 @@ pub fn build(opts: &Options) -> Result<i32> {
 fn resolve(arg: &Path) -> Result<Project> {
     let arg = arg.canonicalize().with_context(|| format!("{} does not exist", arg.display()))?;
 
-    let file = if arg.is_dir() {
+    // A directory the user names is the workspace they chose; a bare project
+    // file needs its repo mounted, because real projects live in a subdirectory
+    // and reference things above them — a `.snk`, `Directory.Build.props`, linked
+    // sources. Mounting only the project's own folder loses those and the build
+    // fails on a file that is right there in the repo.
+    let (file, workspace) = if arg.is_dir() {
         let mut hits: Vec<PathBuf> = Vec::new();
         find_csproj(&arg, 0, &mut hits);
-        match hits.len() {
+        let file = match hits.len() {
             0 => bail!(
                 "no .csproj found under {}.\n\
                  Point `winquick build` at the project file itself.",
@@ -176,25 +181,57 @@ fn resolve(arg: &Path) -> Result<Project> {
                     list.join("\n")
                 );
             }
-        }
+        };
+        (file, arg.clone())
     } else {
         if arg.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case("sln"))
             == Some(true)
         {
             bail!("solutions are not supported yet — point `winquick build` at a .csproj");
         }
-        arg.clone()
+        let ws = repo_root(&arg);
+        (arg.clone(), ws)
     };
 
-    // Mount the project's own directory as the workspace, so paths inside the
-    // guest are short and the output lands beside the project.
-    let workspace = file.parent().unwrap_or(Path::new(".")).to_path_buf();
     let rel = file.strip_prefix(&workspace).unwrap_or(&file).to_string_lossy().replace('\\', "/");
 
     let text =
         std::fs::read_to_string(&file).with_context(|| format!("reading {}", file.display()))?;
     let (shape, target) = classify(&text);
     Ok(Project { file, workspace, rel, shape, target })
+}
+
+/// The directory to mount for a bare project file: the repo it lives in.
+///
+/// Walk up from the project looking for the markers that mean "this is the top
+/// of the thing" — a `.git`, a `.sln`, or a `Directory.Build.props`/`.targets`
+/// that the project inherits. Fall back to the project's own directory when
+/// there is no such marker (a loose `.csproj` in a plain folder).
+fn repo_root(project: &Path) -> PathBuf {
+    let start = project.parent().unwrap_or(Path::new("."));
+    let mut best: Option<PathBuf> = None;
+    let mut dir = Some(start);
+    while let Some(d) = dir {
+        let has_marker = d.join(".git").exists()
+            || d.join("Directory.Build.props").exists()
+            || d.join("Directory.Build.targets").exists()
+            || std::fs::read_dir(d)
+                .map(|rd| {
+                    rd.flatten().any(|e| {
+                        e.path()
+                            .extension()
+                            .and_then(|x| x.to_str())
+                            .map(|x| x.eq_ignore_ascii_case("sln"))
+                            == Some(true)
+                    })
+                })
+                .unwrap_or(false);
+        if has_marker {
+            best = Some(d.to_path_buf());
+        }
+        dir = d.parent();
+    }
+    best.unwrap_or_else(|| start.to_path_buf())
 }
 
 /// Depth-limited search, so pointing at a large repo does not walk the world.
@@ -245,7 +282,17 @@ fn tag(text: &str, name: &str) -> Option<String> {
     let close = format!("</{name}>");
     let start = text.find(&open)? + open.len();
     let end = text[start..].find(&close)? + start;
-    Some(text[start..end].trim().to_string())
+    let val = text[start..end].trim().to_string();
+    // Real projects set the target in Directory.Build.props or via an MSBuild
+    // property; a `$(...)` value is a reference this text scan cannot resolve, so
+    // treat it as unknown rather than printing the variable. Harmless for the
+    // dispatch (SDK-style builds the same whatever the target), and the pre-v4
+    // refusal keys on a literal version, which a property is not.
+    if val.is_empty() || val.contains("$(") {
+        None
+    } else {
+        Some(val)
+    }
 }
 
 fn first_target(s: &str) -> String {
@@ -409,6 +456,18 @@ mod tests {
 
         let multi = r#"<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFrameworks>net8.0;net472</TargetFrameworks></PropertyGroup></Project>"#;
         assert_eq!(classify(multi), (Shape::Sdk, "net8.0".to_string()));
+    }
+
+    #[test]
+    fn a_property_valued_or_missing_target_reads_as_unknown() {
+        // Serilog-style: TargetFrameworks is an MSBuild property, not a literal.
+        let prop = r#"<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFrameworks>$(TargetFrameworksLibrary)</TargetFrameworks></PropertyGroup></Project>"#;
+        assert_eq!(classify(prop), (Shape::Sdk, String::new()));
+        // No target element at all (set in Directory.Build.props).
+        let none = r#"<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup></PropertyGroup></Project>"#;
+        assert_eq!(classify(none), (Shape::Sdk, String::new()));
+        // A property-valued target must NOT trip the pre-v4 refusal.
+        assert!(!targets_pre_v4(""));
     }
 
     #[test]
